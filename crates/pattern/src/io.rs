@@ -120,6 +120,27 @@ mod tests {
     }
 
     #[test]
+    fn textiles_are_optional() {
+        let mut p = sample();
+        let json = p.to_json().unwrap();
+        assert!(
+            !json.contains("fabric") && !json.contains("layers") && !json.contains("textiles"),
+            "los valores por defecto no se guardan"
+        );
+        let back = Pattern::from_json(&json).unwrap();
+        assert_eq!(back.textiles, crate::Textile::library());
+        let leather = crate::TextileId(8);
+        p.pieces[1].fabric = leather;
+        p.pieces[1].layers = vec![crate::TextileId(10)];
+        p.textile_mut(leather).unwrap().firmness = 80.0;
+        let back = Pattern::from_json(&p.to_json().unwrap()).unwrap();
+        assert_eq!(back.pieces[1].fabric, leather);
+        assert_eq!(back.pieces[1].layers, [crate::TextileId(10)]);
+        assert_eq!(back.pieces[0].fabric, crate::TextileId::COTTON);
+        assert_eq!(back.textile(leather).unwrap().firmness, 80.0);
+    }
+
+    #[test]
     fn next_id_never_collides_after_load() {
         let mut p = sample();
         let json = p.to_json().unwrap().replace("\"next_id\"", "\"ignored\"");

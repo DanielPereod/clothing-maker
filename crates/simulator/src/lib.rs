@@ -8,10 +8,13 @@
 //! Restricciones por pieza:
 //! - **Estiramiento:** distancia en cada arista de la malla, con la longitud
 //!   en reposo sacada del patrón 2D.
-//! - **Flexión:** distancia entre los dos vértices opuestos de cada par de
-//!   triángulos vecinos. Es más barata y más estable que la de ángulo
-//!   diedro y, con una flexibilidad (*compliance*) alta, se comporta igual
-//!   para tela normal.
+//! - **Flexión:** modelo cuadrático de Bergou et al. (*A Quadratic Bending
+//!   Model for Inextensible Surfaces*, 2006). Cada arista interior con sus
+//!   dos triángulos forma una bisagra; la curvatura de la bisagra es una
+//!   combinación lineal fija de sus cuatro vértices (con pesos de
+//!   cotangentes sacados del patrón plano), así que resiste desde el primer
+//!   milímetro que se dobla y la firmeza de la tela ([`Fabric::bend_stiffness`])
+//!   se nota de verdad en cómo cae.
 //! - **Colisión** con una lista de [`Collider`]s (suelo, esferas, cajas y
 //!   mallas cerradas como el maniquí, vía [`MeshSdf`]), con grosor y
 //!   rozamiento.
@@ -54,6 +57,11 @@ use std::collections::HashMap;
 /// de partículas) todo va en serie; el paralelismo entra con mallas finas.
 const PAR_MIN_LEN: usize = 16_384;
 
+/// Flexibilidad (m/N) de la cizalla, igual para todas las telas. Es la que
+/// tenía antes la flexión del algodón, cuando se hacía con estas mismas
+/// distancias.
+const SHEAR_COMPLIANCE: f32 = 2e-2;
+
 /// Cada cuántos subpasos se buscan los pares de la auto-colisión.
 const SELF_COLLISION_EVERY: u32 = 5;
 
@@ -64,8 +72,9 @@ pub struct Fabric {
     pub density: f32,
     /// Flexibilidad al estirar (m/N). 0 = inextensible.
     pub stretch_compliance: f32,
-    /// Flexibilidad al doblar (m/N). Más alto = cae más blando.
-    pub bend_compliance: f32,
+    /// Rigidez a la flexión (N·m): la firmeza. Más alto = más tieso; una
+    /// camiseta de algodón ronda 5·10⁻⁶ y un cuero de bolso 10⁻³.
+    pub bend_stiffness: f32,
     /// Coeficiente de rozamiento contra los colisionadores (0..1).
     pub friction: f32,
     /// Distancia mínima (m) que se mantiene a los colisionadores.
@@ -74,11 +83,45 @@ pub struct Fabric {
 
 impl Fabric {
     pub const COTTON: Fabric =
-        Fabric { density: 0.15, stretch_compliance: 1e-7, bend_compliance: 2e-3, friction: 0.5, thickness: 0.003 };
+        Fabric { density: 0.15, stretch_compliance: 1e-7, bend_stiffness: 5e-6, friction: 0.5, thickness: 0.003 };
     pub const SILK: Fabric =
-        Fabric { density: 0.06, stretch_compliance: 2e-7, bend_compliance: 2e-2, friction: 0.2, thickness: 0.002 };
+        Fabric { density: 0.06, stretch_compliance: 2e-7, bend_stiffness: 8e-7, friction: 0.2, thickness: 0.002 };
     pub const DENIM: Fabric =
-        Fabric { density: 0.40, stretch_compliance: 2e-8, bend_compliance: 1e-4, friction: 0.6, thickness: 0.004 };
+        Fabric { density: 0.40, stretch_compliance: 2e-8, bend_stiffness: 5e-5, friction: 0.6, thickness: 0.004 };
+    pub const LEATHER: Fabric =
+        Fabric { density: 0.90, stretch_compliance: 1e-8, bend_stiffness: 1e-3, friction: 0.7, thickness: 0.0015 };
+    /// Forro: ligero y muy blando.
+    pub const LINING: Fabric =
+        Fabric { density: 0.07, stretch_compliance: 2e-7, bend_stiffness: 6e-7, friction: 0.2, thickness: 0.001 };
+
+    /// Varias capas de tela unidas en una sola lámina (p. ej. cuero por fuera
+    /// y forro por dentro), de fuera hacia dentro. Las rigideces se suman
+    /// (la flexibilidad al estirar es su inversa), igual que el gramaje y el
+    /// grosor; el rozamiento es el de la capa de fuera. Sin capas, devuelve
+    /// la tela por defecto.
+    pub fn layered(layers: &[Fabric]) -> Fabric {
+        let Some(outer) = layers.first() else { return Fabric::default() };
+        // Una capa inextensible (flexibilidad 0) hace inextensible el conjunto.
+        let combine = |compliance: fn(&Fabric) -> f32| -> f32 {
+            if layers.iter().any(|l| compliance(l) == 0.0) {
+                0.0
+            } else {
+                1.0 / layers.iter().map(|l| 1.0 / compliance(l)).sum::<f32>()
+            }
+        };
+        Fabric {
+            density: layers.iter().map(|l| l.density).sum(),
+            stretch_compliance: combine(|l| l.stretch_compliance),
+            bend_stiffness: layers.iter().map(|l| l.bend_stiffness).sum(),
+            friction: outer.friction,
+            thickness: layers.iter().map(|l| l.thickness).sum(),
+        }
+    }
+
+    /// Firmeza al doblar comparada con la del algodón (1 = igual de firme).
+    pub fn relative_firmness(&self) -> f32 {
+        self.bend_stiffness / Fabric::COTTON.bend_stiffness
+    }
 }
 
 impl Default for Fabric {
@@ -95,6 +138,17 @@ pub struct DistanceConstraint {
     pub rest_length: f32,
     /// Inversa de la rigidez (m/N). 0 = inextensible.
     pub compliance: f32,
+}
+
+/// Restricción de flexión sobre una bisagra (dos triángulos que comparten
+/// la arista `v[0]`–`v[1]`; `v[2]` y `v[3]` son los vértices opuestos). La
+/// curvatura es `Σ k[i]·x[v[i]]`, que vale 0 con la bisagra plana.
+#[derive(Clone, Copy, Debug)]
+struct BendConstraint {
+    v: [u32; 4],
+    k: [f32; 4],
+    /// Inversa de la rigidez de esta bisagra.
+    compliance: f32,
 }
 
 /// Las partículas y triángulos que aporta una pieza a la tela.
@@ -157,6 +211,8 @@ pub struct Cloth {
     colors: Vec<usize>,
     /// Restricciones añadidas desde el último coloreado.
     pending: Vec<DistanceConstraint>,
+    /// Flexión, en serie (cada bisagra toca cuatro partículas).
+    bends: Vec<BendConstraint>,
     /// Costuras: pocas comparadas con la tela, así que van en serie.
     seams: Vec<DistanceConstraint>,
     scratch: Vec<(Vec3, Vec3)>,
@@ -237,8 +293,16 @@ impl Cloth {
             self.rest_edges.push(c.rest_length);
             self.pending.push(c);
         }
-        for [a, b] in bending_pairs(&triangles) {
-            self.pending.push(distance(a, b, fabric.bend_compliance));
+        for hinge in hinges(&triangles) {
+            // La distancia entre los vértices opuestos de cada bisagra apenas
+            // frena la flexión mientras es suave, pero sujeta la cizalla (que
+            // los triángulos se deformen dentro del plano).
+            self.pending.push(distance(hinge[2], hinge[3], SHEAR_COMPLIANCE));
+            if fabric.bend_stiffness > 0.0
+                && let Some(bend) = bend_constraint(hinge.map(|i| rest[i as usize]), fabric.bend_stiffness)
+            {
+                self.bends.push(BendConstraint { v: hinge.map(|i| i + base), ..bend });
+            }
         }
 
         let n = rest.len();
@@ -277,7 +341,7 @@ impl Cloth {
     }
 
     pub fn constraint_count(&self) -> usize {
-        self.constraints.len() + self.pending.len()
+        self.constraints.len() + self.pending.len() + self.bends.len()
     }
 
     /// Une dos partículas con una costura. Empieza a la distancia a la que
@@ -383,6 +447,7 @@ impl Cloth {
             // a meter un poco las partículas, pero siempre dentro del grosor.
             self.solve_collisions(colliders, parallel);
             self.solve_distances(h);
+            self.solve_bending(h);
             self.solve_seams(h);
             if params.self_collision {
                 self.self_collision.solve(&mut self.positions, &self.prev_positions, &self.inv_mass, &self.triangles);
@@ -549,6 +614,25 @@ impl Cloth {
         }
     }
 
+    fn solve_bending(&mut self, h: f32) {
+        let inv_h2 = 1.0 / (h * h);
+        for c in &self.bends {
+            let x = c.v.map(|i| self.positions[i as usize]);
+            let w = c.v.map(|i| self.inv_mass[i as usize]);
+            let curvature: Vec3 = x.iter().zip(c.k).map(|(&x, k)| x * k).sum();
+            let denom: f32 = w.iter().zip(c.k).map(|(w, k)| w * k * k).sum::<f32>() + c.compliance * inv_h2;
+            if denom == 0.0 {
+                continue;
+            }
+            // C = |curvatura|, con gradiente k[i]·n respecto a cada vértice
+            // (n = curvatura / C): la corrección es -w[i]·k[i]·curvatura / denom.
+            let step = -curvature / denom;
+            for ((&v, w), k) in c.v.iter().zip(w).zip(c.k) {
+                self.positions[v as usize] += step * (w * k);
+            }
+        }
+    }
+
     fn solve_seams(&mut self, h: f32) {
         let inv_h2 = 1.0 / (h * h);
         for c in &self.seams {
@@ -651,22 +735,42 @@ fn distance_correction(c: &DistanceConstraint, positions: &[Vec3], inv_mass: &[f
     (corr * wa, -corr * wb)
 }
 
-/// Para cada arista interior, los dos vértices opuestos de sus triángulos.
-fn bending_pairs(triangles: &[[u32; 3]]) -> Vec<[u32; 2]> {
+/// Bisagras de la malla: para cada arista interior `[a, b, c, d]`, con la
+/// arista `a`–`b` y los vértices opuestos `c` y `d` de sus dos triángulos.
+fn hinges(triangles: &[[u32; 3]]) -> Vec<[u32; 4]> {
     let mut opposite: HashMap<(u32, u32), u32> = HashMap::with_capacity(triangles.len() * 3);
-    let mut pairs = Vec::new();
+    let mut hinges = Vec::new();
     for t in triangles {
         for k in 0..3 {
             let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
             let key = (a.min(b), a.max(b));
             if let Some(other) = opposite.remove(&key) {
-                pairs.push([other, c]);
+                hinges.push([key.0, key.1, other, c]);
             } else {
                 opposite.insert(key, c);
             }
         }
     }
-    pairs
+    hinges
+}
+
+/// Pesos y flexibilidad de una bisagra a partir de su forma en reposo
+/// (plana). Con la energía de Bergou `E = 3·B / (A₀ + A₁) · |Σ kᵢ xᵢ|² / 2`,
+/// la flexibilidad XPBD es `(A₀ + A₁) / (3·B)`. Devuelve `None` si algún
+/// triángulo es degenerado.
+fn bend_constraint(x: [Vec3; 4], stiffness: f32) -> Option<BendConstraint> {
+    let cot = |apex: Vec3, p: Vec3, q: Vec3| {
+        let (u, v) = (p - apex, q - apex);
+        let sin = u.cross(v).length();
+        (sin > 1e-12).then(|| u.dot(v) / sin)
+    };
+    let [x0, x1, x2, x3] = x;
+    // Ángulos en los extremos de la arista, en cada triángulo.
+    let (a0, a1) = (cot(x0, x1, x2)?, cot(x1, x0, x2)?);
+    let (b0, b1) = (cot(x0, x1, x3)?, cot(x1, x0, x3)?);
+    let k = [-(a1 + b1), -(a0 + b0), a0 + a1, b0 + b1];
+    let area = 0.5 * ((x1 - x0).cross(x2 - x0).length() + (x1 - x0).cross(x3 - x0).length());
+    Some(BendConstraint { v: [0; 4], k, compliance: area / (3.0 * stiffness) })
 }
 
 #[cfg(test)]
@@ -757,7 +861,7 @@ mod tests {
         let mut cloth = Cloth::from_mesh(&square_mesh(300.0), &Fabric::COTTON);
         let total = cloth.constraint_count();
         cloth.recolor();
-        assert_eq!(cloth.constraints.len(), total);
+        assert_eq!(cloth.constraints.len() + cloth.bends.len(), total);
         assert_eq!(cloth.colors.len(), 65);
         for k in 0..cloth.colors.len() - 2 {
             let mut seen = std::collections::HashSet::new();
@@ -954,7 +1058,8 @@ mod tests {
         assert_eq!(cushion.opening_count(), 0);
         let volume = cushion.volume();
         eprintln!("cojín: {:.2} l plano, {:.2} l hinchado", flat * 1e3, volume * 1e3);
-        assert!(flat < 0.004, "sin presión debería quedar plano: {flat}");
+        // Sin gravedad, la firmeza de la tela ya lo abomba algo al coserlo.
+        assert!(flat < volume / 4.0, "sin presión debería quedar casi plano: {flat}");
         assert!(volume > 0.007 && volume < 0.02, "volumen del cojín: {volume}");
         assert!(cushion.max_seam_gap() < 2e-3, "costura abierta: {}", cushion.max_seam_gap());
         let ratios = stretch_ratios(&cushion, &Fabric::COTTON);
@@ -1006,5 +1111,75 @@ mod tests {
         assert!((held + 0.35).abs() < 0.01, "la tela ha resbalado hasta {held}");
         let slipped = edge_on_table(0.0);
         assert!(slipped > 0.0, "sin rozamiento debería caerse: {slipped}");
+    }
+
+    #[test]
+    fn layers_add_up() {
+        let one = Fabric::layered(&[Fabric::COTTON]);
+        assert_eq!(one, Fabric::COTTON);
+        let two = Fabric::layered(&[Fabric::COTTON, Fabric::COTTON]);
+        assert!((two.relative_firmness() - 2.0).abs() < 1e-4, "dos capas iguales: {}", two.relative_firmness());
+        assert!((two.density - 0.30).abs() < 1e-6 && (two.thickness - 0.006).abs() < 1e-6);
+        // Un bolso de cuero con forro: más firme que el cuero solo.
+        let bag = Fabric::layered(&[Fabric::LEATHER, Fabric::LINING]);
+        assert_eq!(bag.friction, Fabric::LEATHER.friction, "el rozamiento es el de fuera");
+        assert!(bag.bend_stiffness > Fabric::LEATHER.bend_stiffness);
+        assert!(bag.stretch_compliance < Fabric::LEATHER.stretch_compliance);
+        let rigid = Fabric::layered(&[Fabric::COTTON, Fabric { stretch_compliance: 0.0, ..Fabric::LINING }]);
+        assert_eq!(rigid.stretch_compliance, 0.0);
+        assert_eq!(Fabric::layered(&[]), Fabric::default());
+    }
+
+    /// Un cuadrado de 10 cm en horizontal, sujeto (como con una pinza) por
+    /// sus 3 primeros cm: cuanto más firme es la tela, menos cae el borde
+    /// suelto (tras 6 s, ya quieto). Una capa ligera pero firme (como una entretela) hace que caiga
+    /// menos; dos capas iguales no, porque doblan la firmeza y también el
+    /// peso.
+    #[test]
+    fn firmer_fabric_droops_less() {
+        let droop = |fabric: &Fabric| {
+            let mesh = square_mesh(100.0);
+            let mut cloth = Cloth::new();
+            cloth.add_piece(&mesh, fabric, |p| Vec3::new(p[0] as f32, 500.0, p[1] as f32) * 1e-3, Vec3::Y);
+            for (i, p) in mesh.positions.iter().enumerate() {
+                if p[0] < 30.0 {
+                    cloth.pin(i);
+                }
+            }
+            for _ in 0..360 {
+                cloth.step(1.0 / 60.0, &SimParams::default(), &[]);
+            }
+            assert!(cloth.positions.iter().all(|p| p.is_finite()));
+            0.5 - min_y(&cloth)
+        };
+        let cotton = droop(&Fabric::COTTON);
+        let denim = droop(&Fabric::DENIM);
+        let interfacing = Fabric { density: 0.05, bend_stiffness: 1e-4, ..Fabric::LINING };
+        let interfaced = droop(&Fabric::layered(&[Fabric::DENIM, interfacing]));
+        let double_denim = droop(&Fabric::layered(&[Fabric::DENIM, Fabric::DENIM]));
+        let leather = droop(&Fabric::LEATHER);
+        eprintln!(
+            "caída: algodón {cotton:.3}, vaquero {denim:.3}, vaquero con entretela {interfaced:.3}, \
+             vaquero doble {double_denim:.3}, cuero {leather:.3}"
+        );
+        assert!(cotton > 0.06, "el algodón debería caer casi entero: {cotton}");
+        assert!(cotton > denim + 0.005 && denim > interfaced + 0.01 && interfaced > leather + 0.01);
+        assert!((double_denim - denim).abs() < 0.003, "vaquero doble {double_denim}, sencillo {denim}");
+        assert!(leather < 0.03, "el cuero apenas debería caer: {leather}");
+    }
+
+    /// Una bisagra plana no tiene curvatura, la mueva como la mueva sin
+    /// doblarla; doblada, sí.
+    #[test]
+    fn flat_hinge_has_no_curvature() {
+        let x = [Vec3::ZERO, Vec3::new(0.02, 0.0, 0.0), Vec3::new(0.005, 0.017, 0.0), Vec3::new(0.013, -0.02, 0.0)];
+        let c = bend_constraint(x, 1e-5).unwrap();
+        assert!(c.k.iter().sum::<f32>().abs() < 1e-5);
+        let curvature = |x: [Vec3; 4]| (0..4).map(|i| x[i] * c.k[i]).sum::<Vec3>().length();
+        let moved = x.map(|p| glam::Quat::from_rotation_y(0.7) * p * 1.0 + Vec3::new(0.3, -0.1, 2.0));
+        assert!(curvature(moved) < 1e-6, "curvatura: {}", curvature(moved));
+        let mut folded = x;
+        folded[3].z = 0.01;
+        assert!(curvature(folded) > 1e-3);
     }
 }

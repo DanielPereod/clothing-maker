@@ -14,7 +14,8 @@ use glam::{Mat4, Vec3};
 use pattern::{Pattern, PieceId};
 
 use render::{Renderer, Vertex};
-use scene::{FabricKind, Obstacle, Placement, Runner, ScenePiece, SceneSettings};
+pub use scene::piece_fabric;
+use scene::{Obstacle, Placement, Runner, ScenePiece, SceneSettings};
 
 use crate::icons::Icon;
 use crate::{gpu, theme, widgets};
@@ -330,16 +331,6 @@ impl View3D {
                         }
                     });
                 ui.end_row();
-                widgets::prop_label(ui, "Tejido");
-                egui::ComboBox::from_id_salt("fabric")
-                    .width(110.0)
-                    .selected_text(self.settings.fabric.label())
-                    .show_ui(ui, |ui| {
-                        for kind in FabricKind::ALL {
-                            ui.selectable_value(&mut self.settings.fabric, kind, kind.label());
-                        }
-                    });
-                ui.end_row();
             });
             if self.settings.obstacle != Obstacle::Mannequin {
                 self.object_obstacle = self.settings.obstacle;
@@ -362,7 +353,7 @@ impl View3D {
             }
         });
         if self.settings != settings_before {
-            // Cambiar el tejido o la malla no desmonta la prenda.
+            // Cambiar la malla no desmonta la prenda.
             self.update_live(pattern, &color_of);
         }
     }
