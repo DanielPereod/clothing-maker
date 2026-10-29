@@ -139,7 +139,10 @@ pub struct Scene {
     /// Costuras que se dibujan en 3D (cordón, margen y pespuntes).
     pub seam_draws: Vec<SeamDraw>,
     /// Piezas que no se han podido mallar.
-    pub failed: Vec<String>,
+    pub failed: Vec<pattern::PieceId>,
+    /// Costuras cuyos lados quedan en sentidos contrarios al colocar las
+    /// piezas: al cerrarse, la tela se retuerce.
+    pub crossed: Vec<pattern::SeamId>,
     /// Costuras que se van a cerrar.
     pub seams: usize,
     /// Las piezas malladas, en el orden en que están en la tela.
@@ -300,7 +303,7 @@ pub fn build(
     for (index, (piece, mesh)) in pattern.pieces.iter().zip(&meshed.pieces).enumerate() {
         match mesh {
             Ok(mesh) => meshes.push((index, piece, mesh)),
-            Err(_) => failed.push(piece.name.clone()),
+            Err(_) => failed.push(piece.id),
         }
     }
 
@@ -411,6 +414,7 @@ pub fn build(
     let mut seams = 0;
     let mut seam_pairs = Vec::new();
     let mut seam_draws = Vec::new();
+    let mut crossed = Vec::new();
     if settings.sew {
         let mut topologies: HashMap<usize, Topology> = HashMap::new();
         for seam_mesh in &meshed.seams {
@@ -419,6 +423,16 @@ pub fn build(
             };
             seams += 1;
             let turn = if settings.sew_in_order { index as u32 } else { 0 };
+            let side_points = |side: &mesher::SeamSideMesh| -> Vec<Vec3> {
+                let base = first_particle[side.piece];
+                side.vertices.iter().map(|&v| cloth.positions[(base + v) as usize]).collect()
+            };
+            if let Some((first, rest)) = seam_mesh.sides.split_first() {
+                let a = side_points(first);
+                if rest.iter().any(|b| runs_backwards(&a, &side_points(b))) {
+                    crossed.push(seam.id);
+                }
+            }
             // Cada punto se une con el mismo punto de todos los demás lados.
             for (i, a) in seam_mesh.sides.iter().enumerate() {
                 for b in &seam_mesh.sides[i + 1..] {
@@ -520,7 +534,24 @@ pub fn build(
 
     let mut colliders = vec![Collider::ground(0.0)];
     colliders.extend(settings.obstacle.collider());
-    Scene { cloth, colliders, colors, back_colors, seam_draws, failed, seams, pieces, seam_pairs }
+    Scene { cloth, colliders, colors, back_colors, seam_draws, failed, crossed, seams, pieces, seam_pairs }
+}
+
+/// Si dos lados de una costura, tal como quedan colocados, corren en
+/// sentidos contrarios: al cerrarse, la tela se retuerce. En los lados casi
+/// rectos se mira el sentido de cada uno; en los muy curvos (una sisa, una
+/// boca redonda), si cada punto queda mucho más cerca del punto del otro
+/// extremo que del suyo.
+fn runs_backwards(a: &[Vec3], b: &[Vec3]) -> bool {
+    let chord = |s: &[Vec3]| s[s.len() - 1] - s[0];
+    let length = |s: &[Vec3]| s.windows(2).map(|w| w[0].distance(w[1])).sum::<f32>();
+    let (ca, cb) = (chord(a), chord(b));
+    if ca.length() > 0.5 * length(a) && cb.length() > 0.5 * length(b) {
+        return ca.dot(cb) < -0.5 * ca.length() * cb.length();
+    }
+    let straight: f32 = a.iter().zip(b).map(|(p, q)| p.distance(*q)).sum();
+    let reversed: f32 = a.iter().zip(b.iter().rev()).map(|(p, q)| p.distance(*q)).sum();
+    reversed < straight * 0.7
 }
 
 /// Vecinos de cada vértice de una malla y cuáles están en el borde.
@@ -1087,6 +1118,34 @@ mod tests {
     /// Como en la aplicación: las prendas, sobre el maniquí.
     fn settings_for(make: fn() -> Pattern, settings: SceneSettings) -> SceneSettings {
         if make().on_avatar { SceneSettings { obstacle: Obstacle::Mannequin, ..settings } } else { settings }
+    }
+
+    /// Ninguna costura de los ejemplos se retuerce, se coloquen como se
+    /// coloquen; con un lado al revés, sí, y se avisa.
+    #[test]
+    fn crossed_seams_are_reported() {
+        for (name, _, make) in examples::ALL {
+            for placement in Placement::ALL {
+                let settings = settings_for(make, SceneSettings { placement, mesh_size: 30.0, ..Default::default() });
+                let scene = build_example(make, &settings);
+                assert!(scene.crossed.is_empty(), "{name}, {}: {:?}", placement.label(), scene.crossed);
+            }
+        }
+        // En las bolsas, cualquier costura con un lado al revés se ve.
+        for make in
+            [examples::tote_bag, examples::box_bag, examples::leather_bag, examples::cushion, examples::chalk_bag]
+        {
+            let base = make();
+            for k in 0..base.seams.len() {
+                let mut pattern = base.clone();
+                let seam = &mut pattern.seams[k];
+                seam.sides[1].reversed = !seam.sides[1].reversed;
+                let id = seam.id;
+                let settings = SceneSettings { mesh_size: 30.0, ..Default::default() };
+                let scene = build(&pattern, &settings, |_| egui::Color32::WHITE);
+                assert_eq!(scene.crossed, [id], "{}, «{}»", base.name, base.seams[k].name);
+            }
+        }
     }
 
     /// Colocadas alrededor, los dos lados de cada costura de los ejemplos

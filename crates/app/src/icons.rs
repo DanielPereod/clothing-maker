@@ -39,6 +39,9 @@ pub enum Icon {
     Flip,
     Order,
     Highlight,
+    Fabric,
+    Layer,
+    Placement,
 }
 
 /// Dibuja `icon` dentro de `rect` (se usa el cuadrado central).
@@ -272,6 +275,30 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             // Una costura resaltada sobre la tela.
             closed(&[(0.12, 0.25), (0.88, 0.25), (0.88, 0.75), (0.12, 0.75)], fill_soft);
             painter.line_segment([p(0.5, 0.18), p(0.5, 0.82)], Stroke::new(w * 2.0, color));
+        }
+        Icon::Fabric => {
+            // Una muestra de tela con el borde picado y su trama.
+            let mut outline = vec![(0.82, 0.18), (0.18, 0.18), (0.18, 0.78)];
+            for k in 0..=8 {
+                let x = 0.18 + 0.64 * k as f32 / 8.0;
+                outline.push((x, if k % 2 == 0 { 0.78 } else { 0.86 }));
+            }
+            outline.push((0.82, 0.18));
+            line(&outline);
+            line(&[(0.32, 0.18), (0.18, 0.32)]);
+            line(&[(0.56, 0.18), (0.18, 0.56)]);
+            line(&[(0.82, 0.30), (0.40, 0.72)]);
+        }
+        Icon::Layer => {
+            // Dos telas una sobre otra.
+            closed(&[(0.30, 0.18), (0.88, 0.18), (0.88, 0.62), (0.30, 0.62)], fill_soft);
+            closed(&[(0.12, 0.38), (0.70, 0.38), (0.70, 0.82), (0.12, 0.82)], color.gamma_multiply(0.5));
+        }
+        Icon::Placement => {
+            // Una caja vista en perspectiva: dónde va cada pieza en 3D.
+            closed(&[(0.5, 0.14), (0.86, 0.30), (0.5, 0.46), (0.14, 0.30)], fill_soft);
+            line(&[(0.14, 0.30), (0.14, 0.70), (0.5, 0.86), (0.86, 0.70), (0.86, 0.30)]);
+            line(&[(0.5, 0.46), (0.5, 0.86)]);
         }
         Icon::Mannequin => {
             painter.circle_stroke(p(0.5, 0.20), size * 0.09, stroke);

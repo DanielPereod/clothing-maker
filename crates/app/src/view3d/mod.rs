@@ -19,6 +19,7 @@ pub use scene::piece_fabric;
 use scene::{Obstacle, Placement, Runner, ScenePiece, SceneSettings, SeamDraw};
 
 use crate::icons::Icon;
+use crate::stages::SceneReport;
 use crate::{gpu, theme, widgets};
 
 /// Tiempo mínimo entre dos actualizaciones en vivo: mallar y montar la
@@ -105,7 +106,8 @@ struct Loaded {
     colors: Vec<[f32; 3]>,
     back_colors: Vec<[f32; 3]>,
     seam_draws: Vec<SeamDraw>,
-    failed: Vec<String>,
+    failed: Vec<PieceId>,
+    crossed: Vec<pattern::SeamId>,
     seams: usize,
     pieces: Vec<ScenePiece>,
 }
@@ -193,7 +195,7 @@ impl View3D {
             // Mientras se edita, una pieza puede quedar sin poder mallarse
             // (un contorno que se cruza): se espera a que vuelva a estar bien
             // en vez de quitarla de la prenda.
-            if scene.failed.iter().any(|name| !loaded.failed.contains(name)) {
+            if scene.failed.iter().any(|id| !loaded.failed.contains(id)) {
                 self.rejected = Some(pattern.clone());
                 return;
             }
@@ -224,6 +226,7 @@ impl View3D {
             back_colors: scene.back_colors,
             seam_draws: scene.seam_draws,
             failed: scene.failed,
+            crossed: scene.crossed,
             seams: scene.seams,
             pieces: scene.pieces,
         });
@@ -257,6 +260,9 @@ impl View3D {
             let wait = LIVE_INTERVAL.saturating_sub(self.last_live.elapsed());
             if wait.is_zero() {
                 self.update_live(pattern, &color_of);
+                // Las comprobaciones miran la escena nueva en el siguiente
+                // fotograma, aunque la simulación esté en pausa.
+                ctx.request_repaint();
             } else {
                 ctx.request_repaint_after(wait);
             }
@@ -288,6 +294,14 @@ impl View3D {
         self.runner.set_running(true);
     }
 
+    /// Lo que se ha visto al montar la escena: piezas que no se han podido
+    /// mallar y costuras que se retuercen al colocar las piezas.
+    pub fn report(&self) -> SceneReport {
+        self.loaded
+            .as_ref()
+            .map_or_else(SceneReport::default, |l| SceneReport { failed: l.failed.clone(), crossed: l.crossed.clone() })
+    }
+
     /// Vuelve a la cámara inicial.
     pub fn home(&mut self) {
         self.fly_to(self.home);
@@ -297,7 +311,49 @@ impl View3D {
         self.fly = Some(viewcube::Fly::new(self.camera, to));
     }
 
-    /// Grupos de la pestaña «Simulación» de la cinta.
+    /// Grupos de la etapa «Colocación» de la cinta: cómo se colocan las
+    /// piezas antes de coser y ver esa colocación en 3D.
+    pub fn placement_ribbon(&mut self, ui: &mut Ui, pattern: &Pattern, color_of: impl Fn(PieceId) -> Color32) {
+        let settings_before = self.settings;
+        widgets::ribbon_group(ui, "COLOCAR", false, |ui, _| {
+            ui.vertical(|ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    widgets::prop_label(ui, "Modo");
+                    egui::ComboBox::from_id_salt("placement")
+                        .width(130.0)
+                        .selected_text(self.settings.placement.label())
+                        .show_ui(ui, |ui| {
+                            for placement in Placement::ALL {
+                                ui.selectable_value(&mut self.settings.placement, placement, placement.label())
+                                    .on_hover_text(placement.hint());
+                            }
+                        });
+                });
+                ui.checkbox(&mut self.settings.sew, "Coser las costuras")
+                    .on_hover_text("Cierra las costuras del patrón");
+            });
+        });
+        widgets::ribbon_group(ui, "VER", false, |ui, _| {
+            if widgets::ribbon_button(ui, Icon::Placement, "Colocación", false, true)
+                .on_hover_text("Vuelve a colocar las piezas y para, para ver dónde empieza cada una antes de coser")
+                .clicked()
+            {
+                self.reload(pattern, &color_of);
+                self.runner.set_running(false);
+            }
+            let running = self.runner.is_running();
+            let (icon, label) = if running { (Icon::Pause, "Pausa") } else { (Icon::Play, "Coser") };
+            if widgets::ribbon_button(ui, icon, label, running, true).clicked() {
+                self.toggle_running(pattern, &color_of);
+            }
+        });
+        if self.settings != settings_before {
+            self.update_live(pattern, &color_of);
+        }
+    }
+
+    /// Grupos de la etapa «Simulación» de la cinta.
     pub fn ribbon(&mut self, ui: &mut Ui, pattern: &Pattern, color_of: impl Fn(PieceId) -> Color32) {
         let settings_before = self.settings;
         let running = self.runner.is_running();
@@ -318,25 +374,6 @@ impl View3D {
             {
                 self.live = !self.live;
             }
-        });
-        widgets::ribbon_group(ui, "MONTAJE", false, |ui, _| {
-            ui.vertical(|ui| {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    widgets::prop_label(ui, "Colocación");
-                    egui::ComboBox::from_id_salt("placement")
-                        .width(130.0)
-                        .selected_text(self.settings.placement.label())
-                        .show_ui(ui, |ui| {
-                            for placement in Placement::ALL {
-                                ui.selectable_value(&mut self.settings.placement, placement, placement.label())
-                                    .on_hover_text(placement.hint());
-                            }
-                        });
-                });
-                ui.checkbox(&mut self.settings.sew, "Coser las costuras")
-                    .on_hover_text("Cierra las costuras del patrón");
-            });
         });
         widgets::ribbon_group(ui, "ENTORNO", false, |ui, _| {
             egui::Grid::new("environment").num_columns(2).spacing(egui::vec2(6.0, 2.0)).show(ui, |ui| {
@@ -402,7 +439,9 @@ impl View3D {
         let Some(loaded) = self.loaded.as_ref() else { return };
         let stats = self.runner.stats();
         if !loaded.failed.is_empty() {
-            ui.colored_label(theme::ERROR, format!("No se han podido mallar: {}", loaded.failed.join(", ")));
+            let names: Vec<&str> =
+                loaded.failed.iter().filter_map(|&id| pattern.piece(id)).map(|p| p.name.as_str()).collect();
+            ui.colored_label(theme::ERROR, format!("No se han podido mallar: {}", names.join(", ")));
         } else if self.rejected.as_ref() == Some(pattern) {
             ui.colored_label(
                 theme::WARN,
@@ -549,7 +588,7 @@ impl View3D {
             ui.painter_at(rect).text(
                 rect.center_top() + egui::vec2(0.0, 16.0),
                 egui::Align2::CENTER_TOP,
-                "En pausa: pulsa Simular para coser",
+                "En pausa: pulsa ▶ para coser",
                 egui::FontId::proportional(14.0),
                 ui.visuals().strong_text_color(),
             );

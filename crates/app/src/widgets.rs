@@ -316,12 +316,17 @@ pub fn tree_icon_row(ui: &mut Ui, icon: Icon, label: &str, detail: Option<&str>)
     response
 }
 
-/// Pestaña de la cinta (espacio de trabajo).
-pub fn tab(ui: &mut Ui, label: &str, active: bool) -> Response {
+/// Pestaña de una etapa de trabajo en la cinta: su número, su nombre y,
+/// si tiene algo pendiente, cuántas cosas.
+pub fn stage_tab(ui: &mut Ui, number: usize, label: &str, pending: usize, active: bool) -> Response {
     let font = FontId::proportional(11.5);
-    let color = if active { Color32::WHITE } else { theme::TEXT_WEAK };
-    let galley = ui.painter().layout_no_wrap(label.to_uppercase(), font, color);
-    let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x + 24.0, 26.0), Sense::click());
+    let hovered_color = |hovered: bool| if active || hovered { Color32::WHITE } else { theme::TEXT_WEAK };
+    let galley = ui.painter().layout_no_wrap(label.to_uppercase(), font.clone(), Color32::PLACEHOLDER);
+    let badge = (pending > 0)
+        .then(|| ui.painter().layout_no_wrap(pending.to_string(), FontId::proportional(10.0), Color32::PLACEHOLDER));
+    let badge_width = badge.as_ref().map_or(0.0, |b| b.size().x.max(8.0) + 14.0);
+    let size = vec2(galley.size().x + 50.0 + badge_width, 26.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let painter = ui.painter();
     if active {
         painter.rect_filled(rect, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, theme::RIBBON);
@@ -329,7 +334,27 @@ pub fn tab(ui: &mut Ui, label: &str, active: bool) -> Response {
     } else if response.hovered() {
         painter.rect_filled(rect, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, Color32::from_white_alpha(10));
     }
-    let hovered = response.hovered();
-    painter.galley(rect.center() - galley.size() / 2.0, galley, if hovered { Color32::WHITE } else { color });
+    let color = hovered_color(response.hovered());
+    let circle = rect.left_center() + vec2(20.0, 0.0);
+    if active {
+        painter.circle_filled(circle, 8.0, theme::ACCENT);
+    } else {
+        painter.circle_stroke(circle, 7.5, Stroke::new(1.0, color));
+    }
+    painter.text(circle, Align2::CENTER_CENTER, number.to_string(), FontId::proportional(10.5), color);
+    let text_pos = rect.left_center() + vec2(34.0, -galley.size().y / 2.0);
+    painter.galley(text_pos, galley, color);
+    if let Some(badge) = badge {
+        let center = rect.right_center() - vec2(10.0 + (badge.size().x.max(8.0) + 6.0) / 2.0, 0.0);
+        let pill = Rect::from_center_size(center, vec2(badge.size().x.max(8.0) + 6.0, 15.0));
+        painter.rect_filled(pill, 7.5, theme::WARN);
+        painter.galley(center - badge.size() / 2.0, badge, Color32::BLACK);
+    }
     response
+}
+
+/// Flecha entre dos pestañas de etapa: se hacen en ese orden.
+pub fn stage_arrow(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(vec2(12.0, 26.0), Sense::hover());
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "›", FontId::proportional(14.0), theme::TEXT_WEAK);
 }
