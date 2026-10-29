@@ -4,7 +4,7 @@
 //! quien mira), así que dos piezas vecinas recorren su borde común en
 //! sentidos contrarios y uno de los dos lados de cada costura va invertido.
 
-use pattern::{Arrangement, BodyZone, EdgeKind, Pattern, PieceId, Point, SeamSide, Vec2};
+use pattern::{Arrangement, BodyZone, EdgeKind, Pattern, PieceId, Point, SeamSide, Textile, TextileId, Vec2};
 
 /// Camiseta básica: delantero y espalda con escote y sisas curvas, unidos
 /// por hombros y costados.
@@ -186,6 +186,96 @@ pub fn leather_bag() -> Pattern {
     p
 }
 
+/// Chalk bag (bolsa de magnesio de escalada), del patrón de Christian
+/// Halling. Las medidas son las del patrón menos su margen de 3/8" (9,5 mm),
+/// así que las piezas van dibujadas por la línea de costura.
+///
+/// El cuerpo (piezas 1.1 y 1.2) y la base redonda (2) son de tela
+/// decorativa con refuerzo de lona; el forro de pelo (3 y 4) va como capa de
+/// esas mismas piezas. El puño de punto (5) se dobla por la mitad, así que
+/// lleva dos capas de punto; en la bolsa real va algo estirado para cerrar
+/// la boca y aquí se dibuja ya del ancho del cuerpo.
+pub fn chalk_bag() -> Pattern {
+    const SEAM_ALLOWANCE: f64 = 9.5;
+    // La mitad del cuerpo mide 200 × 152,5 mm con margen; el margen solo va
+    // en el costado, porque el centro se corta al doblez.
+    let (w, h) = (200.0 - SEAM_ALLOWANCE, 152.5 - 2.0 * SEAM_ALLOWANCE);
+    let radius = (140.0 - 2.0 * SEAM_ALLOWANCE) / 2.0;
+    // El puño mide 152,5 mm de alto antes de doblarlo.
+    let cuff = (152.5 - 2.0 * SEAM_ALLOWANCE) / 2.0;
+
+    let mut p = Pattern::new("Chalk bag");
+    let fur = TextileId(p.textiles.iter().map(|t| t.id.0).max().unwrap_or(0) + 1);
+    p.textiles.push(Textile {
+        id: fur,
+        name: "Pelo sintético".into(),
+        firmness: 30.0,
+        weight: 300.0,
+        stretch: 40.0,
+        friction: 0.6,
+        thickness: 6.0,
+    });
+    let named = |p: &Pattern, name: &str| p.textiles.iter().find(|t| t.name == name).expect("tela genérica").id;
+    let (cotton, canvas, knit) = (named(&p, "Algodón"), named(&p, "Lona"), named(&p, "Punto"));
+
+    // Cuerpo con el fondo partido por la mitad, para coser cada mitad a un
+    // cuarto de la base: 0 boca, 1 derecha, 2 y 3 fondo, 4 izquierda.
+    let body = |p: &mut Pattern, name: &str, x: f64| {
+        let pts =
+            [(0.0, 0.0), (w, 0.0), (w, h), (w / 2.0, h), (0.0, h)].map(|(px, py)| Point::new(x + px, cuff + 20.0 + py));
+        p.add_polygon(name, pts.to_vec())
+    };
+    let front = body(&mut p, "Cuerpo delantero (1.1)", 0.0);
+    let back = body(&mut p, "Cuerpo trasero (1.2)", w + 50.0);
+    let front_cuff = p.add_rect("Puño delantero (5.1)", Point::ZERO, w, cuff);
+    let back_cuff = p.add_rect("Puño trasero (5.2)", Point::new(w + 50.0, 0.0), w, cuff);
+
+    // Base: un círculo de cuatro cuartos. Las aristas 3 y 0 (la mitad de
+    // arriba del dibujo) caen delante.
+    let c = Point::new(w + 25.0, cuff + h + 40.0 + radius);
+    let pts = [(0.0, -radius), (radius, 0.0), (0.0, radius), (-radius, 0.0)].map(|(x, y)| c + Vec2::new(x, y));
+    let base = p.add_polygon("Base (2)", pts.to_vec());
+    let piece = p.piece_mut(base).unwrap();
+    piece.arrangement = Arrangement::Bottom;
+    // Manejadores de una Bézier que aproxima un cuarto de círculo.
+    let k = radius * 0.552_284_75;
+    let quarter = |from: Point| {
+        // Tangente en el sentido del contorno (horario en pantalla).
+        let to_center = c - from;
+        Vec2::new(to_center.y, -to_center.x).normalize() * k
+    };
+    for i in 0..4 {
+        let (a, b) = (pts[i], pts[(i + 1) % 4]);
+        piece.set_edge_kind(i, EdgeKind::Cubic { h1: quarter(a), h2: -quarter(b) });
+    }
+
+    for id in [back, back_cuff] {
+        p.piece_mut(id).unwrap().arrangement = Arrangement::Back;
+    }
+    for id in [front, back, base] {
+        let piece = p.piece_mut(id).unwrap();
+        piece.fabric = cotton;
+        piece.layers = vec![canvas, fur];
+    }
+    for id in [front_cuff, back_cuff] {
+        let piece = p.piece_mut(id).unwrap();
+        piece.fabric = knit;
+        piece.layers = vec![knit];
+    }
+
+    sew(&mut p, "Costado dcho.", &[(front, 1, false), (back, 4, true)]);
+    sew(&mut p, "Costado izdo.", &[(front, 4, false), (back, 1, true)]);
+    sew(&mut p, "Base delantera dcha.", &[(front, 2, false), (base, 0, true)]);
+    sew(&mut p, "Base delantera izda.", &[(front, 3, false), (base, 3, true)]);
+    sew(&mut p, "Base trasera izda.", &[(back, 2, false), (base, 2, true)]);
+    sew(&mut p, "Base trasera dcha.", &[(back, 3, false), (base, 1, true)]);
+    sew(&mut p, "Puño delantero", &[(front_cuff, BOTTOM, false), (front, 0, true)]);
+    sew(&mut p, "Puño trasero", &[(back_cuff, BOTTOM, false), (back, 0, true)]);
+    sew(&mut p, "Costado dcho. del puño", &[(front_cuff, RIGHT, false), (back_cuff, LEFT, true)]);
+    sew(&mut p, "Costado izdo. del puño", &[(front_cuff, LEFT, false), (back_cuff, RIGHT, true)]);
+    p
+}
+
 /// Cose las aristas dadas por (pieza, índice de arista, invertida).
 fn sew(p: &mut Pattern, name: &str, sides: &[(PieceId, usize, bool)]) {
     let sides = sides
@@ -199,13 +289,14 @@ fn sew(p: &mut Pattern, name: &str, sides: &[(PieceId, usize, bool)]) {
 pub type Example = (&'static str, &'static str, fn() -> Pattern);
 
 /// Todos los ejemplos.
-pub const ALL: [Example; 6] = [
+pub const ALL: [Example; 7] = [
     ("Camiseta básica", "camiseta-basica", t_shirt),
     ("Camiseta con mangas", "camiseta-con-mangas", t_shirt_with_sleeves),
     ("Bolsa tote", "bolsa-tote", tote_bag),
     ("Bolsa con fondo", "bolsa-con-fondo", box_bag),
     ("Bolso de cuero con forro", "bolso-de-cuero", leather_bag),
     ("Cojín", "cojin", cushion),
+    ("Chalk bag de escalada", "chalk-bag", chalk_bag),
 ];
 
 #[cfg(test)]
