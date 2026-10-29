@@ -20,6 +20,9 @@
 //!   velocidad constante hasta cero ([`SimParams::sew_speed`]), así que las
 //!   piezas se acercan poco a poco en vez de saltar. Mientras se cose no hay
 //!   gravedad, para que las piezas no se caigan antes de estar unidas.
+//! - **Auto-colisión** ([`SimParams::self_collision`]): las partículas no
+//!   se acercan a menos de una separación mínima de los triángulos de la
+//!   propia tela, así que los paneles no se atraviesan entre sí.
 //!
 //! Las restricciones se reparten en «colores» (grupos sin partículas en
 //! común) para resolver cada grupo en paralelo con `rayon`.
@@ -28,9 +31,12 @@
 //! convierten al añadirlas.
 
 mod collider;
+mod remap;
 mod sdf;
+mod self_collision;
 
 pub use collider::Collider;
+pub use remap::Remap;
 pub use sdf::MeshSdf;
 
 use glam::Vec3;
@@ -43,6 +49,9 @@ use std::collections::HashMap;
 /// subpaso lo hace una vez por color. Con las mallas habituales (unos miles
 /// de partículas) todo va en serie; el paralelismo entra con mallas finas.
 const PAR_MIN_LEN: usize = 16_384;
+
+/// Cada cuántos subpasos se buscan los pares de la auto-colisión.
+const SELF_COLLISION_EVERY: u32 = 5;
 
 /// Propiedades físicas de un tejido.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -103,11 +112,13 @@ pub struct SimParams {
     pub damping: f32,
     /// Velocidad (m/s) a la que se cierran las costuras.
     pub sew_speed: f32,
+    /// Evitar que la tela se atraviese a sí misma.
+    pub self_collision: bool,
 }
 
 impl Default for SimParams {
     fn default() -> Self {
-        Self { gravity: Vec3::new(0.0, -9.81, 0.0), substeps: 20, damping: 0.5, sew_speed: 0.4 }
+        Self { gravity: Vec3::new(0.0, -9.81, 0.0), substeps: 20, damping: 0.5, sew_speed: 0.4, self_collision: true }
     }
 }
 
@@ -136,6 +147,12 @@ pub struct Cloth {
     scratch: Vec<(Vec3, Vec3)>,
     /// Normal y profundidad del contacto de cada partícula en este subpaso.
     contacts: Vec<(Vec3, f32)>,
+    /// Aristas de la malla y su longitud en reposo (m).
+    mesh_edges: Vec<[u32; 2]>,
+    rest_edges: Vec<f32>,
+    /// Posición en el patrón (m) y pieza de cada partícula.
+    rest: Vec<(Vec3, u32)>,
+    self_collision: self_collision::SelfCollision,
 }
 
 impl Cloth {
@@ -197,7 +214,10 @@ impl Cloth {
             compliance,
         };
         for [a, b] in mesh.edges() {
-            self.pending.push(distance(a, b, fabric.stretch_compliance));
+            let c = distance(a, b, fabric.stretch_compliance);
+            self.mesh_edges.push([c.a, c.b]);
+            self.rest_edges.push(c.rest_length);
+            self.pending.push(c);
         }
         for [a, b] in bending_pairs(&triangles) {
             self.pending.push(distance(a, b, fabric.bend_compliance));
@@ -210,6 +230,8 @@ impl Cloth {
         self.inv_mass.extend(mass.iter().map(|&m| if m > 0.0 { 1.0 / m } else { 0.0 }));
         self.friction.extend(std::iter::repeat_n(fabric.friction, n));
         self.thickness.extend(std::iter::repeat_n(fabric.thickness, n));
+        let piece = self.pieces.len() as u32;
+        self.rest.extend(rest.iter().map(|&r| (r, piece)));
         self.triangles.extend(triangles.iter().map(|t| t.map(|i| i + base)));
         let range = PieceRange {
             first_particle: base,
@@ -218,6 +240,7 @@ impl Cloth {
             triangle_count: triangles.len() as u32,
         };
         self.pieces.push(range);
+        self.self_collision.dirty = true;
         range
     }
 
@@ -239,6 +262,13 @@ impl Cloth {
         }
         let rest_length = self.positions[a as usize].distance(self.positions[b as usize]);
         self.seams.push(DistanceConstraint { a, b, rest_length, compliance: 0.0 });
+        self.self_collision.dirty = true;
+    }
+
+    /// Quita todas las costuras.
+    pub fn clear_seams(&mut self) {
+        self.seams.clear();
+        self.self_collision.dirty = true;
     }
 
     pub fn seam_count(&self) -> usize {
@@ -273,7 +303,14 @@ impl Cloth {
         let damping = (1.0 - params.damping.clamp(0.0, 1.0)).powf(h);
         let parallel = self.positions.len() >= PAR_MIN_LEN;
         self.contacts.resize(self.positions.len(), (Vec3::ZERO, 0.0));
-        for _ in 0..substeps {
+        for substep in 0..substeps {
+            // Buscar pares para todo el paso costaría mucho cuando la tela se
+            // mueve deprisa (habría que mirar muy lejos): se buscan cada
+            // pocos subpasos.
+            if params.self_collision && substep % SELF_COLLISION_EVERY == 0 {
+                let span = SELF_COLLISION_EVERY.min(substeps - substep) as f32 * h;
+                self.gather_self_contacts(span, params.gravity.length());
+            }
             let gravity = if self.is_sewing() { Vec3::ZERO } else { params.gravity };
             let shrink = params.sew_speed.max(0.0) * h;
             for c in &mut self.seams {
@@ -301,6 +338,9 @@ impl Cloth {
             self.solve_collisions(colliders, parallel);
             self.solve_distances(h);
             self.solve_seams(h);
+            if params.self_collision {
+                self.self_collision.solve(&mut self.positions, &self.prev_positions, &self.inv_mass, &self.triangles);
+            }
             self.apply_friction(parallel);
             let update = |(v, x, prev): (&mut Vec3, &Vec3, &Vec3)| *v = (*x - *prev) / h * damping;
             if parallel {
@@ -313,6 +353,55 @@ impl Cloth {
                     .for_each(|((v, x), p)| update((v, x, p)));
             }
         }
+    }
+
+    fn rebuild_self_collision(&mut self) {
+        if self.self_collision.dirty {
+            let seams: Vec<[u32; 2]> = self.seams.iter().map(|c| [c.a, c.b]).collect();
+            self.self_collision.rebuild(self_collision::Topology {
+                particles: self.positions.len(),
+                triangles: &self.triangles,
+                seams: &seams,
+                rest_edges: &self.rest_edges,
+                rest: &self.rest,
+            });
+        }
+    }
+
+    fn gather_self_contacts(&mut self, dt: f32, gravity: f32) {
+        self.rebuild_self_collision();
+        // Lo que puede llegar a moverse cada partícula hasta la próxima
+        // búsqueda, con holgura.
+        let travel: Vec<f32> =
+            self.velocities.iter().map(|v| ((v.length() * dt + gravity * dt * dt) * 1.5).min(0.1)).collect();
+        self.self_collision.gather(&self.positions, &travel, &self.inv_mass, &self.thickness, &self.triangles);
+    }
+
+    /// Número de pares partícula-triángulo vigilados en el último paso.
+    pub fn self_contact_count(&self) -> usize {
+        self.self_collision.contacts.len()
+    }
+
+    /// Cuántas aristas de la malla atraviesan un triángulo que no es vecino
+    /// suyo: 0 si la tela no se cruza consigo misma. Es lento (compara todo
+    /// con todo); sirve para las pruebas.
+    pub fn count_crossings(&mut self) -> usize {
+        self.rebuild_self_collision();
+        let positions = &self.positions;
+        self.mesh_edges
+            .par_iter()
+            .map(|&[a, b]| {
+                let (p, q) = (positions[a as usize], positions[b as usize]);
+                self.triangles
+                    .iter()
+                    .filter(|t| {
+                        !self.self_collision.adjacent(a, t)
+                            && !self.self_collision.adjacent(b, t)
+                            && self_collision::segment_hits_triangle(p, q, t.map(|v| positions[v as usize]))
+                    })
+                    .count()
+            })
+            .sum()
     }
 
     /// Reparte las restricciones en grupos sin partículas compartidas
@@ -354,7 +443,8 @@ impl Cloth {
 
     fn solve_distances(&mut self, h: f32) {
         let inv_h2 = 1.0 / (h * h);
-        let groups = self.colors.len() - 1;
+        // Sin restricciones (una tela vacía) no hay ningún grupo.
+        let groups = self.colors.len().saturating_sub(1);
         for k in 0..groups {
             let range = self.colors[k]..self.colors[k + 1];
             if range.is_empty() {
@@ -532,6 +622,14 @@ mod tests {
         assert!(lowest < -0.15 && lowest > -0.31, "punto más bajo: {lowest}");
     }
 
+    /// Un patrón sin piezas da una tela vacía: simularla no hace nada.
+    #[test]
+    fn empty_cloth_steps() {
+        let mut cloth = Cloth::new();
+        cloth.step(1.0 / 60.0, &SimParams::default(), &[Collider::ground(0.0)]);
+        assert!(cloth.positions.is_empty());
+    }
+
     #[test]
     fn coloring_has_no_shared_particles() {
         let mut cloth = Cloth::from_mesh(&square_mesh(300.0), &Fabric::COTTON);
@@ -663,6 +761,32 @@ mod tests {
         let cloth = drop_square(ball, &Fabric::COTTON);
         assert!((max_y(&cloth) - 0.403).abs() < 0.01, "altura máxima: {}", max_y(&cloth));
         assert!(min_y(&cloth) < 0.01, "punto más bajo: {}", min_y(&cloth));
+    }
+
+    /// Dos cuadrados (de 40 y 30 cm) que caen uno encima de otro sobre el
+    /// suelo: con auto-colisión el de arriba queda encima, separado; sin
+    /// ella, se mezclan a la misma altura.
+    #[test]
+    fn stacked_layers_do_not_pass_through() {
+        let drop = |self_collision: bool| {
+            let mut cloth = Cloth::new();
+            let place = |size: f32, y: f32| {
+                move |p: [f64; 2]| Vec3::new(p[0] as f32 * 1e-3 - size / 2.0, y, p[1] as f32 * 1e-3 - size / 2.0)
+            };
+            cloth.add_piece(&square_mesh(400.0), &Fabric::COTTON, place(0.4, 0.1), Vec3::Y);
+            let top = cloth.add_piece(&square_mesh(300.0), &Fabric::COTTON, place(0.3, 0.2), Vec3::Y);
+            let params = SimParams { self_collision, ..Default::default() };
+            for _ in 0..180 {
+                cloth.step(1.0 / 60.0, &params, &[Collider::ground(0.0)]);
+            }
+            assert!(cloth.positions.iter().all(|p| p.is_finite()));
+            let range = top.first_particle as usize..(top.first_particle + top.particle_count) as usize;
+            cloth.positions[range].iter().map(|p| p.y).fold(f32::INFINITY, f32::min)
+        };
+        let with = drop(true);
+        assert!(with > 0.0075, "la capa de arriba ha atravesado la de abajo: {with}");
+        let without = drop(false);
+        assert!(without < 0.005, "sin auto-colisión deberían mezclarse: {without}");
     }
 
     /// Una tira de 45 cm sobre el borde de una mesa con 10 cm colgando: el
