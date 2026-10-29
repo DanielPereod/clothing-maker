@@ -1,0 +1,154 @@
+{
+  "format": "clothing-maker/pattern",
+  "version": 1,
+  "pattern": {
+    "name": "Cojín",
+    "pieces": [
+      {
+        "id": 1,
+        "name": "Delantero",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 0.0
+          },
+          {
+            "x": 400.0,
+            "y": 0.0
+          },
+          {
+            "x": 400.0,
+            "y": 400.0
+          },
+          {
+            "x": 0.0,
+            "y": 400.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 2,
+            "type": "line"
+          },
+          {
+            "id": 3,
+            "type": "line"
+          },
+          {
+            "id": 4,
+            "type": "line"
+          },
+          {
+            "id": 5,
+            "type": "line"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "name": "Trasero",
+        "vertices": [
+          {
+            "x": 450.0,
+            "y": 0.0
+          },
+          {
+            "x": 850.0,
+            "y": 0.0
+          },
+          {
+            "x": 850.0,
+            "y": 400.0
+          },
+          {
+            "x": 450.0,
+            "y": 400.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 7,
+            "type": "line"
+          },
+          {
+            "id": 8,
+            "type": "line"
+          },
+          {
+            "id": 9,
+            "type": "line"
+          },
+          {
+            "id": 10,
+            "type": "line"
+          }
+        ],
+        "arrangement": "back"
+      }
+    ],
+    "seams": [
+      {
+        "id": 11,
+        "name": "Arriba",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 2
+          },
+          {
+            "piece": 6,
+            "edge": 7,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 12,
+        "name": "Lado dcho.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 3
+          },
+          {
+            "piece": 6,
+            "edge": 10,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 13,
+        "name": "Abajo",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 4
+          },
+          {
+            "piece": 6,
+            "edge": 9,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 14,
+        "name": "Lado izdo.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 5
+          },
+          {
+            "piece": 6,
+            "edge": 8,
+            "reversed": true
+          }
+        ]
+      }
+    ],
+    "pressure": 30.0,
+    "next_id": 15
+  }
+}

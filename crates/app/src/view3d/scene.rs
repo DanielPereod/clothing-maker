@@ -516,7 +516,8 @@ impl AroundLayout {
 // ---------------------------------------------------------------- hilo
 
 enum Command {
-    Load(u64, Box<Cloth>, Vec<Collider>, SimParams),
+    /// El último campo dice si es la misma prenda, editada.
+    Load(u64, Box<Cloth>, Vec<Collider>, SimParams, bool),
     Run(bool),
     Quit,
 }
@@ -534,6 +535,9 @@ struct Shared {
     step_ms: f32,
     /// Quedan costuras por cerrar.
     sewing: bool,
+    /// Presión aplicada (Pa) y volumen encerrado (m³).
+    pressure: f32,
+    volume: f32,
 }
 
 /// Estado de la simulación para mostrarlo.
@@ -542,6 +546,8 @@ pub struct Stats {
     pub sim_time: f32,
     pub step_ms: f32,
     pub sewing: bool,
+    pub pressure: f32,
+    pub volume: f32,
 }
 
 /// Simulación que corre en su propio hilo a 60 pasos por segundo.
@@ -581,7 +587,7 @@ impl Runner {
             shared.sewing = cloth.is_sewing();
             shared.generation
         };
-        let _ = self.commands.send(Command::Load(generation, Box::new(cloth), colliders, params));
+        let _ = self.commands.send(Command::Load(generation, Box::new(cloth), colliders, params, keep_time));
     }
 
     pub fn set_running(&mut self, running: bool) {
@@ -605,7 +611,13 @@ impl Runner {
 
     pub fn stats(&self) -> Stats {
         let shared = self.shared.lock().unwrap();
-        Stats { sim_time: shared.sim_time, step_ms: shared.step_ms, sewing: shared.sewing }
+        Stats {
+            sim_time: shared.sim_time,
+            step_ms: shared.step_ms,
+            sewing: shared.sewing,
+            pressure: shared.pressure,
+            volume: shared.volume,
+        }
     }
 }
 
@@ -630,7 +642,11 @@ fn run(rx: Receiver<Command>, shared: Arc<Mutex<Shared>>) {
             Duration::from_secs(3600)
         };
         match rx.recv_timeout(timeout) {
-            Ok(Command::Load(generation, cloth, colliders, params)) => {
+            Ok(Command::Load(generation, mut cloth, colliders, params, same)) => {
+                // La prenda editada sigue igual de hinchada.
+                if same && let Some((_, old, _, _)) = &scene {
+                    cloth.set_applied_pressure(old.applied_pressure());
+                }
                 scene = Some((generation, cloth, colliders, params));
                 next = Instant::now();
                 continue;
@@ -647,6 +663,7 @@ fn run(rx: Receiver<Command>, shared: Arc<Mutex<Shared>>) {
         let start = Instant::now();
         cloth.step(FRAME, params, colliders);
         let ms = start.elapsed().as_secs_f32() * 1000.0;
+        let volume = if cloth.applied_pressure() != 0.0 { cloth.volume() } else { 0.0 };
         {
             let mut shared = shared.lock().unwrap();
             if shared.generation != *generation {
@@ -656,6 +673,8 @@ fn run(rx: Receiver<Command>, shared: Arc<Mutex<Shared>>) {
             shared.version += 1;
             shared.sim_time += FRAME;
             shared.sewing = cloth.is_sewing();
+            shared.pressure = cloth.applied_pressure();
+            shared.volume = volume;
             shared.step_ms = if shared.step_ms == 0.0 { ms } else { shared.step_ms * 0.9 + ms * 0.1 };
         }
         // Si un paso tarda más que un fotograma, la simulación va más lenta
@@ -774,6 +793,46 @@ mod tests {
             let (with, without) = (crossings(make, true), crossings(make, false));
             eprintln!("{name}: {with} aristas cruzadas ({without} sin auto-colisión)");
             assert!(with <= without / 5, "{name}: {with} aristas cruzadas ({without} sin auto-colisión)");
+        }
+    }
+
+    /// Con relleno, la bolsa tote y el cojín se hinchan sobre la mesa: mucho
+    /// más volumen que vacíos, sin atravesar la mesa ni a sí mismos, y se
+    /// quedan encima. (Con mucha más presión la bolsa se pone redonda como
+    /// un globo y puede rodar.)
+    #[test]
+    fn pressure_gives_volume_on_the_table() {
+        let run = |make: fn() -> Pattern, pressure: f64| {
+            let mut pattern = make();
+            pattern.pressure = pressure;
+            let settings = SceneSettings { mesh_size: 30.0, ..Default::default() };
+            let mut scene = build(&pattern, &settings, |_| egui::Color32::WHITE);
+            let params = SimParams { pressure: pressure as f32, ..settings.params() };
+            for _ in 0..600 {
+                scene.cloth.step(FRAME, &params, &scene.colliders);
+            }
+            assert!(scene.cloth.positions.iter().all(|p| p.is_finite()));
+            let table = settings.obstacle.collider().unwrap();
+            let deepest =
+                scene.cloth.positions.iter().map(|p| table.signed_distance(*p).0).fold(f32::INFINITY, f32::min);
+            assert!(deepest > -1e-3, "{}: atraviesa la mesa ({deepest})", pattern.name);
+            let lowest = scene.cloth.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+            assert!(lowest > 2.0 * TABLE_HALF.y - 0.01, "{}: se ha caído de la mesa ({lowest})", pattern.name);
+            let speed = scene.cloth.velocities.iter().map(|v| v.length()).fold(0.0, f32::max);
+            (scene.cloth.volume(), scene.cloth.count_crossings(), speed)
+        };
+        for (make, pressure) in [(examples::tote_bag as fn() -> Pattern, 10.0), (examples::cushion, 30.0)] {
+            let (empty, _, _) = run(make, 0.0);
+            let (full, crossings, speed) = run(make, pressure);
+            let name = make().name;
+            eprintln!(
+                "{name}: {:.1} l vacía, {:.1} l llena, {crossings} cruces, {speed:.3} m/s",
+                empty * 1e3,
+                full * 1e3
+            );
+            assert!(full > 3.0 * empty.max(1e-3) && full > 0.008, "{name}: {empty} → {full}");
+            assert!(crossings < 20, "{name}: {crossings} aristas cruzadas");
+            assert!(speed < 0.1, "{name}: sigue moviéndose a {speed} m/s");
         }
     }
 
