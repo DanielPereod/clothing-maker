@@ -380,7 +380,9 @@
             "edge": 2,
             "reversed": true
           }
-        ]
+        ],
+        "kind": "overlocked",
+        "pressed_to": 0
       },
       {
         "id": 35,
@@ -395,7 +397,9 @@
             "edge": 8,
             "reversed": true
           }
-        ]
+        ],
+        "kind": "overlocked",
+        "pressed_to": 0
       },
       {
         "id": 36,
@@ -410,7 +414,9 @@
             "edge": 22,
             "reversed": true
           }
-        ]
+        ],
+        "kind": "overlocked",
+        "pressed_to": 0
       },
       {
         "id": 37,
@@ -425,7 +431,9 @@
             "edge": 20,
             "reversed": true
           }
-        ]
+        ],
+        "kind": "overlocked",
+        "pressed_to": 0
       }
     ],
     "textiles": [
@@ -529,6 +537,7 @@
         "thickness": 6.0
       }
     ],
+    "seam_allowance": 9.5,
     "next_id": 38
   }
 }

@@ -4,7 +4,7 @@
 //! quien mira), así que dos piezas vecinas recorren su borde común en
 //! sentidos contrarios y uno de los dos lados de cada costura va invertido.
 
-use pattern::{Arrangement, BodyZone, EdgeKind, Pattern, PieceId, Point, SeamSide, Textile, TextileId, Vec2};
+use pattern::{Arrangement, BodyZone, EdgeKind, Pattern, PieceId, Point, SeamKind, SeamSide, Textile, TextileId, Vec2};
 
 /// Camiseta básica: delantero y espalda con escote y sisas curvas, unidos
 /// por hombros y costados.
@@ -187,8 +187,9 @@ pub fn leather_bag() -> Pattern {
 }
 
 /// Chalk bag (bolsa de magnesio de escalada), del patrón de Christian
-/// Halling. Las medidas son las del patrón menos su margen de 3/8" (9,5 mm),
-/// así que las piezas van dibujadas por la línea de costura.
+/// Halling. Las piezas van dibujadas por la línea de costura, con las
+/// medidas del patrón menos su margen de 3/8" (9,5 mm), que es el margen
+/// del patrón.
 ///
 /// El cuerpo (piezas 1.1 y 1.2) y la base redonda (2) son de tela
 /// decorativa con refuerzo de lona; el forro de pelo (3 y 4) va como capa de
@@ -205,6 +206,7 @@ pub fn chalk_bag() -> Pattern {
     let cuff = (152.5 - 2.0 * SEAM_ALLOWANCE) / 2.0;
 
     let mut p = Pattern::new("Chalk bag");
+    p.seam_allowance = SEAM_ALLOWANCE;
     let fur = TextileId(p.textiles.iter().map(|t| t.id.0).max().unwrap_or(0) + 1);
     p.textiles.push(Textile {
         id: fur,
@@ -273,6 +275,12 @@ pub fn chalk_bag() -> Pattern {
     sew(&mut p, "Puño trasero", &[(back_cuff, BOTTOM, false), (back, 0, true)]);
     sew(&mut p, "Costado dcho. del puño", &[(front_cuff, RIGHT, false), (back_cuff, LEFT, true)]);
     sew(&mut p, "Costado izdo. del puño", &[(front_cuff, LEFT, false), (back_cuff, RIGHT, true)]);
+    // El punto se cose con remalladora.
+    for seam in &mut p.seams {
+        if seam.name.to_lowercase().contains("puño") {
+            seam.set_kind(SeamKind::Overlocked);
+        }
+    }
     p
 }
 
