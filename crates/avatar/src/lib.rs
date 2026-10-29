@@ -116,7 +116,7 @@ impl Avatar {
                 Some(indices) => indices.into_u32().collect(),
                 None => (0..count).collect(),
             };
-            triangles.extend(indices.chunks_exact(3).map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+            triangles.extend(indices.as_chunks::<3>().0.iter().map(|t| t.map(|i| i + base)));
         }
         if triangles.is_empty() {
             return Err(AvatarError::NoMesh);
