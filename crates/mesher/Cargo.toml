@@ -1,0 +1,13 @@
+[package]
+name = "mesher"
+description = "Triangulación de piezas de patrón en mallas 2D para la simulación."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pattern.workspace = true
+kurbo.workspace = true
+spade.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,220 @@
+{
+  "format": "clothing-maker/pattern",
+  "version": 1,
+  "pattern": {
+    "name": "Bolsa tote",
+    "pieces": [
+      {
+        "id": 1,
+        "name": "Delantero",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 0.0
+          },
+          {
+            "x": 380.0,
+            "y": 0.0
+          },
+          {
+            "x": 380.0,
+            "y": 420.0
+          },
+          {
+            "x": 0.0,
+            "y": 420.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 2,
+            "type": "line"
+          },
+          {
+            "id": 3,
+            "type": "line"
+          },
+          {
+            "id": 4,
+            "type": "line"
+          },
+          {
+            "id": 5,
+            "type": "line"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "name": "Trasero",
+        "vertices": [
+          {
+            "x": 450.0,
+            "y": 0.0
+          },
+          {
+            "x": 830.0,
+            "y": 0.0
+          },
+          {
+            "x": 830.0,
+            "y": 420.0
+          },
+          {
+            "x": 450.0,
+            "y": 420.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 7,
+            "type": "line"
+          },
+          {
+            "id": 8,
+            "type": "line"
+          },
+          {
+            "id": 9,
+            "type": "line"
+          },
+          {
+            "id": 10,
+            "type": "line"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "name": "Asa 1",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 500.0
+          },
+          {
+            "x": 600.0,
+            "y": 500.0
+          },
+          {
+            "x": 600.0,
+            "y": 560.0
+          },
+          {
+            "x": 0.0,
+            "y": 560.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 12,
+            "type": "line"
+          },
+          {
+            "id": 13,
+            "type": "line"
+          },
+          {
+            "id": 14,
+            "type": "line"
+          },
+          {
+            "id": 15,
+            "type": "line"
+          }
+        ]
+      },
+      {
+        "id": 16,
+        "name": "Asa 2",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 600.0
+          },
+          {
+            "x": 600.0,
+            "y": 600.0
+          },
+          {
+            "x": 600.0,
+            "y": 660.0
+          },
+          {
+            "x": 0.0,
+            "y": 660.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 17,
+            "type": "line"
+          },
+          {
+            "id": 18,
+            "type": "line"
+          },
+          {
+            "id": 19,
+            "type": "line"
+          },
+          {
+            "id": 20,
+            "type": "line"
+          }
+        ]
+      }
+    ],
+    "seams": [
+      {
+        "id": 21,
+        "name": "Fondo",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 4,
+            "reversed": false
+          },
+          {
+            "piece": 6,
+            "edge": 9,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 22,
+        "name": "Lateral dcho.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 3,
+            "reversed": false
+          },
+          {
+            "piece": 6,
+            "edge": 10,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 23,
+        "name": "Lateral izdo.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 5,
+            "reversed": false
+          },
+          {
+            "piece": 6,
+            "edge": 8,
+            "reversed": true
+          }
+        ]
+      }
+    ],
+    "next_id": 24
+  }
+}
