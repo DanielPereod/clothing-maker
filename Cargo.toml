@@ -21,7 +21,7 @@ spade = "2.15"
 glam = "0.34"
 rayon = "1.11"
 bytemuck = { version = "1.25", features = ["derive"] }
-eframe = { version = "0.37", features = ["persistence"] }
+eframe = { version = "0.37", features = ["persistence", "glow"] }
 rfd = "0.17"
 thiserror = "2"
 gltf = { version = "1.4", default-features = false, features = ["names", "utils"] }

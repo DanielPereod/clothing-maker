@@ -9,6 +9,7 @@ mod viewcube;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, PointerButton, Sense, Ui};
+use eframe::egui_wgpu;
 use glam::{Mat4, Vec3};
 use pattern::{Pattern, PieceId};
 
@@ -16,7 +17,7 @@ use render::{Renderer, Vertex};
 use scene::{FabricKind, Obstacle, Placement, Runner, ScenePiece, SceneSettings};
 
 use crate::icons::Icon;
-use crate::{theme, widgets};
+use crate::{gpu, theme, widgets};
 
 /// Tiempo mínimo entre dos actualizaciones en vivo: mallar y montar la
 /// escena cuesta unos milisegundos, y al arrastrar el patrón cambia en cada
@@ -107,6 +108,8 @@ struct Loaded {
 
 pub struct View3D {
     renderer: Option<Renderer>,
+    /// La tarjeta con la que se dibuja.
+    adapter: Option<egui_wgpu::wgpu::AdapterInfo>,
     runner: Runner,
     pub settings: SceneSettings,
     camera: Camera,
@@ -139,6 +142,7 @@ impl View3D {
         std::thread::spawn(avatar::mannequin);
         Self {
             renderer: cc.wgpu_render_state.as_ref().map(Renderer::new),
+            adapter: cc.wgpu_render_state.as_ref().map(|s| s.adapter.get_info()),
             runner: Runner::new(),
             settings: SceneSettings::default(),
             camera: Camera::default(),
@@ -376,6 +380,15 @@ impl View3D {
 
     /// Estado de la simulación para la barra de estado.
     pub fn status(&self, ui: &mut Ui, pattern: &Pattern) {
+        if let Some(info) = &self.adapter {
+            let (text, color) = if gpu::is_software(info) {
+                ("Sin GPU: dibujando con la CPU", theme::WARN)
+            } else {
+                (info.name.as_str(), theme::TEXT_WEAK)
+            };
+            ui.label(egui::RichText::new(text).color(color)).on_hover_text(gpu::describe(info));
+            widgets::separator_v(ui, 18.0);
+        }
         let Some(loaded) = self.loaded.as_ref() else { return };
         let stats = self.runner.stats();
         if !loaded.failed.is_empty() {
