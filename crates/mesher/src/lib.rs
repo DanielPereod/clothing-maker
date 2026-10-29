@@ -359,13 +359,18 @@ pub fn mesh_piece_with(
     // entonces se refina todo y se mira después qué triángulos son tela.
     let simple = line_handles.is_empty();
     let max_area = 3f64.sqrt() / 4.0 * target * target;
-    let result = cdt.refine(
-        RefinementParameters::<f64>::new()
-            .exclude_outer_faces(simple)
-            .keep_constraint_edges()
-            .with_max_allowed_area(max_area)
-            .with_max_additional_vertices(200_000),
-    );
+    // Sin el área mínima, spade intenta arreglar las astillas que quedan
+    // entre puntos casi alineados de un lado inclinado (fuera de la tela) y
+    // a veces se pierde. Si aun así falla, la pieza no se malla, pero la
+    // aplicación sigue.
+    let parameters = RefinementParameters::<f64>::new()
+        .exclude_outer_faces(simple)
+        .keep_constraint_edges()
+        .with_max_allowed_area(max_area)
+        .with_min_required_area(max_area * 1e-3)
+        .with_max_additional_vertices(200_000);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cdt.refine(parameters)))
+        .map_err(|_| MeshError::Triangulation("spade no ha podido refinar la malla".into()))?;
     let excluded: std::collections::HashSet<_> = result.excluded_faces.into_iter().collect();
 
     // 4. Exportación, solo con los vértices que usan los triángulos de tela.
@@ -659,5 +664,26 @@ mod tests {
         let mesh = mesh_piece_in(&p, p.piece(front).unwrap(), &MeshOptions::default()).unwrap();
         assert_eq!(mesh.lines.len(), 1);
         assert!((mesh.area() - 90_000.0).abs() < 1e-6);
+    }
+
+    /// Con líneas interiores también se mallan piezas de lados inclinados o
+    /// curvos (sus puntos no quedan del todo alineados) en cualquier tamaño.
+    #[test]
+    fn slanted_pieces_with_lines_mesh() {
+        for size in [12.0, 15.0, 20.0, 25.0, 30.0, 40.0] {
+            for taper in [3.0, 10.0, 37.0] {
+                let mut p = Pattern::new("t");
+                let pts = [(0.0, 0.0), (380.0, 0.0), (380.0 - taper, 410.0), (taper, 410.0)];
+                let piece = p.add_polygon("forro", pts.map(|(x, y)| Point::new(x, 500.0 + y)).to_vec());
+                let corner = |x: f64, y: f64| Point::new(110.0 + x, 610.0 + y);
+                p.add_line(piece, corner(0.0, 0.0), corner(0.0, 160.0));
+                p.add_line(piece, corner(0.0, 160.0), corner(160.0, 160.0));
+                p.add_line(piece, corner(160.0, 160.0), corner(160.0, 0.0));
+                p.piece_mut(piece).unwrap().make_curve(0);
+                let options = MeshOptions { target_edge_length: size, ..Default::default() };
+                let mesh = mesh_piece_in(&p, p.piece(piece).unwrap(), &options).unwrap();
+                assert_eq!(mesh.lines.len(), 3, "{size} {taper}");
+            }
+        }
     }
 }
