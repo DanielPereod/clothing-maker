@@ -233,7 +233,7 @@ impl ClothingMakerApp {
         }
         let tool_fits = match self.editor.tool {
             Tool::Select => true,
-            Tool::Pen | Tool::Rect => stage == Stage::Pattern,
+            Tool::Pen | Tool::Rect | Tool::Line => stage == Stage::Pattern,
             Tool::Seam => stage == Stage::Assembly,
         };
         if !tool_fits {
@@ -257,7 +257,7 @@ impl ClothingMakerApp {
     /// Montaje, se elijan desde donde se elijan (también con su tecla).
     fn follow_tool(&mut self) {
         let stage = match self.editor.tool {
-            Tool::Pen | Tool::Rect => Stage::Pattern,
+            Tool::Pen | Tool::Rect | Tool::Line => Stage::Pattern,
             Tool::Seam => Stage::Assembly,
             Tool::Select => return,
         };
@@ -444,6 +444,7 @@ impl ClothingMakerApp {
             Part::Buttons => {
                 self.tool_button(ui, Tool::Pen, Icon::Pen, "Pluma", "P");
                 self.tool_button(ui, Tool::Rect, Icon::Rect, "Rectángulo", "R");
+                self.tool_button(ui, Tool::Line, Icon::InnerLine, "Línea", "I");
             }
             Part::Menu => {
                 if ui.button("Rectángulo de 30 × 40 cm en el centro").clicked() {
@@ -466,6 +467,30 @@ impl ClothingMakerApp {
                 {
                     self.editor.selection = Selection::Piece(new);
                 }
+                if widgets::ribbon_button(ui, Icon::Mirror, "Espejo", false, piece.is_some())
+                    .on_hover_text("Copia en espejo de la pieza: la del otro lado (la manga izquierda de la derecha)")
+                    .clicked()
+                    && let Some(id) = piece
+                    && let Some(new) = self.pattern.mirror_piece(id)
+                {
+                    self.editor.selection = Selection::Piece(new);
+                }
+                let hole = piece.and_then(|id| self.pattern.piece(id)).is_some_and(|p| p.is_hole());
+                let parent = piece.and_then(|id| hole_parent(&self.pattern, id));
+                let hint = if hole {
+                    "Deja de ser un agujero: vuelve a ser una pieza de tela"
+                } else if parent.is_some() {
+                    "Recorta esta pieza de la pieza de debajo: una ventana, un asa troquelada…"
+                } else {
+                    "Dibuja la pieza encima de otra, del todo dentro, para recortarla de ella"
+                };
+                if widgets::ribbon_button(ui, Icon::Hole, "Agujero", hole, hole || parent.is_some())
+                    .on_hover_text(hint)
+                    .clicked()
+                    && let Some(piece) = piece.and_then(|id| self.pattern.piece_mut(id))
+                {
+                    piece.hole_in = if hole { None } else { parent };
+                }
                 if widgets::ribbon_button(ui, Icon::Delete, "Borrar", false, selection != Selection::None)
                     .on_hover_text("Borrar la selección (Supr)")
                     .clicked()
@@ -476,7 +501,8 @@ impl ClothingMakerApp {
             Part::Menu => match selection {
                 Selection::Edge(id, i) => {
                     let Some(piece) = self.pattern.piece_mut(id) else { return };
-                    if piece.edges()[i].is_curve() {
+                    let curve = piece.edges()[i].is_curve();
+                    if curve {
                         if ui.add(egui::Button::new("Convertir en recta").shortcut_text("L")).clicked() {
                             piece.make_line(i);
                         }
@@ -488,9 +514,23 @@ impl ClothingMakerApp {
                     {
                         self.editor.selection = Selection::Vertex(id, v);
                     }
+                    if ui
+                        .add_enabled(!curve, egui::Button::new("Desplegar al doblez"))
+                        .on_hover_text(
+                            "La pieza está dibujada a medias y se corta con la tela doblada por esta arista \
+                             (recta): la convierte en la pieza entera",
+                        )
+                        .clicked()
+                        && self.pattern.unfold_piece(id, i)
+                    {
+                        self.editor.selection = Selection::Piece(id);
+                    }
                 }
                 _ => {
-                    ui.weak("Selecciona una arista para convertirla en curva o recta, o partirla.");
+                    ui.weak(
+                        "Selecciona una arista para convertirla en curva o recta, partirla o desplegar la pieza al \
+                         doblez.",
+                    );
                 }
             },
         });
@@ -1066,4 +1106,18 @@ impl ViewLayout {
     fn shows_3d(self) -> bool {
         self != ViewLayout::Pattern
     }
+}
+
+/// La pieza de tela de la que se puede recortar `id` como agujero: la de más
+/// arriba que la contiene entera.
+fn hole_parent(pattern: &Pattern, id: pattern::PieceId) -> Option<pattern::PieceId> {
+    let piece = pattern.piece(id)?;
+    let outline = piece.flatten(1.0);
+    pattern
+        .pieces
+        .iter()
+        .rev()
+        .filter(|p| p.id != id && !p.is_hole())
+        .find(|p| outline.iter().all(|&q| p.contains(q)))
+        .map(|p| p.id)
 }

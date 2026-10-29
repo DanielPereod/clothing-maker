@@ -303,6 +303,8 @@ pub fn build(
     for (index, (piece, mesh)) in pattern.pieces.iter().zip(&meshed.pieces).enumerate() {
         match mesh {
             Ok(mesh) => meshes.push((index, piece, mesh)),
+            // Los agujeros se recortan de su pieza: no son tela.
+            Err(mesher::MeshError::Hole) => {}
             Err(_) => failed.push(piece.id),
         }
     }
@@ -479,7 +481,11 @@ pub fn build(
 
                 let color = egui::Rgba::from(color_of(piece.id));
                 let right = [color.r(), color.g(), color.b()];
-                let inward: Vec<Option<u32>> = (0..v.len()).map(|k| topology.inward(mesh, v, k)).collect();
+                // Sobre una línea interior hay tela a los dos lados: no hay
+                // un «hacia dentro» ni margen que doblar.
+                let on_line = pattern.piece(edge.piece).is_some_and(|p| p.line_index(edge.edge).is_some());
+                let inward: Vec<Option<u32>> =
+                    (0..v.len()).map(|k| if on_line { None } else { topology.inward(mesh, v, k) }).collect();
                 let inward_rest = (0..v.len())
                     .map(|k| {
                         inward[k].map_or(0.0, |n| {
@@ -567,11 +573,7 @@ impl Topology {
             neighbors[a as usize].push(b);
             neighbors[b as usize].push(a);
         }
-        let mut boundary = vec![false; mesh.positions.len()];
-        for b in &mesh.boundary {
-            boundary[b.vertex as usize] = true;
-        }
-        Self { neighbors, boundary }
+        Self { neighbors, boundary: mesh.border_flags() }
     }
 
     /// El vecino del punto `k` del borde `side` que más se mete hacia el
@@ -1034,6 +1036,7 @@ fn run(rx: Receiver<Command>, shared: Arc<Mutex<Shared>>) {
 mod tests {
     use super::*;
     use crate::examples;
+    use pattern::{PieceId, Point, SeamSide};
 
     /// Dos paneles tumbados y cosidos por un borde con una costura de tipo
     /// `kind`: el de la izquierda (20 cm) se fija y el de la derecha (`width`
@@ -1118,6 +1121,48 @@ mod tests {
     /// Como en la aplicación: las prendas, sobre el maniquí.
     fn settings_for(make: fn() -> Pattern, settings: SceneSettings) -> SceneSettings {
         if make().on_avatar { SceneSettings { obstacle: Obstacle::Mannequin, ..settings } } else { settings }
+    }
+
+    /// Un bolsillo de parche cosido sobre tres líneas interiores del
+    /// delantero de la tote (los laterales y el fondo; la boca queda
+    /// abierta), y una ventana recortada en el trasero, tapada por dentro
+    /// con otra pieza: la escena se monta y las costuras cierran.
+    #[test]
+    fn pockets_on_lines_and_holes_sew() {
+        let mut p = examples::tote_bag();
+        let (front, back) = (p.pieces[0].id, p.pieces[1].id);
+        let corner = |x: f64, y: f64| Point::new(x, y);
+        let left = p.add_line(front, corner(110.0, 120.0), corner(110.0, 300.0)).unwrap();
+        let bottom = p.add_line(front, corner(110.0, 300.0), corner(270.0, 300.0)).unwrap();
+        let right = p.add_line(front, corner(270.0, 300.0), corner(270.0, 120.0)).unwrap();
+        // El bolsillo, dibujado justo encima de donde va.
+        let pocket = p.add_rect("Bolsillo", corner(110.0, 120.0), 160.0, 180.0);
+        let e = |p: &Pattern, id: PieceId, i: usize| p.piece(id).unwrap().edges()[i].id;
+        let (pl, pb, pr) = (e(&p, pocket, 3), e(&p, pocket, 2), e(&p, pocket, 1));
+        p.add_seam("Bolsillo izdo.", vec![SeamSide::new(pocket, pl, true), SeamSide::new(front, left, false)]);
+        p.add_seam("Bolsillo fondo", vec![SeamSide::new(pocket, pb, true), SeamSide::new(front, bottom, false)]);
+        p.add_seam("Bolsillo dcho.", vec![SeamSide::new(pocket, pr, true), SeamSide::new(front, right, false)]);
+        let window = p.add_rect("Ventana", corner(550.0, 100.0), 180.0, 30.0);
+        p.piece_mut(window).unwrap().hole_in = Some(back);
+        p.piece_mut(window).unwrap().arrangement = Arrangement::Back;
+        let facing = p.add_rect("Vista", corner(900.0, 0.0), 180.0, 30.0);
+        p.piece_mut(facing).unwrap().arrangement = Arrangement::Back;
+        let (wt, ft) = (e(&p, window, 0), e(&p, facing, 0));
+        p.add_seam("Ventana", vec![SeamSide::new(window, wt, false), SeamSide::new(facing, ft, true)]);
+        assert!(p.validate().is_empty(), "{:?}", p.validate());
+
+        let settings = SceneSettings { mesh_size: 30.0, ..Default::default() };
+        let mut scene = build(&p, &settings, |_| egui::Color32::WHITE);
+        assert!(scene.failed.is_empty(), "{:?}", scene.failed);
+        assert_eq!(scene.seams, p.seams.len());
+        assert_eq!(scene.pieces.len(), 4, "el agujero no es tela");
+        for _ in 0..240 {
+            scene.cloth.step(FRAME, &settings.params(), &scene.colliders);
+        }
+        assert!(scene.cloth.positions.iter().all(|q| q.is_finite()));
+        assert!(!scene.cloth.is_sewing());
+        let gap = scene.cloth.max_seam_gap();
+        assert!(gap < 5e-3, "costura abierta {gap}");
     }
 
     /// Ninguna costura de los ejemplos se retuerce, se coloquen como se
