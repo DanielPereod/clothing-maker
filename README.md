@@ -120,13 +120,42 @@ desplazar, F para encuadrar todo.
 - Ejemplo nuevo: *Cojín* (dos cuadrados de 40 cm cosidos por los cuatro
   lados, con 30 Pa).
 
+**Costuras:** pestaña *Costuras* dedicada a cómo se hace cada costura.
+
+- Tipos: simple, sobrehilada (remallada), a la vista, francesa, inglesa
+  (plana, la de los vaqueros), solapada y volteada (embolsada). Cada tipo
+  dice dónde queda el margen, cuántas capas junta y cómo se dobla; al
+  elegirlo se ponen los pespuntes y el planchado que suele llevar.
+- Por costura: hacia qué pieza va planchado el margen (o abierto), pespuntes
+  vistos (ninguno, uno o dos), largo de puntada y orden de montaje (▲ / ▼).
+  Las propiedades muestran un dibujo de la **sección** de la costura.
+- **Margen de costura** por borde (10 mm por defecto en el patrón, editable
+  en cada arista o desde la costura). En 2D se dibuja la línea de corte
+  discontinua alrededor de cada pieza.
+- **Derecho y revés:** cada pieza puede tener el *derecho hacia dentro*
+  (forros, vistas) y la prenda entera se puede **voltear** (del revés). En 3D
+  el derecho se ve del color de la pieza y el revés más claro y apagado.
+- En la pestaña, el patrón se atenúa y las costuras destacan; la
+  seleccionada dice su tipo y une con líneas finas los puntos que se cosen
+  juntos (si se cruzan, algún lado va al revés).
+- En 3D: el margen se ve tumbado por su cara (dentro o, en la costura a la
+  vista y en la prenda volteada, fuera), con el remallado en las
+  sobrehiladas; los pespuntes se dibujan puntada a puntada; *Resaltar* marca
+  cada costura con su color.
+- En la simulación, cada tipo cambia la costura: más rígida a lo largo,
+  más gruesa y pesada cuantas más capas junta (francesa, inglesa), y con un
+  pliegue preferido: plana (francesa, inglesa, solapada o con pespunte) o
+  doblada una pieza sobre otra (volteada). *Coser por orden* cierra las
+  costuras de una en una en el orden de la lista.
+
 **Interfaz:** inspirada en los programas de CAD como Fusion 360, con tema
 oscuro.
 
 - Barra superior: menús, accesos rápidos (nuevo, abrir, guardar, deshacer,
   rehacer), el documento abierto (con un punto si hay cambios sin guardar) y
   la disposición de las vistas.
-- Cinta de herramientas con dos espacios de trabajo. *Patrón*: seleccionar,
+- Cinta de herramientas con tres espacios de trabajo (el de *Costuras*,
+  arriba). *Patrón*: seleccionar,
   crear (pluma, rectángulo), modificar, coser, inspeccionar (rejilla, malla),
   prenda (maniquí) y encuadrar. *Simulación*: simular / pausa, reiniciar, en
   vivo, montaje (colocación, coser), entorno (obstáculo, tejido), precisión,
@@ -202,6 +231,15 @@ una costura puede llevar `"reversed": true` (se recorre del final al
 principio), y cada pieza un `"arrangement"` (`front`, `back`, `left`,
 `right`, `top` o `bottom`; si falta, `front`). El patrón puede llevar
 `"pressure"` (relleno en Pa; si falta, 0).
+
+Costuras y márgenes (todo opcional; si falta, lo de antes): cada costura
+puede llevar `"kind"` (`plain`, `overlocked`, `exposed`, `french`,
+`flat_felled`, `lapped` o `bagged`), `"pressed_to"` (índice del lado hacia el
+que va el margen), `"topstitch"` (`none`, `single` o `double`) y
+`"stitch_length"` (mm, 2,5 por defecto). El orden de `seams` es el de
+montaje. Cada arista puede llevar `"allowance"` (margen en mm); el patrón,
+`"seam_allowance"` (10 por defecto) e `"inside_out"`, y cada pieza
+`"right_side_in"`.
 
 ## Desarrollo
 

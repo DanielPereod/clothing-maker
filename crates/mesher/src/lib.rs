@@ -106,6 +106,8 @@ pub fn mesh_piece(piece: &Piece, options: &MeshOptions) -> Result<Mesh2D, MeshEr
 pub struct SeamSideMesh {
     /// Índice de la pieza en [`PatternMesh::pieces`] (el mismo que en el patrón).
     pub piece: usize,
+    /// Índice del lado en [`pattern::Seam::sides`].
+    pub side: usize,
     /// Vértices del borde de la pieza a lo largo de la arista, en el sentido
     /// de la costura y con los dos extremos incluidos.
     pub vertices: Vec<u32>,
@@ -173,14 +175,14 @@ pub fn mesh_pattern(pattern: &Pattern, options: &MeshOptions) -> PatternMesh {
     let mut seams = Vec::new();
     for seam in &pattern.seams {
         let mut sides: Vec<SeamSideMesh> = Vec::new();
-        for side in &seam.sides {
+        for (k, side) in seam.sides.iter().enumerate() {
             let Some(&piece) = index.get(&side.piece) else { continue };
             let Ok(mesh) = &pieces[piece] else { continue };
             let Some(mut vertices) = mesh.edge_vertices(side.edge) else { continue };
             if side.reversed {
                 vertices.reverse();
             }
-            sides.push(SeamSideMesh { piece, vertices });
+            sides.push(SeamSideMesh { piece, side: k, vertices });
         }
         // Por si el remuestreo ha fundido algún punto (aristas casi nulas):
         // solo se cosen los lados con el número de puntos esperado.

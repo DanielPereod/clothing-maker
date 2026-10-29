@@ -7,7 +7,7 @@ use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Key, Painter, PointerButton, Pos2, Rect, Sense, Shape, Stroke, Ui,
     epaint::CubicBezierShape,
 };
-use kurbo::{ParamCurve, ParamCurveDeriv, PathSeg};
+use kurbo::{ParamCurve, ParamCurveArclen, ParamCurveDeriv, PathSeg};
 use mesher::{Mesh2D, MeshOptions};
 use pattern::{Pattern, Piece, PieceId, Point, SeamId, SeamSide, Vec2};
 
@@ -124,6 +124,10 @@ pub struct Editor {
     /// Paso de la rejilla de ajuste (mm).
     pub snap_step: f64,
     pub show_mesh: bool,
+    /// Dibujar la línea de corte (el contorno más el margen de costura).
+    pub show_allowance: bool,
+    /// Modo costuras: las piezas se atenúan y las costuras destacan.
+    pub focus_seams: bool,
     /// Tamaño de los triángulos de la vista previa de malla (mm).
     pub mesh_size: f64,
     /// Posición del cursor en el mundo (mm), si está sobre el lienzo.
@@ -147,6 +151,8 @@ impl Default for Editor {
             snap: true,
             snap_step: 5.0,
             show_mesh: false,
+            show_allowance: true,
+            focus_seams: false,
             mesh_size: 20.0,
             cursor: None,
             view: View { pan: egui::Vec2::ZERO, zoom: 1.0 },
@@ -164,9 +170,9 @@ impl Default for Editor {
 impl Editor {
     /// Deja el editor listo para un patrón nuevo.
     pub fn reset(&mut self) {
-        let keep = (self.snap, self.snap_step, self.show_mesh, self.mesh_size);
+        let keep = (self.snap, self.snap_step, self.show_mesh, self.mesh_size, self.show_allowance, self.focus_seams);
         *self = Self::default();
-        (self.snap, self.snap_step, self.show_mesh, self.mesh_size) = keep;
+        (self.snap, self.snap_step, self.show_mesh, self.mesh_size, self.show_allowance, self.focus_seams) = keep;
     }
 
     pub fn fit_view(&mut self) {
@@ -681,13 +687,23 @@ impl Editor {
         let selected = self.selection.piece();
 
         self.refresh_caches(pattern);
+        let focus = self.focus_seams;
         for piece in &pattern.pieces {
             let color = piece_color(piece.id);
             let is_sel = Some(piece.id) == selected;
 
+            if self.show_allowance || focus {
+                self.draw_allowance(painter, pattern, piece, color);
+            }
             if let Some(mesh) = self.fill_cache.get(&piece.id).and_then(|c| c.mesh.as_ref()) {
-                let alpha = if is_sel { 70 } else { 45 };
-                painter.add(self.egui_mesh(mesh, color.gamma_multiply_u8(alpha)));
+                let alpha = match (focus, is_sel) {
+                    (true, _) => 25,
+                    (false, true) => 70,
+                    (false, false) => 45,
+                };
+                // Si lo que se ve desde fuera es el revés, un relleno gris.
+                let fill = if piece.right_side_in { Color32::from_gray(150) } else { color };
+                painter.add(self.egui_mesh(mesh, fill.gamma_multiply_u8(alpha)));
             }
             if self.show_mesh
                 && let Some(mesh) = self.mesh_cache.get(&piece.id).and_then(|c| c.mesh.as_ref())
@@ -696,8 +712,16 @@ impl Editor {
             }
 
             let broken = self.fill_cache.get(&piece.id).is_some_and(|c| c.mesh.is_none());
-            let outline = if broken { Color32::RED } else { color };
-            let width = if is_sel { 2.5 } else { 1.5 };
+            let outline = match (broken, focus) {
+                (true, _) => Color32::RED,
+                (false, true) => color.gamma_multiply(0.55),
+                (false, false) => color,
+            };
+            let width = match (is_sel, focus) {
+                (true, _) => 2.5,
+                (false, true) => 1.0,
+                (false, false) => 1.5,
+            };
             for i in 0..piece.len() {
                 let edge_sel = self.selection == Selection::Edge(piece.id, i);
                 let stroke = if edge_sel {
@@ -727,13 +751,19 @@ impl Editor {
         // Nombres encima de todo lo demás.
         for piece in &pattern.pieces {
             let c = piece.bounding_box().center();
-            painter.text(
-                self.view.to_screen(rect, c),
-                Align2::CENTER_CENTER,
-                &piece.name,
-                FontId::proportional(14.0),
-                text_color,
-            );
+            let pos = self.view.to_screen(rect, c);
+            painter.text(pos, Align2::CENTER_CENTER, &piece.name, FontId::proportional(14.0), text_color);
+            if piece.right_side_in {
+                let note = "revés hacia fuera";
+                let below = pos + egui::vec2(0.0, 15.0);
+                painter.text(
+                    below,
+                    Align2::CENTER_CENTER,
+                    note,
+                    FontId::proportional(11.0),
+                    text_color.gamma_multiply(0.7),
+                );
+            }
         }
 
         if let Some(piece) = selected.and_then(|id| pattern.piece(id)) {
@@ -850,11 +880,68 @@ impl Editor {
         for (k, seam) in pattern.seams.iter().enumerate() {
             let color = seam_color(k);
             let selected = self.selection == Selection::Seam(seam.id);
+            let width = match (selected, self.focus_seams) {
+                (true, _) => 3.5,
+                (false, true) => 2.8,
+                (false, false) => 2.0,
+            };
+            // En el modo costuras, la seleccionada dice también su tipo.
+            let label = if self.focus_seams && selected {
+                format!("{} · {}", k + 1, seam.kind.label())
+            } else {
+                format!("{}", k + 1)
+            };
             for side in &seam.sides {
-                let label = format!("{}", k + 1);
-                self.draw_seam_side(painter, pattern, side, color, if selected { 3.5 } else { 2.0 }, &label);
+                self.draw_seam_side(painter, pattern, side, color, width, &label);
+            }
+            if selected {
+                self.draw_seam_matches(painter, pattern, seam, color);
             }
         }
+    }
+
+    /// Líneas finas entre los puntos que se cosen juntos de cada lado de la
+    /// costura: si se cruzan, algún lado va al revés.
+    fn draw_seam_matches(&self, painter: &Painter, pattern: &Pattern, seam: &pattern::Seam, color: Color32) {
+        const STEPS: usize = 8;
+        let points: Vec<Vec<Pos2>> = seam
+            .sides
+            .iter()
+            .filter_map(|side| {
+                let piece = pattern.piece(side.piece)?;
+                let seg = piece.segment(piece.edge_index(side.edge)?);
+                let length = seg.arclen(1e-3);
+                Some(
+                    (0..=STEPS)
+                        .map(|k| {
+                            let s = k as f64 / STEPS as f64;
+                            let s = if side.reversed { 1.0 - s } else { s };
+                            let t = seg.inv_arclen(s * length, 1e-3);
+                            self.view.to_screen(self.canvas_rect, seg.eval(t))
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        let Some((first, rest)) = points.split_first() else { return };
+        let stroke = Stroke::new(1.0, color.gamma_multiply(0.6));
+        for other in rest {
+            for (a, b) in first.iter().zip(other) {
+                painter.line_segment([*a, *b], stroke);
+            }
+        }
+    }
+
+    /// Línea de corte: el contorno más el margen de cada arista, discontinua.
+    fn draw_allowance(&self, painter: &Painter, pattern: &Pattern, piece: &Piece, color: Color32) {
+        let outline = piece.allowance_outline(&pattern.allowances(piece));
+        if outline.is_empty() {
+            return;
+        }
+        let mut pts: Vec<Pos2> = outline.iter().map(|p| self.view.to_screen(self.canvas_rect, *p)).collect();
+        pts.push(pts[0]);
+        let stroke = Stroke::new(1.0, color.gamma_multiply(if self.focus_seams { 0.8 } else { 0.5 }));
+        painter.extend(Shape::dashed_line(&pts, stroke, 5.0, 3.0));
     }
 
     /// Trazo discontinuo por dentro de la arista, con una flecha que marca
