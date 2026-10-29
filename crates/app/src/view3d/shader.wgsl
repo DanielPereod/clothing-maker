@@ -13,6 +13,8 @@ struct VertexIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) color: vec3<f32>,
+    // Color por la otra cara.
+    @location(3) back: vec3<f32>,
 };
 
 struct VertexOut {
@@ -20,6 +22,7 @@ struct VertexOut {
     @location(0) world: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) color: vec3<f32>,
+    @location(3) back: vec3<f32>,
 };
 
 @vertex
@@ -29,6 +32,7 @@ fn vs(v: VertexIn) -> VertexOut {
     out.world = v.position;
     out.normal = v.normal;
     out.color = v.color;
+    out.back = v.back;
     return out;
 }
 
@@ -46,9 +50,9 @@ fn fs_mesh(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) ve
     var n = normalize(in.normal);
     var base = in.color;
     if !front {
-        // Revés de la tela: misma tela, algo más apagada.
+        // La otra cara: en la tela, el revés (o el derecho si está volteada).
         n = -n;
-        base = base * 0.7;
+        base = in.back;
     }
     return vec4<f32>(shade(base, n, in.world), 1.0);
 }

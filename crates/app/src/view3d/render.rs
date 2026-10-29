@@ -17,7 +17,17 @@ const SAMPLES: u32 = 4;
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
+    /// Color por la cara hacia la que apunta la normal...
     pub color: [f32; 3],
+    /// ...y por la otra (el revés de la tela).
+    pub back: [f32; 3],
+}
+
+impl Vertex {
+    /// Un vértice del mismo color por las dos caras.
+    pub fn plain(position: Vec3, normal: Vec3, color: [f32; 3]) -> Self {
+        Self { position: position.to_array(), normal: normal.to_array(), color, back: color }
+    }
 }
 
 #[repr(C)]
@@ -95,6 +105,7 @@ pub struct Renderer {
     floor: GpuMesh,
     obstacles: GpuMesh,
     cloth: GpuMesh,
+    seams: GpuMesh,
     target: Option<Target>,
 }
 
@@ -144,7 +155,9 @@ impl Renderer {
                     buffers: &[Some(wgpu::VertexBufferLayout {
                         array_stride: size_of::<Vertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3],
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x3
+                        ],
                     })],
                     compilation_options: Default::default(),
                 },
@@ -185,6 +198,7 @@ impl Renderer {
         Self {
             obstacles: GpuMesh::new(&device, "obstacles"),
             cloth: GpuMesh::new(&device, "cloth"),
+            seams: GpuMesh::new(&device, "seams"),
             floor,
             device,
             queue: state.queue.clone(),
@@ -203,6 +217,11 @@ impl Renderer {
 
     pub fn set_cloth(&mut self, vertices: &[Vertex], indices: &[u32]) {
         self.cloth.upload(&self.device, &self.queue, vertices, indices);
+    }
+
+    /// Márgenes, pespuntes y cordones de las costuras.
+    pub fn set_seams(&mut self, vertices: &[Vertex], indices: &[u32]) {
+        self.seams.upload(&self.device, &self.queue, vertices, indices);
     }
 
     /// Pinta la escena y devuelve la textura para mostrarla con egui.
@@ -246,6 +265,7 @@ impl Renderer {
             pass.set_pipeline(&self.mesh_pipeline);
             self.obstacles.draw(&mut pass);
             self.cloth.draw(&mut pass);
+            self.seams.draw(&mut pass);
         }
         self.queue.submit([encoder.finish()]);
         target.texture_id
@@ -302,7 +322,7 @@ impl Drop for Renderer {
 
 fn floor_mesh(half: f32) -> (Vec<Vertex>, Vec<u32>) {
     let color = [0.55, 0.55, 0.53];
-    let corner = |x: f32, z: f32| Vertex { position: [x, 0.0, z], normal: [0.0, 1.0, 0.0], color };
+    let corner = |x: f32, z: f32| Vertex::plain(Vec3::new(x, 0.0, z), Vec3::Y, color);
     let vertices = vec![corner(-half, -half), corner(half, -half), corner(half, half), corner(-half, half)];
     (vertices, vec![0, 2, 1, 0, 3, 2])
 }
@@ -317,7 +337,7 @@ pub fn push_sphere(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, center: V
         for s in 0..=SEGMENTS {
             let theta = std::f32::consts::TAU * s as f32 / SEGMENTS as f32;
             let n = Vec3::new(phi.sin() * theta.cos(), phi.cos(), phi.sin() * theta.sin());
-            vertices.push(Vertex { position: (center + n * radius).to_array(), normal: n.to_array(), color });
+            vertices.push(Vertex::plain(center + n * radius, n, color));
         }
     }
     let row = SEGMENTS + 1;
@@ -341,7 +361,7 @@ pub fn push_cuboid(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, center: V
             let base = vertices.len() as u32;
             for (du, dv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
                 let p = center + (n + u * du + v * dv) * half;
-                vertices.push(Vertex { position: p.to_array(), normal: n.to_array(), color });
+                vertices.push(Vertex::plain(p, n, color));
             }
             indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
         }

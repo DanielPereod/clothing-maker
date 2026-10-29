@@ -35,6 +35,10 @@ pub enum Icon {
     Layout2D,
     LayoutSplit,
     Layout3D,
+    Allowance,
+    Flip,
+    Order,
+    Highlight,
 }
 
 /// Dibuja `icon` dentro de `rect` (se usa el cuadrado central).
@@ -238,6 +242,36 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             closed(&[(0.50, 0.12), (0.90, 0.84), (0.10, 0.84)], Color32::TRANSPARENT);
             line(&[(0.50, 0.38), (0.50, 0.62)]);
             painter.circle_filled(p(0.50, 0.73), w, color);
+        }
+        Icon::Allowance => {
+            // Una pieza y, alrededor, la línea de corte discontinua.
+            painter.rect_stroke(
+                Rect::from_min_max(p(0.30, 0.30), p(0.70, 0.70)),
+                1.0,
+                stroke,
+                eframe::egui::StrokeKind::Middle,
+            );
+            let outer = [(0.14, 0.14), (0.86, 0.14), (0.86, 0.86), (0.14, 0.86), (0.14, 0.14)];
+            let pts: Vec<Pos2> = outer.iter().map(|&(x, y)| p(x, y)).collect();
+            painter.extend(Shape::dashed_line(&pts, thin, size * 0.08, size * 0.06));
+        }
+        Icon::Flip => {
+            // Volver del revés: dos flechas que dan la vuelta.
+            painter.add(Shape::line(arc(0.5, 0.5, 0.30, 3.6, 6.0), stroke));
+            arrow_head(p(0.5 + 0.30 * 6.0f32.cos(), 0.5 + 0.30 * 6.0f32.sin()), vec2(0.3, 1.0));
+            painter.add(Shape::line(arc(0.5, 0.5, 0.30, 0.46, 2.86), stroke));
+            arrow_head(p(0.5 + 0.30 * 2.86f32.cos(), 0.5 + 0.30 * 2.86f32.sin()), vec2(-0.3, -1.0));
+        }
+        Icon::Order => {
+            for y in [0.25f32, 0.5, 0.75] {
+                painter.circle_filled(p(0.2, y), size * 0.05, color);
+                line(&[(0.34, y), (0.84, y)]);
+            }
+        }
+        Icon::Highlight => {
+            // Una costura resaltada sobre la tela.
+            closed(&[(0.12, 0.25), (0.88, 0.25), (0.88, 0.75), (0.12, 0.75)], fill_soft);
+            painter.line_segment([p(0.5, 0.18), p(0.5, 0.82)], Stroke::new(w * 2.0, color));
         }
         Icon::Mannequin => {
             painter.circle_stroke(p(0.5, 0.20), size * 0.09, stroke);
