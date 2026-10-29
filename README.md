@@ -24,7 +24,8 @@ desplazar, F para encuadrar todo.
 
 **Fase 2:** malla y tela suelta en 3D.
 
-- Panel «Vista 3D» a la derecha del editor (Ver → Vista 3D para ocultarlo).
+- Vista 3D a la derecha del editor (los botones de disposición, arriba a la
+  derecha, muestran solo el patrón, los dos o solo la vista 3D).
 - Cada pieza se triangula y se convierte en tela simulada con XPBD
   (estiramiento, flexión, gravedad y rozamiento con el aire), en un hilo aparte.
 - ▶ Simular / ⏸ Pausa y ⟲ Reiniciar (vuelve a colocar las piezas con el
@@ -33,7 +34,7 @@ desplazar, F para encuadrar todo.
   horizontal) o *Colgar* (cuelgan de su borde superior).
 - Obstáculos: maniquí (fase 4), solo suelo, esfera o mesa. Son colisionadores
   genéricos, así que también sirve para objetos sin cuerpo.
-- Tejidos: algodón, seda y vaquero. En ⚙, tamaño de los triángulos y
+- Tejidos: algodón, seda y vaquero. En *Precisión*, tamaño de los triángulos y
   subpasos (más subpasos = tela menos elástica, pero más lenta).
 - Cámara: arrastrar para girar, botón derecho / central (o Mayús + arrastrar)
   para desplazar, rueda para acercar, doble clic para volver a encuadrar.
@@ -92,7 +93,7 @@ desplazar, F para encuadrar todo.
   cerrar. Mientras una pieza no se pueda mallar (un contorno que se cruza),
   la vista 3D espera. Cambiar el tejido o la malla tampoco reinicia; cambiar
   la colocación, el obstáculo o *Coser* sí, igual que *Reiniciar*.
-- Auto-colisión (en ⚙, activada por defecto): las partículas no se acercan a
+- Auto-colisión (en *Precisión*, activada por defecto): las partículas no se acercan a
   menos de dos grosores de los triángulos de la propia tela, así que los
   paneles no se atraviesan: las dos caras de una bolsa quedan una encima de
   otra, una manga no entra en el cuerpo. Hash espacial y prueba punto contra
@@ -101,6 +102,28 @@ desplazar, F para encuadrar todo.
   apagar.
 - Una bolsa vacía sigue quedando plana al apoyarla, como una de verdad sin
   nada dentro; darle volumen (relleno o presión) es de la siguiente fase.
+
+**Interfaz:** inspirada en los programas de CAD como Fusion 360, con tema
+oscuro.
+
+- Barra superior: menús, accesos rápidos (nuevo, abrir, guardar, deshacer,
+  rehacer), el documento abierto (con un punto si hay cambios sin guardar) y
+  la disposición de las vistas.
+- Cinta de herramientas con dos espacios de trabajo. *Patrón*: seleccionar,
+  crear (pluma, rectángulo), modificar, coser, inspeccionar (rejilla, malla),
+  prenda (maniquí) y encuadrar. *Simulación*: simular / pausa, reiniciar, en
+  vivo, montaje (colocación, coser), entorno (obstáculo, tejido), precisión e
+  inicio de cámara. Los grupos con ⏷ despliegan más órdenes.
+- Navegador a la izquierda: árbol con las piezas, las costuras y los avisos
+  (clic para seleccionar, botón derecho para duplicar o borrar).
+- Propiedades a la derecha: lo seleccionado (pieza, punto, arista o costura)
+  y el patrón.
+- Vista 3D con cubo de vista: pulsar una cara (frente, detrás, lados, arriba)
+  lleva la cámara a esa vista. Cada vista tiene abajo una barra de navegación
+  (encuadrar, zoom, rejilla y malla en 2D; inicio, simular, reiniciar y en
+  vivo en 3D).
+- Barra de estado: pista de la herramienta, estado de la simulación,
+  coordenadas del cursor y zoom.
 
 **Siguientes fases:** tejidos (con relleno o presión para objetos), GPU y
 exportación.
@@ -124,7 +147,7 @@ La primera compilación tarda unos minutos (wgpu es grande); las siguientes son 
 | `crates/pattern` | Modelo de datos: piezas, aristas (rectas / Bézier) y costuras. Formato JSON versionado. Sin dependencias gráficas. |
 | `crates/mesher` | Triangula cada pieza (Delaunay restringida con `spade`) y remuestrea el contorno para que las costuras casen vértice a vértice. |
 | `crates/simulator` | Simulación de tela XPBD (`glam`, `rayon`): todas las piezas en un sistema de partículas, restricciones coloreadas para resolverlas en paralelo, costuras que se cierran poco a poco, colisionadores genéricos (plano, esfera, caja). Sin dependencias gráficas. |
-| `crates/app` | Aplicación de escritorio con `eframe`/`egui` sobre `wgpu`; la vista 3D se dibuja con `wgpu` en una textura propia (`src/view3d`). |
+| `crates/app` | Aplicación de escritorio con `eframe`/`egui` sobre `wgpu`; la vista 3D se dibuja con `wgpu` en una textura propia (`src/view3d`). Tema, iconos vectoriales y controles propios en `theme.rs`, `icons.rs` y `widgets.rs`. |
 
 Unidades: el patrón se guarda en milímetros (eje Y hacia abajo); la interfaz
 muestra centímetros. El simulador trabaja en metros.

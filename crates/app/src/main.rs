@@ -6,7 +6,10 @@ mod app;
 mod canvas;
 mod examples;
 mod history;
+mod icons;
+mod theme;
 mod view3d;
+mod widgets;
 
 use eframe::egui;
 

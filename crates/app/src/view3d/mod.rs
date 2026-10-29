@@ -4,6 +4,7 @@
 
 mod render;
 mod scene;
+mod viewcube;
 
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,9 @@ use pattern::{Pattern, PieceId};
 
 use render::{Renderer, Vertex};
 use scene::{FabricKind, Obstacle, Placement, Runner, ScenePiece, SceneSettings};
+
+use crate::icons::Icon;
+use crate::{theme, widgets};
 
 /// Tiempo mínimo entre dos actualizaciones en vivo: mallar y montar la
 /// escena cuesta unos milisegundos, y al arrastrar el patrón cambia en cada
@@ -121,6 +125,8 @@ pub struct View3D {
     live: bool,
     /// Cuándo se hizo la última actualización en vivo.
     last_live: Instant,
+    /// Vuelo de la cámara hacia una vista, en curso.
+    fly: Option<viewcube::Fly>,
     /// Último patrón que no se ha podido pasar en vivo (alguna pieza no se
     /// puede mallar), para no reintentarlo en cada fotograma.
     rejected: Option<Pattern>,
@@ -145,6 +151,7 @@ impl View3D {
             object_obstacle: SceneSettings::default().obstacle,
             live: true,
             last_live: Instant::now(),
+            fly: None,
             rejected: None,
         }
     }
@@ -208,7 +215,10 @@ impl View3D {
         self.version = u64::MAX;
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, pattern: &Pattern, color_of: impl Fn(PieceId) -> Color32) {
+    /// Mantiene la simulación al día con el patrón: la primera carga, el
+    /// maniquí según el tipo de prenda y los cambios en vivo. Se llama en
+    /// cada fotograma mientras la vista 3D está a la vista.
+    pub fn sync(&mut self, ctx: &egui::Context, pattern: &Pattern, color_of: impl Fn(PieceId) -> Color32) {
         // Las prendas se ven sobre el maniquí y los objetos sin él.
         if self.on_avatar != Some(pattern.on_avatar) {
             self.on_avatar = Some(pattern.on_avatar);
@@ -225,113 +235,175 @@ impl View3D {
             self.reload(pattern, &color_of);
             self.runner.set_running(true);
         }
-        let settings_before = self.settings;
-        let mut outdated = self.loaded.as_ref().is_some_and(|l| l.pattern != *pattern);
         let rejected = self.rejected.as_ref() == Some(pattern);
-        if self.live && outdated && !rejected {
+        if self.live && self.outdated(pattern) && !rejected {
             let wait = LIVE_INTERVAL.saturating_sub(self.last_live.elapsed());
             if wait.is_zero() {
                 self.update_live(pattern, &color_of);
-                outdated = self.loaded.as_ref().is_some_and(|l| l.pattern != *pattern);
             } else {
-                ui.ctx().request_repaint_after(wait);
+                ctx.request_repaint_after(wait);
             }
         }
+        if self.runner.is_running() {
+            ctx.request_repaint();
+        }
+    }
 
-        ui.horizontal_wrapped(|ui| {
-            let running = self.runner.is_running();
-            if ui.button(if running { "⏸ Pausa" } else { "▶ Simular" }).clicked() {
-                if !running && outdated {
-                    self.reload(pattern, &color_of);
-                }
-                self.runner.set_running(!running);
+    /// Si la escena cargada es de una versión anterior del patrón.
+    fn outdated(&self, pattern: &Pattern) -> bool {
+        self.loaded.as_ref().is_some_and(|l| l.pattern != *pattern)
+    }
+
+    /// Arranca o para la simulación.
+    pub fn toggle_running(&mut self, pattern: &Pattern, color_of: impl Fn(PieceId) -> Color32) {
+        let running = self.runner.is_running();
+        if !running && self.outdated(pattern) {
+            self.reload(pattern, &color_of);
+        }
+        self.runner.set_running(!running);
+    }
+
+    /// Vuelve a la cámara inicial.
+    pub fn home(&mut self) {
+        self.fly_to(self.home);
+    }
+
+    fn fly_to(&mut self, to: Camera) {
+        self.fly = Some(viewcube::Fly::new(self.camera, to));
+    }
+
+    /// Grupos de la pestaña «Simulación» de la cinta.
+    pub fn ribbon(&mut self, ui: &mut Ui, pattern: &Pattern, color_of: impl Fn(PieceId) -> Color32) {
+        let settings_before = self.settings;
+        let running = self.runner.is_running();
+        widgets::ribbon_group(ui, "SIMULAR", false, |ui, _| {
+            let (icon, label) = if running { (Icon::Pause, "Pausa") } else { (Icon::Play, "Simular") };
+            if widgets::ribbon_button(ui, icon, label, running, true).clicked() {
+                self.toggle_running(pattern, &color_of);
             }
-            if ui.button("⟲ Reiniciar").on_hover_text("Vuelve a colocar las piezas y empieza de nuevo").clicked() {
+            if widgets::ribbon_button(ui, Icon::Restart, "Reiniciar", false, true)
+                .on_hover_text("Vuelve a colocar las piezas y empieza de nuevo")
+                .clicked()
+            {
                 self.reload(pattern, &color_of);
             }
-            ui.checkbox(&mut self.live, "En vivo")
-                .on_hover_text("Al editar el patrón, la prenda se reajusta sin volver a empezar");
-            ui.separator();
-            egui::ComboBox::from_id_salt("placement").selected_text(self.settings.placement.label()).show_ui(
-                ui,
-                |ui| {
-                    for placement in Placement::ALL {
-                        ui.selectable_value(&mut self.settings.placement, placement, placement.label())
-                            .on_hover_text(placement.hint());
-                    }
-                },
-            );
-            ui.checkbox(&mut self.settings.sew, "Coser").on_hover_text("Cierra las costuras del patrón");
-            egui::ComboBox::from_id_salt("obstacle").selected_text(self.settings.obstacle.label()).show_ui(ui, |ui| {
-                for obstacle in Obstacle::ALL {
-                    ui.selectable_value(&mut self.settings.obstacle, obstacle, obstacle.label());
-                }
+            if widgets::ribbon_button(ui, Icon::Live, "En vivo", self.live, true)
+                .on_hover_text("Al editar el patrón, la prenda se reajusta sin volver a empezar")
+                .clicked()
+            {
+                self.live = !self.live;
+            }
+        });
+        widgets::ribbon_group(ui, "MONTAJE", false, |ui, _| {
+            ui.vertical(|ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    widgets::prop_label(ui, "Colocación");
+                    egui::ComboBox::from_id_salt("placement")
+                        .width(130.0)
+                        .selected_text(self.settings.placement.label())
+                        .show_ui(ui, |ui| {
+                            for placement in Placement::ALL {
+                                ui.selectable_value(&mut self.settings.placement, placement, placement.label())
+                                    .on_hover_text(placement.hint());
+                            }
+                        });
+                });
+                ui.checkbox(&mut self.settings.sew, "Coser las costuras")
+                    .on_hover_text("Cierra las costuras del patrón");
+            });
+        });
+        widgets::ribbon_group(ui, "ENTORNO", false, |ui, _| {
+            egui::Grid::new("environment").num_columns(2).spacing(egui::vec2(6.0, 2.0)).show(ui, |ui| {
+                widgets::prop_label(ui, "Obstáculo");
+                egui::ComboBox::from_id_salt("obstacle")
+                    .width(110.0)
+                    .selected_text(self.settings.obstacle.label())
+                    .show_ui(ui, |ui| {
+                        for obstacle in Obstacle::ALL {
+                            ui.selectable_value(&mut self.settings.obstacle, obstacle, obstacle.label());
+                        }
+                    });
+                ui.end_row();
+                widgets::prop_label(ui, "Tejido");
+                egui::ComboBox::from_id_salt("fabric")
+                    .width(110.0)
+                    .selected_text(self.settings.fabric.label())
+                    .show_ui(ui, |ui| {
+                        for kind in FabricKind::ALL {
+                            ui.selectable_value(&mut self.settings.fabric, kind, kind.label());
+                        }
+                    });
+                ui.end_row();
             });
             if self.settings.obstacle != Obstacle::Mannequin {
                 self.object_obstacle = self.settings.obstacle;
             }
-            egui::ComboBox::from_id_salt("fabric").selected_text(self.settings.fabric.label()).show_ui(ui, |ui| {
-                for kind in FabricKind::ALL {
-                    ui.selectable_value(&mut self.settings.fabric, kind, kind.label());
-                }
+        });
+        widgets::ribbon_group(ui, "AJUSTES", false, |ui, _| {
+            let response = widgets::ribbon_button(ui, Icon::Settings, "Precisión", false, true)
+                .on_hover_text("Tamaño de la malla, subpasos y auto-colisión");
+            egui::Popup::menu(&response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                ui.set_min_width(220.0);
+                self.settings_menu(ui);
             });
-            ui.menu_button("⚙", |ui| {
-                ui.label("Tamaño de los triángulos");
-                ui.add(egui::Slider::new(&mut self.settings.mesh_size, 8.0..=60.0).suffix(" mm"));
-                ui.label("Subpasos por fotograma");
-                ui.add(egui::Slider::new(&mut self.settings.substeps, 5..=60))
-                    .on_hover_text("Más subpasos: la tela se estira menos, pero cuesta más");
-                ui.checkbox(&mut self.settings.self_collision, "Auto-colisión")
-                    .on_hover_text("Que la tela no se atraviese a sí misma (un panel con otro)");
-                if ui.button("Encuadrar cámara").clicked() {
-                    self.camera = self.home;
-                }
-            });
+        });
+        widgets::ribbon_group(ui, "VISTA", false, |ui, _| {
+            if widgets::ribbon_button(ui, Icon::Home, "Inicio", false, true)
+                .on_hover_text("Encuadrar la cámara")
+                .clicked()
+            {
+                self.home();
+            }
         });
         if self.settings != settings_before {
             // Cambiar el tejido o la malla no desmonta la prenda.
             self.update_live(pattern, &color_of);
         }
+    }
 
+    /// Ajustes finos de la simulación.
+    fn settings_menu(&mut self, ui: &mut Ui) {
+        ui.label("Tamaño de los triángulos");
+        ui.add(egui::Slider::new(&mut self.settings.mesh_size, 8.0..=60.0).suffix(" mm"));
+        ui.label("Subpasos por fotograma");
+        ui.add(egui::Slider::new(&mut self.settings.substeps, 5..=60))
+            .on_hover_text("Más subpasos: la tela se estira menos, pero cuesta más");
+        ui.checkbox(&mut self.settings.self_collision, "Auto-colisión")
+            .on_hover_text("Que la tela no se atraviese a sí misma (un panel con otro)");
+    }
+
+    /// Estado de la simulación para la barra de estado.
+    pub fn status(&self, ui: &mut Ui, pattern: &Pattern) {
+        let Some(loaded) = self.loaded.as_ref() else { return };
         let stats = self.runner.stats();
-        ui.horizontal_wrapped(|ui| {
-            let loaded = self.loaded.as_ref().expect("cargado arriba");
-            ui.weak(format!(
-                "{:.1} s · {} partículas · {} costuras · {:.1} ms por paso",
+        if !loaded.failed.is_empty() {
+            ui.colored_label(theme::ERROR, format!("No se han podido mallar: {}", loaded.failed.join(", ")));
+        } else if self.rejected.as_ref() == Some(pattern) {
+            ui.colored_label(
+                theme::WARN,
+                "Hay una pieza que no se puede mallar: la prenda se actualizará cuando se arregle",
+            );
+        } else if self.outdated(pattern) && !self.live {
+            ui.colored_label(theme::WARN, "El patrón ha cambiado: pulsa Reiniciar para verlo");
+        }
+        if stats.sewing {
+            ui.colored_label(theme::ACCENT, "Cosiendo…");
+        }
+        let slow = if stats.step_ms > scene::FRAME * 1000.0 { " (más lento que el tiempo real)" } else { "" };
+        ui.label(
+            egui::RichText::new(format!(
+                "{:.1} s · {} partículas · {} costuras · {:.1} ms/paso{slow}",
                 stats.sim_time,
                 loaded.colors.len(),
                 loaded.seams,
                 stats.step_ms
-            ));
-            if stats.step_ms > scene::FRAME * 1000.0 {
-                ui.weak("(más lento que el tiempo real)");
-            }
-            if stats.sewing {
-                ui.colored_label(Color32::from_rgb(90, 170, 230), "Cosiendo…");
-            }
-            if self.rejected.as_ref() == Some(pattern) {
-                ui.colored_label(
-                    Color32::from_rgb(230, 150, 40),
-                    "Hay una pieza que no se puede mallar: la prenda se actualizará cuando se arregle.",
-                );
-            } else if outdated && !self.live {
-                ui.colored_label(Color32::from_rgb(230, 150, 40), "El patrón ha cambiado: pulsa Reiniciar para verlo.");
-            }
-            if !loaded.failed.is_empty() {
-                ui.colored_label(
-                    Color32::from_rgb(230, 80, 80),
-                    format!("No se han podido mallar: {}", loaded.failed.join(", ")),
-                );
-            }
-        });
-
-        self.viewport(ui);
-        if self.runner.is_running() {
-            ui.ctx().request_repaint();
-        }
+            ))
+            .color(theme::TEXT_WEAK),
+        );
     }
-
-    fn viewport(&mut self, ui: &mut Ui) {
+    /// La vista 3D, con el cubo de vista y la barra de navegación encima.
+    pub fn viewport(&mut self, ui: &mut Ui, pattern: &Pattern, color_of: impl Fn(PieceId) -> Color32) {
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         let Some(renderer) = self.renderer.as_mut() else {
             ui.painter().text(
@@ -346,7 +418,22 @@ impl View3D {
 
         // Cámara: arrastrar para girar, botón derecho / central o Mayús para
         // desplazar, rueda para acercar, doble clic para volver a encuadrar.
+        if let Some(fly) = self.fly {
+            match fly.camera() {
+                Some(camera) => {
+                    self.camera = camera;
+                    ui.ctx().request_repaint();
+                }
+                None => {
+                    self.camera = fly.end();
+                    self.fly = None;
+                }
+            }
+        }
         let shift = ui.input(|i| i.modifiers.shift);
+        if response.dragged() {
+            self.fly = None;
+        }
         if response.dragged_by(PointerButton::Primary) && !shift {
             self.camera.orbit(response.drag_delta());
         } else if response.dragged() {
@@ -355,11 +442,12 @@ impl View3D {
         if response.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll != 0.0 {
+                self.fly = None;
                 self.camera.zoom(scroll);
             }
         }
         if response.double_clicked() {
-            self.camera = self.home;
+            self.fly = Some(viewcube::Fly::new(self.camera, self.home));
         }
 
         if let Some(loaded) = &self.loaded {
@@ -416,10 +504,32 @@ impl View3D {
             ui.painter_at(rect).text(
                 rect.center_top() + egui::vec2(0.0, 16.0),
                 egui::Align2::CENTER_TOP,
-                "En pausa: pulsa ▶ Simular para coser",
+                "En pausa: pulsa Simular para coser",
                 egui::FontId::proportional(14.0),
                 ui.visuals().strong_text_color(),
             );
         }
+
+        widgets::viewport_label(ui, rect, "Vista 3D");
+        if let Some((yaw, pitch)) = viewcube::show(ui, rect, &self.camera) {
+            self.fly_to(Camera { yaw, pitch, ..self.camera });
+        }
+        widgets::nav_bar(ui, rect, "3d", |ui| {
+            if widgets::icon_button(ui, Icon::Home, "Inicio: encuadrar la cámara (doble clic)", false).clicked() {
+                self.home();
+            }
+            widgets::separator_v(ui, 24.0);
+            let running = self.runner.is_running();
+            let (icon, tip) = if running { (Icon::Pause, "Pausar la simulación") } else { (Icon::Play, "Simular") };
+            if widgets::icon_button(ui, icon, tip, running).clicked() {
+                self.toggle_running(pattern, &color_of);
+            }
+            if widgets::icon_button(ui, Icon::Restart, "Reiniciar la simulación", false).clicked() {
+                self.reload(pattern, &color_of);
+            }
+            if widgets::icon_button(ui, Icon::Live, "En vivo: reajustar la prenda al editar", self.live).clicked() {
+                self.live = !self.live;
+            }
+        });
     }
 }

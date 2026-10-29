@@ -25,17 +25,6 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 4] = [Tool::Select, Tool::Pen, Tool::Rect, Tool::Seam];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Tool::Select => "Seleccionar (V)",
-            Tool::Pen => "Pluma (P)",
-            Tool::Rect => "Rectángulo (R)",
-            Tool::Seam => "Costura (S)",
-        }
-    }
-
     pub fn hint(self) -> &'static str {
         match self {
             Tool::Select => {
@@ -186,6 +175,23 @@ impl Editor {
 
     pub fn zoom_percent(&self) -> f32 {
         self.view.zoom * 100.0
+    }
+
+    /// Acerca (`factor` > 1) o aleja la vista, alrededor del centro del lienzo.
+    pub fn zoom_by(&mut self, factor: f32) {
+        let rect = self.canvas_rect;
+        if !rect.is_positive() {
+            return;
+        }
+        let anchor = self.view.to_world(rect, rect.center());
+        self.view.zoom = (self.view.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        let moved = self.view.to_screen(rect, anchor);
+        self.view.pan += rect.center() - moved;
+    }
+
+    /// Zona de la pantalla que ocupa el lienzo.
+    pub fn rect(&self) -> Rect {
+        self.canvas_rect
     }
 
     /// Centro del lienzo en coordenadas del mundo.
