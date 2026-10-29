@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Ui};
-use pattern::{Arrangement, EdgeKind, Issue, Pattern, Point, SeamId};
+use pattern::{Arrangement, BodyZone, EdgeKind, Issue, Pattern, Point, SeamId};
 
 use crate::canvas::{self, Editor, Selection, Tool};
 use crate::examples;
@@ -277,6 +277,10 @@ impl ClothingMakerApp {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Patrón");
             ui.text_edit_singleline(&mut self.pattern.name);
+            ui.checkbox(&mut self.pattern.on_avatar, "Prenda para el maniquí").on_hover_text(
+                "La vista 3D la viste sobre el maniquí y cada pieza se coloca en su zona del cuerpo. \
+                 Quítalo para objetos como bolsas o mochilas.",
+            );
             ui.add_space(8.0);
 
             ui.heading("Piezas");
@@ -387,6 +391,7 @@ impl ClothingMakerApp {
             self.seam_details(ui, id);
             return;
         }
+        let on_avatar = self.pattern.on_avatar;
         let Some(piece) = selection.piece().and_then(|id| self.pattern.piece_mut(id)) else {
             ui.weak("Selecciona una pieza, un punto o una arista para ver sus propiedades.");
             return;
@@ -414,6 +419,18 @@ impl ClothingMakerApp {
                 }
             });
             ui.end_row();
+            if on_avatar {
+                ui.label("Zona del cuerpo").on_hover_text(
+                    "Alrededor de qué parte del maniquí se coloca: el torso, un brazo (mangas) o una pierna. \
+                     Derecha e izquierda son las del maniquí.",
+                );
+                egui::ComboBox::from_id_salt("zone").selected_text(piece.zone.label()).show_ui(ui, |ui| {
+                    for zone in BodyZone::ALL {
+                        ui.selectable_value(&mut piece.zone, zone, zone.label());
+                    }
+                });
+                ui.end_row();
+            }
         });
 
         match selection {

@@ -1,6 +1,6 @@
 //! Vista 3D: las piezas del patrón como tela simulada, cosidas entre sí y
-//! cayendo sobre el suelo y, si se quiere, sobre un obstáculo (esfera o
-//! mesa).
+//! cayendo sobre el suelo y, si se quiere, sobre un obstáculo (esfera, mesa
+//! o el maniquí, para las prendas).
 
 mod render;
 mod scene;
@@ -13,6 +13,7 @@ use render::{Renderer, Vertex};
 use scene::{FabricKind, Obstacle, Placement, Runner, SceneSettings};
 
 const OBSTACLE_COLOR: [f32; 3] = [0.42, 0.44, 0.48];
+const MANNEQUIN_COLOR: [f32; 3] = [0.62, 0.58, 0.54];
 
 /// Cámara que orbita alrededor de un punto.
 #[derive(Clone, Copy, Debug)]
@@ -103,10 +104,18 @@ pub struct View3D {
     positions: Vec<Vec3>,
     version: u64,
     obstacle: Option<Obstacle>,
+    /// Si el patrón era una prenda para el maniquí la última vez, para
+    /// poner o quitar el maniquí cuando cambia.
+    on_avatar: Option<bool>,
+    /// Último obstáculo elegido sin maniquí, para volver a él.
+    object_obstacle: Obstacle,
 }
 
 impl View3D {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // El campo de distancia del maniquí tarda un poco: se prepara ya,
+        // por si hace falta.
+        std::thread::spawn(avatar::mannequin);
         Self {
             renderer: cc.wgpu_render_state.as_ref().map(Renderer::new),
             runner: Runner::new(),
@@ -117,6 +126,8 @@ impl View3D {
             positions: Vec::new(),
             version: u64::MAX,
             obstacle: None,
+            on_avatar: None,
+            object_obstacle: SceneSettings::default().obstacle,
         }
     }
 
@@ -129,7 +140,12 @@ impl View3D {
         let reframe = self.loaded.as_ref().is_none_or(|l| {
             (l.settings.placement, l.settings.obstacle) != (self.settings.placement, self.settings.obstacle)
         });
-        self.home = Camera::framing(&scene.cloth.positions);
+        let mut framed = scene.cloth.positions.clone();
+        if let Some(avatar) = self.settings.obstacle.avatar() {
+            // Que se vea el maniquí entero, no solo la prenda.
+            framed.extend([Vec3::ZERO, Vec3::Y * avatar.height()]);
+        }
+        self.home = Camera::framing(&framed);
         if reframe {
             self.camera = self.home;
         }
@@ -147,6 +163,17 @@ impl View3D {
     }
 
     pub fn ui(&mut self, ui: &mut Ui, pattern: &Pattern, color_of: impl Fn(PieceId) -> Color32) {
+        // Las prendas se ven sobre el maniquí y los objetos sin él.
+        if self.on_avatar != Some(pattern.on_avatar) {
+            self.on_avatar = Some(pattern.on_avatar);
+            let wanted = if pattern.on_avatar { Obstacle::Mannequin } else { self.object_obstacle };
+            if self.settings.obstacle != wanted {
+                self.settings.obstacle = wanted;
+                if self.loaded.is_some() {
+                    self.reload(pattern, &color_of);
+                }
+            }
+        }
         if self.loaded.is_none() {
             // La primera vez arranca sola, para que se vea coser sin buscar el botón.
             self.reload(pattern, &color_of);
@@ -177,17 +204,14 @@ impl View3D {
                 },
             );
             ui.checkbox(&mut self.settings.sew, "Coser").on_hover_text("Cierra las costuras del patrón");
-            egui::ComboBox::from_id_salt("obstacle")
-                .selected_text(match self.settings.obstacle {
-                    Obstacle::None => "Solo suelo",
-                    Obstacle::Sphere => "Esfera",
-                    Obstacle::Table => "Mesa",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.settings.obstacle, Obstacle::None, "Solo suelo");
-                    ui.selectable_value(&mut self.settings.obstacle, Obstacle::Sphere, "Esfera");
-                    ui.selectable_value(&mut self.settings.obstacle, Obstacle::Table, "Mesa");
-                });
+            egui::ComboBox::from_id_salt("obstacle").selected_text(self.settings.obstacle.label()).show_ui(ui, |ui| {
+                for obstacle in Obstacle::ALL {
+                    ui.selectable_value(&mut self.settings.obstacle, obstacle, obstacle.label());
+                }
+            });
+            if self.settings.obstacle != Obstacle::Mannequin {
+                self.object_obstacle = self.settings.obstacle;
+            }
             egui::ComboBox::from_id_salt("fabric").selected_text(self.settings.fabric.label()).show_ui(ui, |ui| {
                 for kind in FabricKind::ALL {
                     ui.selectable_value(&mut self.settings.fabric, kind, kind.label());
@@ -275,6 +299,15 @@ impl View3D {
         if let Some(loaded) = &self.loaded {
             if self.obstacle != Some(loaded.settings.obstacle) {
                 let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+                if let Some(avatar) = loaded.settings.obstacle.avatar() {
+                    let normals = simulator::vertex_normals(&avatar.positions, &avatar.triangles);
+                    vertices.extend(avatar.positions.iter().zip(&normals).map(|(p, n)| Vertex {
+                        position: p.to_array(),
+                        normal: n.to_array(),
+                        color: MANNEQUIN_COLOR,
+                    }));
+                    indices.extend(avatar.triangles.iter().flatten());
+                }
                 match loaded.settings.obstacle.collider() {
                     Some(simulator::Collider::Sphere { center, radius }) => {
                         render::push_sphere(&mut vertices, &mut indices, center, radius, OBSTACLE_COLOR)

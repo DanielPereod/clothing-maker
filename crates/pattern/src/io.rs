@@ -102,6 +102,19 @@ mod tests {
     }
 
     #[test]
+    fn avatar_fields_are_optional() {
+        let mut p = sample();
+        let json = p.to_json().unwrap();
+        assert!(!json.contains("zone") && !json.contains("on_avatar"), "los valores por defecto no se guardan");
+        p.on_avatar = true;
+        p.pieces[1].zone = crate::BodyZone::LeftArm;
+        let back = Pattern::from_json(&p.to_json().unwrap()).unwrap();
+        assert!(back.on_avatar);
+        assert_eq!(back.pieces[1].zone, crate::BodyZone::LeftArm);
+        assert_eq!(back.pieces[0].zone, crate::BodyZone::Torso);
+    }
+
+    #[test]
     fn next_id_never_collides_after_load() {
         let mut p = sample();
         let json = p.to_json().unwrap().replace("\"next_id\"", "\"ignored\"");

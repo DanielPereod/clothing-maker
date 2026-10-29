@@ -13,7 +13,7 @@ mod piece;
 
 pub use io::{FORMAT_ID, FORMAT_VERSION, PatternFile, PatternIoError};
 pub use kurbo::{Point, Vec2};
-pub use piece::{Arrangement, Edge, EdgeKind, Piece, polygon_self_intersects};
+pub use piece::{Arrangement, BodyZone, Edge, EdgeKind, Piece, polygon_self_intersects};
 
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +77,10 @@ pub struct Pattern {
     pub pieces: Vec<Piece>,
     #[serde(default)]
     pub seams: Vec<Seam>,
+    /// Es una prenda que se viste sobre el maniquí (si no, un objeto suelto
+    /// como una bolsa). La vista 3D pone o quita el maniquí según esto.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_avatar: bool,
     /// Siguiente id libre (compartido por piezas, aristas y costuras).
     #[serde(default)]
     next_id: u64,
@@ -110,7 +114,7 @@ pub const SEAM_LENGTH_TOLERANCE: f64 = 1.0;
 
 impl Pattern {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), pieces: Vec::new(), seams: Vec::new(), next_id: 1 }
+        Self { name: name.into(), pieces: Vec::new(), seams: Vec::new(), on_avatar: false, next_id: 1 }
     }
 
     /// Reserva un id nuevo. Sirve para piezas, aristas y costuras.
@@ -157,6 +161,7 @@ impl Pattern {
         let mut piece =
             Piece::from_parts(new_id, format!("{} (copia)", src.name), points, edges).expect("misma longitud");
         piece.arrangement = src.arrangement;
+        piece.zone = src.zone;
         self.pieces.push(piece);
         Some(new_id)
     }

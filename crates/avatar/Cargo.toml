@@ -1,0 +1,14 @@
+[package]
+name = "avatar"
+description = "Maniquí opcional: malla, campo de distancia para la colisión y zonas de colocación."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pattern.workspace = true
+simulator.workspace = true
+glam.workspace = true
+gltf.workspace = true
+thiserror.workspace = true

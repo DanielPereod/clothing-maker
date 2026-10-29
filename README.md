@@ -16,7 +16,8 @@ como mochilas o bolsas.
 - Longitud de cada arista en la pieza seleccionada, área y perímetro.
 - Guardar y abrir en JSON (`*.pattern.json`), con aviso de cambios sin guardar.
 - Vista previa de la malla de simulación.
-- Ejemplos: camiseta básica, bolsa tote y bolsa con fondo (Archivo → Ejemplos).
+- Ejemplos: camiseta básica, camiseta con mangas, bolsa tote y bolsa con fondo
+  (Archivo → Ejemplos).
 
 Navegación: rueda para zoom, arrastrar en vacío / botón central / derecho para
 desplazar, F para encuadrar todo.
@@ -30,14 +31,14 @@ desplazar, F para encuadrar todo.
   patrón actual; si editas el patrón, la vista avisa de que hay cambios).
 - Colocación: *Alrededor* (ver fase 3), *Soltar* (las piezas caen en
   horizontal) o *Colgar* (cuelgan de su borde superior).
-- Obstáculos: solo suelo, esfera o mesa. Son colisionadores genéricos; el
-  avatar será uno más, así que también sirve para objetos sin cuerpo.
+- Obstáculos: maniquí (fase 4), solo suelo, esfera o mesa. Son colisionadores
+  genéricos, así que también sirve para objetos sin cuerpo.
 - Tejidos: algodón, seda y vaquero. En ⚙, tamaño de los triángulos y
   subpasos (más subpasos = tela menos elástica, pero más lenta).
 - Cámara: arrastrar para girar, botón derecho / central (o Mayús + arrastrar)
   para desplazar, rueda para acercar, doble clic para volver a encuadrar.
 
-**Fase 3 (esta):** costuras.
+**Fase 3:** costuras.
 
 - Herramienta *Costura* (S): haz clic en cada arista cerca del extremo por el
   que empieza la costura; con el segundo clic se crea. Mayús + clic añade más
@@ -63,7 +64,26 @@ desplazar, F para encuadrar todo.
 Aún no hay colisión de la tela consigo misma: dos paneles cosidos pueden
 atravesarse al caer, y una bolsa vacía se queda aplastada.
 
-**Siguientes fases:** avatar con puntos de colocación, remallado en vivo y
+**Fase 4 (esta):** maniquí y puntos de colocación.
+
+- Maniquí sacado de la malla base de MakeHuman (CC0, ver
+  [`assets/README.md`](assets/README.md)). Es opcional: la casilla *Prenda
+  para el maniquí* del patrón lo pone en la vista 3D (y lo quita para bolsas
+  y mochilas); también se puede elegir a mano en la lista de obstáculos.
+- La tela choca con el cuerpo mediante un campo de distancia precalculado
+  (rejilla de 8 mm, menos de un segundo al abrir la app). Cualquier malla
+  cerrada sirve como colisionador.
+- Puntos de colocación: con el maniquí, cada pieza tiene una *Zona del
+  cuerpo* (torso, brazo derecho o izquierdo, pierna derecha o izquierda) y,
+  dentro de ella, su *Colocación 3D* de siempre. La colocación *Alrededor*
+  curva cada pieza alrededor del eje de su zona, con algo de holgura sobre el
+  cuerpo, y las costuras la cierran. En los brazos, *Delante* es la cara de
+  arriba, así que una manga de una pieza cierra por debajo del brazo.
+- Derecha e izquierda de las zonas son las del maniquí; la colocación
+  *Derecha* / *Izquierda* de las piezas sigue siendo la de quien mira la
+  prenda de frente.
+
+**Siguientes fases:** remallado en vivo y
 auto-colisión, y después tejidos (con relleno o presión para objetos),
 GPU y exportación.
 

@@ -260,6 +260,7 @@
         ]
       }
     ],
+    "on_avatar": true,
     "next_id": 23
   }
 }

@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use avatar::{Avatar, ZoneFrame};
 use eframe::egui;
 use glam::Vec3;
 use mesher::{Mesh2D, MeshOptions};
-use pattern::{Arrangement, Pattern};
+use pattern::{Arrangement, BodyZone, Pattern, Piece};
 use simulator::{Cloth, Collider, Fabric, SimParams};
 
 /// Cómo se colocan las piezas antes de soltarlas.
@@ -18,7 +19,8 @@ use simulator::{Cloth, Collider, Fabric, SimParams};
 pub enum Placement {
     /// Alrededor de un eje vertical, cada pieza en su lado (delante, detrás,
     /// a los lados, arriba o abajo) y curvada, para que las costuras cierren
-    /// la prenda u objeto.
+    /// la prenda u objeto. Con el maniquí, el eje es el de la zona del
+    /// cuerpo de cada pieza (torso, brazos o piernas).
     Around,
     /// Tumbadas en horizontal, a medio metro sobre el obstáculo, y caen.
     Drop,
@@ -40,7 +42,8 @@ impl Placement {
     pub fn hint(self) -> &'static str {
         match self {
             Placement::Around => {
-                "Cada pieza en su lado (Colocación 3D en sus propiedades), curvada alrededor de un eje"
+                "Cada pieza en su lado (Colocación 3D en sus propiedades), curvada alrededor de un eje \
+                 o, con el maniquí, alrededor de su zona del cuerpo"
             }
             Placement::Drop => "Las piezas caen en horizontal sobre el obstáculo",
             Placement::Hang => "Las piezas cuelgan de su borde superior",
@@ -53,6 +56,8 @@ pub enum Obstacle {
     None,
     Sphere,
     Table,
+    /// El maniquí, para vestir prendas.
+    Mannequin,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,14 +132,33 @@ pub struct Scene {
 }
 
 const SPHERE_RADIUS: f32 = 0.25;
+/// Holgura (m) entre el cuerpo y las piezas al colocarlas.
+const BODY_CLEARANCE: f32 = 0.03;
 const TABLE_HALF: Vec3 = Vec3::new(0.4, 0.375, 0.3);
 /// Altura (m) del borde superior de las piezas colgadas.
 const HANG_HEIGHT: f32 = 1.6;
 
 impl Obstacle {
+    pub const ALL: [Obstacle; 4] = [Obstacle::Mannequin, Obstacle::None, Obstacle::Sphere, Obstacle::Table];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Obstacle::None => "Solo suelo",
+            Obstacle::Sphere => "Esfera",
+            Obstacle::Table => "Mesa",
+            Obstacle::Mannequin => "Maniquí",
+        }
+    }
+
+    /// El maniquí, si este obstáculo lo es (la primera vez se carga).
+    pub fn avatar(self) -> Option<Arc<Avatar>> {
+        (self == Obstacle::Mannequin).then(avatar::mannequin)
+    }
+
     pub fn collider(self) -> Option<Collider> {
         match self {
             Obstacle::None => None,
+            Obstacle::Mannequin => self.avatar().map(|a| a.collider()),
             Obstacle::Sphere => {
                 Some(Collider::Sphere { center: Vec3::new(0.0, SPHERE_RADIUS, 0.0), radius: SPHERE_RADIUS })
             }
@@ -149,6 +173,17 @@ impl Obstacle {
             Obstacle::None => 0.0,
             Obstacle::Sphere => 2.0 * SPHERE_RADIUS,
             Obstacle::Table => 2.0 * TABLE_HALF.y,
+            Obstacle::Mannequin => self.avatar().map_or(0.0, |a| a.height()),
+        }
+    }
+
+    /// Hasta dónde llega hacia delante (z), para colgar las piezas delante.
+    fn front(self) -> f32 {
+        match self {
+            Obstacle::None => 0.0,
+            Obstacle::Sphere => SPHERE_RADIUS,
+            Obstacle::Table => TABLE_HALF.z,
+            Obstacle::Mannequin => self.avatar().map_or(0.0, |a| a.front_z()),
         }
     }
 }
@@ -176,7 +211,9 @@ pub fn build(
     let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let drop_height = settings.obstacle.top() + 0.1;
     let around = settings.placement == Placement::Around;
-    let layout = around.then(|| AroundLayout::new(&meshes, settings.obstacle.top()));
+    let avatar = settings.obstacle.avatar();
+    let layout = around.then(|| AroundLayout::new(&meshes, settings.obstacle.top(), avatar.as_deref()));
+    let hang_z = settings.obstacle.front() + if settings.obstacle == Obstacle::None { 0.0 } else { 0.1 };
 
     let mut cloth = Cloth::new();
     let mut colors = Vec::new();
@@ -185,8 +222,7 @@ pub fn build(
         let range = match settings.placement {
             Placement::Around => {
                 let layout = layout.as_ref().expect("calculada arriba");
-                let a = piece.arrangement;
-                cloth.add_piece(mesh, &fabric, |p| layout.place(a, p), layout.front(a))
+                cloth.add_piece(mesh, &fabric, |p| layout.place(piece, p), layout.front(piece))
             }
             Placement::Drop => cloth.add_piece(
                 mesh,
@@ -197,7 +233,9 @@ pub fn build(
             Placement::Hang => cloth.add_piece(
                 mesh,
                 &fabric,
-                |p| Vec3::new(((p[0] - center[0]) * 1e-3) as f32, HANG_HEIGHT - ((p[1] - min[1]) * 1e-3) as f32, 0.0),
+                |p| {
+                    Vec3::new(((p[0] - center[0]) * 1e-3) as f32, HANG_HEIGHT - ((p[1] - min[1]) * 1e-3) as f32, hang_z)
+                },
                 Vec3::Z,
             ),
         };
@@ -249,64 +287,116 @@ fn bounds(meshes: &[&Mesh2D]) -> ([f64; 2], [f64; 2]) {
 }
 
 /// Colocación «alrededor»: las piezas de delante, detrás y los lados se
-/// curvan sobre un cilindro vertical, cada grupo centrado en su lado y con
-/// la disposición del editor; las de arriba y abajo van en horizontal,
+/// curvan sobre un cilindro, cada grupo centrado en su lado y con la
+/// disposición del editor; las de arriba y abajo van perpendiculares al eje,
 /// tapando el cilindro.
+///
+/// Sin maniquí hay un solo cilindro vertical, sobre el obstáculo. Con
+/// maniquí, uno por zona del cuerpo ([`BodyZone`]), con el eje de esa zona
+/// y un radio que deja algo de holgura sobre el cuerpo.
 struct AroundLayout {
+    /// Centro (mm) de cada grupo de piezas en el patrón.
+    group_center: HashMap<(BodyZone, Arrangement), [f64; 2]>,
+    zones: HashMap<BodyZone, ZoneLayout>,
+    /// Con maniquí, cada pieza va en su zona; sin él, todas en una.
+    by_zone: bool,
+}
+
+struct ZoneLayout {
+    frame: ZoneFrame,
+    /// Radio del cilindro (mm).
     radius: f64,
-    /// Centro horizontal (mm) de cada grupo en el patrón.
-    group_center: HashMap<Arrangement, [f64; 2]>,
-    /// Borde inferior (mm, Y hacia abajo) de las piezas laterales.
-    bottom: f64,
-    /// Altura (m) del borde inferior de las piezas laterales.
-    base: f32,
-    /// Altura (m) de la tapa de arriba y de la de abajo.
-    top_y: f32,
-    bottom_y: f32,
+    /// Borde superior (mm, Y hacia abajo) de las piezas laterales: va en
+    /// `frame.top`.
+    top: f64,
+    /// Alto (m) de las piezas laterales.
+    height: f32,
 }
 
 /// Separación (m) entre las tapas y las piezas laterales.
 const CAP_GAP: f32 = 0.05;
 
+fn is_wall(a: Arrangement) -> bool {
+    !matches!(a, Arrangement::Top | Arrangement::Bottom)
+}
+
 impl AroundLayout {
-    fn new(meshes: &[(usize, &pattern::Piece, &Mesh2D)], floor: f32) -> Self {
-        let mut groups: HashMap<Arrangement, Vec<&Mesh2D>> = HashMap::new();
+    fn new(meshes: &[(usize, &Piece, &Mesh2D)], floor: f32, avatar: Option<&Avatar>) -> Self {
+        let by_zone = avatar.is_some();
+        let zone_of = |piece: &Piece| if by_zone { piece.zone } else { BodyZone::Torso };
+        let mut groups: HashMap<(BodyZone, Arrangement), Vec<&Mesh2D>> = HashMap::new();
         for (_, piece, mesh) in meshes {
-            groups.entry(piece.arrangement).or_default().push(mesh);
+            groups.entry((zone_of(piece), piece.arrangement)).or_default().push(mesh);
         }
-        let group_bounds: HashMap<Arrangement, ([f64; 2], [f64; 2])> =
-            groups.iter().map(|(a, m)| (*a, bounds(m))).collect();
+        let group_bounds: HashMap<(BodyZone, Arrangement), ([f64; 2], [f64; 2])> =
+            groups.iter().map(|(k, m)| (*k, bounds(m))).collect();
         let group_center = group_bounds
             .iter()
-            .map(|(a, (min, max))| (*a, [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0]))
+            .map(|(k, (min, max))| (*k, [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0]))
             .collect();
 
-        let is_wall = |a: &Arrangement| !matches!(a, Arrangement::Top | Arrangement::Bottom);
-        let walls: Vec<&Mesh2D> =
-            groups.iter().filter(|(a, _)| is_wall(a)).flat_map(|(_, m)| m.iter().copied()).collect();
-        let (wall_min, wall_max) = bounds(&walls);
-        // Cada grupo ocupa como mucho este ángulo del cilindro, para que
-        // quede un hueco entre grupos vecinos.
-        let sides = groups.contains_key(&Arrangement::Left) || groups.contains_key(&Arrangement::Right);
-        let max_angle = if sides { 0.42 } else { 0.85 } * std::f64::consts::PI;
-        let widest =
-            group_bounds.iter().filter(|(a, _)| is_wall(a)).map(|(_, (min, max))| max[0] - min[0]).fold(0.0, f64::max);
-        let radius = (widest / max_angle).max(100.0);
-
-        let height = if walls.is_empty() { 0.0 } else { ((wall_max[1] - wall_min[1]) * 1e-3) as f32 };
-        let has_bottom = groups.contains_key(&Arrangement::Bottom);
-        let base = floor + 0.1 + if has_bottom { CAP_GAP } else { 0.0 };
-        Self {
-            radius,
-            group_center,
-            bottom: if walls.is_empty() { 0.0 } else { wall_max[1] },
-            base,
-            top_y: base + height + CAP_GAP,
-            bottom_y: base - CAP_GAP,
+        let mut zones = HashMap::new();
+        for zone in BodyZone::ALL {
+            let in_zone: Vec<Arrangement> = groups.keys().filter(|(z, _)| *z == zone).map(|(_, a)| *a).collect();
+            if in_zone.is_empty() {
+                continue;
+            }
+            let walls: Vec<&Mesh2D> = groups
+                .iter()
+                .filter(|((z, a), _)| *z == zone && is_wall(*a))
+                .flat_map(|(_, m)| m.iter().copied())
+                .collect();
+            let (wall_min, wall_max) = bounds(&walls);
+            let height = if walls.is_empty() { 0.0 } else { ((wall_max[1] - wall_min[1]) * 1e-3) as f32 };
+            // Cada grupo ocupa como mucho este ángulo del cilindro, para que
+            // quede un hueco entre grupos vecinos. Sobre el cuerpo, una pieza
+            // sola (una manga, por ejemplo) casi da la vuelta entera.
+            let wall_groups = in_zone.iter().filter(|a| is_wall(**a)).count();
+            let sides = in_zone.contains(&Arrangement::Left) || in_zone.contains(&Arrangement::Right);
+            let max_angle = if by_zone && wall_groups == 1 {
+                1.7
+            } else if sides {
+                0.42
+            } else {
+                0.85
+            } * std::f64::consts::PI;
+            let widest = group_bounds
+                .iter()
+                .filter(|((z, a), _)| *z == zone && is_wall(*a))
+                .map(|(_, (min, max))| max[0] - min[0])
+                .fold(0.0, f64::max);
+            let fit = widest / max_angle;
+            let (frame, radius) = match avatar {
+                Some(avatar) => {
+                    let frame = *avatar.zone(zone);
+                    (frame, fit.max(((frame.radius + BODY_CLEARANCE) * 1e3) as f64))
+                }
+                None => {
+                    let has_bottom = in_zone.contains(&Arrangement::Bottom);
+                    let base = floor + 0.1 + if has_bottom { CAP_GAP } else { 0.0 };
+                    let frame = ZoneFrame {
+                        top: Vec3::new(0.0, base + height, 0.0),
+                        axis: -Vec3::Y,
+                        front: Vec3::Z,
+                        right: Vec3::X,
+                        length: height,
+                        radius: 0.0,
+                    };
+                    (frame, fit.max(100.0))
+                }
+            };
+            let top = if walls.is_empty() { 0.0 } else { wall_min[1] };
+            zones.insert(zone, ZoneLayout { frame, radius, top, height });
         }
+        Self { group_center, zones, by_zone }
     }
 
-    /// Ángulo del centro de cada lado alrededor del eje (0 = delante, +Z).
+    fn zone(&self, piece: &Piece) -> (BodyZone, &ZoneLayout) {
+        let zone = if self.by_zone { piece.zone } else { BodyZone::Torso };
+        (zone, &self.zones[&zone])
+    }
+
+    /// Ángulo del centro de cada lado alrededor del eje (0 = delante).
     fn angle(a: Arrangement) -> f64 {
         use std::f64::consts::{FRAC_PI_2, PI};
         match a {
@@ -317,30 +407,30 @@ impl AroundLayout {
         }
     }
 
-    fn place(&self, a: Arrangement, p: [f64; 2]) -> Vec3 {
-        let c = self.group_center.get(&a).copied().unwrap_or_default();
-        let (dx, dy) = ((p[0] - c[0]) * 1e-3, (p[1] - c[1]) * 1e-3);
+    fn place(&self, piece: &Piece, p: [f64; 2]) -> Vec3 {
+        let (zone, layout) = self.zone(piece);
+        let a = piece.arrangement;
+        let f = &layout.frame;
+        let c = self.group_center.get(&(zone, a)).copied().unwrap_or_default();
+        let (dx, dy) = (((p[0] - c[0]) * 1e-3) as f32, ((p[1] - c[1]) * 1e-3) as f32);
         match a {
-            Arrangement::Top => Vec3::new(dx as f32, self.top_y, dy as f32),
-            Arrangement::Bottom => Vec3::new(dx as f32, self.bottom_y, -dy as f32),
+            Arrangement::Top => f.top - f.axis * CAP_GAP + f.right * dx + f.front * dy,
+            Arrangement::Bottom => f.top + f.axis * (layout.height + CAP_GAP) + f.right * dx - f.front * dy,
             _ => {
                 // La x del dibujo avanza hacia la derecha de quien mira la pieza.
-                let theta = Self::angle(a) + (p[0] - c[0]) / self.radius;
-                let r = (self.radius * 1e-3) as f32;
-                let y = self.base + ((self.bottom - p[1]) * 1e-3) as f32;
-                Vec3::new(r * theta.sin() as f32, y, r * theta.cos() as f32)
+                let theta = Self::angle(a) + (p[0] - c[0]) / layout.radius;
+                let along = ((p[1] - layout.top) * 1e-3) as f32;
+                f.top + f.axis * along + f.direction(theta as f32) * (layout.radius * 1e-3) as f32
             }
         }
     }
 
-    fn front(&self, a: Arrangement) -> Vec3 {
-        match a {
-            Arrangement::Top => Vec3::Y,
-            Arrangement::Bottom => -Vec3::Y,
-            _ => {
-                let theta = Self::angle(a);
-                Vec3::new(theta.sin() as f32, 0.0, theta.cos() as f32)
-            }
+    fn front(&self, piece: &Piece) -> Vec3 {
+        let (_, layout) = self.zone(piece);
+        match piece.arrangement {
+            Arrangement::Top => -layout.frame.axis,
+            Arrangement::Bottom => layout.frame.axis,
+            a => layout.frame.direction(Self::angle(a) as f32),
         }
     }
 }
@@ -501,12 +591,17 @@ mod tests {
         build(&make(), settings, |_| egui::Color32::WHITE)
     }
 
+    /// Como en la aplicación: las prendas, sobre el maniquí.
+    fn settings_for(make: fn() -> Pattern, settings: SceneSettings) -> SceneSettings {
+        if make().on_avatar { SceneSettings { obstacle: Obstacle::Mannequin, ..settings } } else { settings }
+    }
+
     /// Colocadas alrededor, los dos lados de cada costura de los ejemplos
     /// corren en el mismo sentido: al revés, los puntos quedarían más lejos.
     #[test]
     fn example_seams_line_up_when_placed_around() {
-        let settings = SceneSettings::default();
         for (name, _, make) in examples::ALL {
+            let settings = settings_for(make, SceneSettings::default());
             let pattern = make();
             let scene = build_example(make, &settings);
             assert!(scene.failed.is_empty());
@@ -529,12 +624,42 @@ mod tests {
         }
     }
 
+    /// La camiseta, cosida sobre el maniquí: se cierra, se apoya en los
+    /// hombros sin caerse al suelo y ninguna partícula acaba dentro del
+    /// cuerpo.
+    #[test]
+    fn t_shirt_dresses_the_mannequin() {
+        let settings = SceneSettings { obstacle: Obstacle::Mannequin, mesh_size: 25.0, ..Default::default() };
+        let mut scene = build_example(examples::t_shirt, &settings);
+        let body = settings.obstacle.collider().unwrap();
+        let start = Instant::now();
+        for _ in 0..300 {
+            scene.cloth.step(FRAME, &settings.params(), &scene.colliders);
+        }
+        eprintln!("{} partículas, {:?} por paso", scene.cloth.positions.len(), start.elapsed() / 300);
+        assert!(scene.cloth.positions.iter().all(|p| p.is_finite()));
+        assert!(!scene.cloth.is_sewing());
+        let gap = scene.cloth.max_seam_gap();
+        assert!(gap < 5e-3, "costura abierta {gap}");
+        let deepest = scene.cloth.positions.iter().map(|p| body.signed_distance(*p).0).fold(f32::INFINITY, f32::min);
+        assert!(deepest > -0.005, "partícula dentro del maniquí: {deepest}");
+        let (lowest, highest) = scene
+            .cloth
+            .positions
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
+        eprintln!("de {lowest} a {highest} m");
+        assert!(highest > 1.35 && lowest > 0.5, "se ha caído: de {lowest} a {highest}");
+        let speed = scene.cloth.velocities.iter().map(|v| v.length()).fold(0.0, f32::max);
+        assert!(speed < 0.1, "sigue moviéndose: {speed}");
+    }
+
     /// Cosidos y soltados sobre la mesa, los ejemplos se cierran y quedan
     /// quietos sin que nada explote.
     #[test]
     fn examples_sew_and_settle() {
-        let settings = SceneSettings { mesh_size: 30.0, ..Default::default() };
         for (name, _, make) in examples::ALL {
+            let settings = settings_for(make, SceneSettings { mesh_size: 30.0, ..Default::default() });
             let mut scene = build_example(make, &settings);
             assert!(scene.cloth.is_sewing());
             for _ in 0..240 {
