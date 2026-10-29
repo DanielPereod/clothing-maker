@@ -1,0 +1,543 @@
+{
+  "format": "clothing-maker/pattern",
+  "version": 1,
+  "pattern": {
+    "name": "Chalk bag",
+    "pieces": [
+      {
+        "id": 1,
+        "name": "Cuerpo delantero (1.1)",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 86.75
+          },
+          {
+            "x": 190.5,
+            "y": 86.75
+          },
+          {
+            "x": 190.5,
+            "y": 220.25
+          },
+          {
+            "x": 95.25,
+            "y": 220.25
+          },
+          {
+            "x": 0.0,
+            "y": 220.25
+          }
+        ],
+        "edges": [
+          {
+            "id": 2,
+            "type": "line"
+          },
+          {
+            "id": 3,
+            "type": "line"
+          },
+          {
+            "id": 4,
+            "type": "line"
+          },
+          {
+            "id": 5,
+            "type": "line"
+          },
+          {
+            "id": 6,
+            "type": "line"
+          }
+        ],
+        "layers": [
+          6,
+          11
+        ]
+      },
+      {
+        "id": 7,
+        "name": "Cuerpo trasero (1.2)",
+        "vertices": [
+          {
+            "x": 240.5,
+            "y": 86.75
+          },
+          {
+            "x": 431.0,
+            "y": 86.75
+          },
+          {
+            "x": 431.0,
+            "y": 220.25
+          },
+          {
+            "x": 335.75,
+            "y": 220.25
+          },
+          {
+            "x": 240.5,
+            "y": 220.25
+          }
+        ],
+        "edges": [
+          {
+            "id": 8,
+            "type": "line"
+          },
+          {
+            "id": 9,
+            "type": "line"
+          },
+          {
+            "id": 10,
+            "type": "line"
+          },
+          {
+            "id": 11,
+            "type": "line"
+          },
+          {
+            "id": 12,
+            "type": "line"
+          }
+        ],
+        "arrangement": "back",
+        "layers": [
+          6,
+          11
+        ]
+      },
+      {
+        "id": 13,
+        "name": "Puño delantero (5.1)",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 0.0
+          },
+          {
+            "x": 190.5,
+            "y": 0.0
+          },
+          {
+            "x": 190.5,
+            "y": 66.75
+          },
+          {
+            "x": 0.0,
+            "y": 66.75
+          }
+        ],
+        "edges": [
+          {
+            "id": 14,
+            "type": "line"
+          },
+          {
+            "id": 15,
+            "type": "line"
+          },
+          {
+            "id": 16,
+            "type": "line"
+          },
+          {
+            "id": 17,
+            "type": "line"
+          }
+        ],
+        "fabric": 4,
+        "layers": [
+          4
+        ]
+      },
+      {
+        "id": 18,
+        "name": "Puño trasero (5.2)",
+        "vertices": [
+          {
+            "x": 240.5,
+            "y": 0.0
+          },
+          {
+            "x": 431.0,
+            "y": 0.0
+          },
+          {
+            "x": 431.0,
+            "y": 66.75
+          },
+          {
+            "x": 240.5,
+            "y": 66.75
+          }
+        ],
+        "edges": [
+          {
+            "id": 19,
+            "type": "line"
+          },
+          {
+            "id": 20,
+            "type": "line"
+          },
+          {
+            "id": 21,
+            "type": "line"
+          },
+          {
+            "id": 22,
+            "type": "line"
+          }
+        ],
+        "arrangement": "back",
+        "fabric": 4,
+        "layers": [
+          4
+        ]
+      },
+      {
+        "id": 23,
+        "name": "Base (2)",
+        "vertices": [
+          {
+            "x": 215.5,
+            "y": 240.25
+          },
+          {
+            "x": 276.0,
+            "y": 300.75
+          },
+          {
+            "x": 215.5,
+            "y": 361.25
+          },
+          {
+            "x": 155.0,
+            "y": 300.75
+          }
+        ],
+        "edges": [
+          {
+            "id": 24,
+            "type": "cubic",
+            "h1": {
+              "x": 33.413227375,
+              "y": -0.0
+            },
+            "h2": {
+              "x": -0.0,
+              "y": -33.413227375
+            }
+          },
+          {
+            "id": 25,
+            "type": "cubic",
+            "h1": {
+              "x": 0.0,
+              "y": 33.413227375
+            },
+            "h2": {
+              "x": 33.413227375,
+              "y": 0.0
+            }
+          },
+          {
+            "id": 26,
+            "type": "cubic",
+            "h1": {
+              "x": -33.413227375,
+              "y": -0.0
+            },
+            "h2": {
+              "x": -0.0,
+              "y": 33.413227375
+            }
+          },
+          {
+            "id": 27,
+            "type": "cubic",
+            "h1": {
+              "x": 0.0,
+              "y": -33.413227375
+            },
+            "h2": {
+              "x": -33.413227375,
+              "y": 0.0
+            }
+          }
+        ],
+        "arrangement": "bottom",
+        "layers": [
+          6,
+          11
+        ]
+      }
+    ],
+    "seams": [
+      {
+        "id": 28,
+        "name": "Costado dcho.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 3
+          },
+          {
+            "piece": 7,
+            "edge": 12,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 29,
+        "name": "Costado izdo.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 6
+          },
+          {
+            "piece": 7,
+            "edge": 9,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 30,
+        "name": "Base delantera dcha.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 4
+          },
+          {
+            "piece": 23,
+            "edge": 24,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 31,
+        "name": "Base delantera izda.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 5
+          },
+          {
+            "piece": 23,
+            "edge": 27,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 32,
+        "name": "Base trasera izda.",
+        "sides": [
+          {
+            "piece": 7,
+            "edge": 10
+          },
+          {
+            "piece": 23,
+            "edge": 26,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 33,
+        "name": "Base trasera dcha.",
+        "sides": [
+          {
+            "piece": 7,
+            "edge": 11
+          },
+          {
+            "piece": 23,
+            "edge": 25,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 34,
+        "name": "Puño delantero",
+        "sides": [
+          {
+            "piece": 13,
+            "edge": 16
+          },
+          {
+            "piece": 1,
+            "edge": 2,
+            "reversed": true
+          }
+        ],
+        "kind": "overlocked",
+        "pressed_to": 0
+      },
+      {
+        "id": 35,
+        "name": "Puño trasero",
+        "sides": [
+          {
+            "piece": 18,
+            "edge": 21
+          },
+          {
+            "piece": 7,
+            "edge": 8,
+            "reversed": true
+          }
+        ],
+        "kind": "overlocked",
+        "pressed_to": 0
+      },
+      {
+        "id": 36,
+        "name": "Costado dcho. del puño",
+        "sides": [
+          {
+            "piece": 13,
+            "edge": 15
+          },
+          {
+            "piece": 18,
+            "edge": 22,
+            "reversed": true
+          }
+        ],
+        "kind": "overlocked",
+        "pressed_to": 0
+      },
+      {
+        "id": 37,
+        "name": "Costado izdo. del puño",
+        "sides": [
+          {
+            "piece": 13,
+            "edge": 17
+          },
+          {
+            "piece": 18,
+            "edge": 20,
+            "reversed": true
+          }
+        ],
+        "kind": "overlocked",
+        "pressed_to": 0
+      }
+    ],
+    "textiles": [
+      {
+        "id": 1,
+        "name": "Algodón",
+        "firmness": 42.0,
+        "weight": 150.0,
+        "stretch": 50.0,
+        "friction": 0.5,
+        "thickness": 3.0
+      },
+      {
+        "id": 2,
+        "name": "Lino",
+        "firmness": 48.0,
+        "weight": 180.0,
+        "stretch": 40.0,
+        "friction": 0.5,
+        "thickness": 3.0
+      },
+      {
+        "id": 3,
+        "name": "Seda",
+        "firmness": 22.0,
+        "weight": 60.0,
+        "stretch": 57.0,
+        "friction": 0.2,
+        "thickness": 2.0
+      },
+      {
+        "id": 4,
+        "name": "Punto",
+        "firmness": 35.0,
+        "weight": 180.0,
+        "stretch": 75.0,
+        "friction": 0.5,
+        "thickness": 3.0
+      },
+      {
+        "id": 5,
+        "name": "Vaquero",
+        "firmness": 67.0,
+        "weight": 400.0,
+        "stretch": 32.0,
+        "friction": 0.6,
+        "thickness": 4.0
+      },
+      {
+        "id": 6,
+        "name": "Lona",
+        "firmness": 75.0,
+        "weight": 350.0,
+        "stretch": 30.0,
+        "friction": 0.6,
+        "thickness": 4.0
+      },
+      {
+        "id": 7,
+        "name": "Fieltro",
+        "firmness": 70.0,
+        "weight": 300.0,
+        "stretch": 45.0,
+        "friction": 0.7,
+        "thickness": 4.0
+      },
+      {
+        "id": 8,
+        "name": "Cuero",
+        "firmness": 95.0,
+        "weight": 900.0,
+        "stretch": 25.0,
+        "friction": 0.7,
+        "thickness": 2.0
+      },
+      {
+        "id": 9,
+        "name": "Entretela",
+        "firmness": 70.0,
+        "weight": 50.0,
+        "stretch": 35.0,
+        "friction": 0.4,
+        "thickness": 1.0
+      },
+      {
+        "id": 10,
+        "name": "Forro",
+        "firmness": 20.0,
+        "weight": 70.0,
+        "stretch": 55.0,
+        "friction": 0.2,
+        "thickness": 1.0
+      },
+      {
+        "id": 11,
+        "name": "Pelo sintético",
+        "firmness": 30.0,
+        "weight": 300.0,
+        "stretch": 40.0,
+        "friction": 0.6,
+        "thickness": 6.0
+      }
+    ],
+    "seam_allowance": 9.5,
+    "next_id": 38
+  }
+}
