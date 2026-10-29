@@ -215,6 +215,9 @@ pub struct Cloth {
     bends: Vec<BendConstraint>,
     /// Costuras: pocas comparadas con la tela, así que van en serie.
     seams: Vec<DistanceConstraint>,
+    /// Turno de montaje de cada costura: solo se cierran las del turno más
+    /// bajo que quede abierto.
+    seam_order: Vec<u32>,
     scratch: Vec<(Vec3, Vec3)>,
     /// Normal y profundidad del contacto de cada partícula en este subpaso.
     contacts: Vec<(Vec3, f32)>,
@@ -347,18 +350,55 @@ impl Cloth {
     /// Une dos partículas con una costura. Empieza a la distancia a la que
     /// estén ahora y se va cerrando al simular.
     pub fn add_seam(&mut self, a: u32, b: u32) {
+        self.add_seam_in_turn(a, b, 0);
+    }
+
+    /// Como [`Cloth::add_seam`], pero la costura no empieza a cerrarse hasta
+    /// que estén cerradas todas las de turnos anteriores (orden de montaje).
+    pub fn add_seam_in_turn(&mut self, a: u32, b: u32, turn: u32) {
         if a == b {
             return;
         }
         let rest_length = self.positions[a as usize].distance(self.positions[b as usize]);
         self.seams.push(DistanceConstraint { a, b, rest_length, compliance: 0.0 });
+        self.seam_order.push(turn);
         self.self_collision.dirty = true;
         self.pressure.dirty = true;
+    }
+
+    /// Añade una restricción de distancia entre dos partículas cualesquiera,
+    /// por ejemplo para que una costura sea más rígida o tienda a quedar
+    /// plana o doblada.
+    pub fn add_constraint(&mut self, a: u32, b: u32, rest_length: f32, compliance: f32) {
+        if a != b {
+            self.pending.push(DistanceConstraint { a, b, rest_length, compliance });
+        }
+    }
+
+    /// Suma masa (kg) a una partícula, como el margen de una costura. Las
+    /// partículas fijas siguen fijas.
+    pub fn add_mass(&mut self, i: usize, mass: f32) {
+        let w = self.inv_mass[i];
+        if w > 0.0 && mass > 0.0 {
+            self.inv_mass[i] = 1.0 / (1.0 / w + mass);
+        }
+    }
+
+    /// Grosor (m) de una partícula frente a los colisionadores y la propia tela.
+    pub fn thickness(&self, i: usize) -> f32 {
+        self.thickness[i]
+    }
+
+    /// Ensancha una partícula (donde se juntan varias capas de tela). Nunca
+    /// la hace más fina de lo que ya es.
+    pub fn thicken(&mut self, i: usize, thickness: f32) {
+        self.thickness[i] = self.thickness[i].max(thickness);
     }
 
     /// Quita todas las costuras.
     pub fn clear_seams(&mut self) {
         self.seams.clear();
+        self.seam_order.clear();
         self.self_collision.dirty = true;
         self.pressure.dirty = true;
     }
@@ -423,8 +463,12 @@ impl Cloth {
                 );
             }
             let shrink = params.sew_speed.max(0.0) * h;
-            for c in &mut self.seams {
-                c.rest_length = (c.rest_length - shrink).max(0.0);
+            let turn =
+                self.seams.iter().zip(&self.seam_order).filter(|(c, _)| c.rest_length > 0.0).map(|(_, &t)| t).min();
+            for (c, &t) in self.seams.iter_mut().zip(&self.seam_order) {
+                if Some(t) == turn {
+                    c.rest_length = (c.rest_length - shrink).max(0.0);
+                }
             }
             self.prev_positions.copy_from_slice(&self.positions);
             let integrate = |(x, v, w): (&mut Vec3, &mut Vec3, &f32)| {
@@ -914,6 +958,60 @@ mod tests {
         assert!(cloth.positions.iter().all(|p| p.is_finite()));
         assert!(min_y(&cloth) < 0.01, "no ha llegado al suelo: {}", min_y(&cloth));
         assert!(cloth.max_seam_gap() < 2e-3, "la costura se ha abierto: {}", cloth.max_seam_gap());
+    }
+
+    /// Dos costuras en turnos distintos: la segunda no empieza a cerrarse
+    /// hasta que la primera está cerrada.
+    #[test]
+    fn seams_close_in_turns() {
+        let mesh = square_mesh(200.0);
+        let mut cloth = Cloth::new();
+        let place = |z: f32| move |p: [f64; 2]| Vec3::new(p[0] as f32 * 1e-3, 1.0 - p[1] as f32 * 1e-3, z);
+        let a = cloth.add_piece(&mesh, &Fabric::COTTON, place(0.15), Vec3::Z);
+        let b = cloth.add_piece(&mesh, &Fabric::COTTON, place(-0.15), -Vec3::Z);
+        let edge = |x: f64| -> Vec<u32> {
+            (0..mesh.positions.len() as u32).filter(|&i| mesh.positions[i as usize][0] == x).collect()
+        };
+        for &i in &edge(0.0) {
+            cloth.add_seam_in_turn(a.first_particle + i, b.first_particle + i, 0);
+        }
+        for &i in &edge(200.0) {
+            cloth.add_seam_in_turn(a.first_particle + i, b.first_particle + i, 1);
+        }
+        let gap = |cloth: &Cloth, x: f64| {
+            edge(x)
+                .iter()
+                .map(|&i| {
+                    cloth.positions[(a.first_particle + i) as usize]
+                        .distance(cloth.positions[(b.first_particle + i) as usize])
+                })
+                .fold(0.0, f32::max)
+        };
+        for _ in 0..30 {
+            cloth.step(1.0 / 60.0, &SimParams::default(), &[]);
+        }
+        // A medio coser la primera, la segunda sigue como estaba (0,3 m).
+        assert!(gap(&cloth, 0.0) < 0.2, "primera: {}", gap(&cloth, 0.0));
+        assert!(gap(&cloth, 200.0) > 0.25, "segunda: {}", gap(&cloth, 200.0));
+        for _ in 0..120 {
+            cloth.step(1.0 / 60.0, &SimParams::default(), &[]);
+        }
+        assert!(!cloth.is_sewing());
+        assert!(cloth.max_seam_gap() < 2e-3, "costura abierta: {}", cloth.max_seam_gap());
+    }
+
+    #[test]
+    fn extra_mass_and_thickness() {
+        let mut cloth = Cloth::from_mesh(&square_mesh(100.0), &Fabric::COTTON);
+        let w = cloth.inv_mass[0];
+        cloth.add_mass(0, 1.0 / w);
+        assert!((cloth.inv_mass[0] - w / 2.0).abs() < w * 1e-5);
+        cloth.pin(1);
+        cloth.add_mass(1, 1.0);
+        assert_eq!(cloth.inv_mass[1], 0.0);
+        cloth.thicken(0, 0.01);
+        cloth.thicken(0, 0.001);
+        assert_eq!(cloth.thickness(0), 0.01);
     }
 
     /// Deja caer un cuadrado de tela de 80 cm desde 50 cm sobre el suelo y

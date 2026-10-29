@@ -1,5 +1,6 @@
 use kurbo::{
-    BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, ParamCurveNearest, PathEl, PathSeg, Point, Rect, Shape, Vec2,
+    BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, ParamCurveDeriv, ParamCurveNearest, PathEl, PathSeg, Point,
+    Rect, Shape, Vec2,
 };
 use serde::{Deserialize, Serialize};
 
@@ -29,11 +30,14 @@ pub struct Edge {
     pub id: EdgeId,
     #[serde(flatten)]
     pub kind: EdgeKind,
+    /// Margen de costura (mm) de este borde. `None` = el del patrón.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowance: Option<f64>,
 }
 
 impl Edge {
     pub fn line(id: EdgeId) -> Self {
-        Self { id, kind: EdgeKind::Line }
+        Self { id, kind: EdgeKind::Line, allowance: None }
     }
 
     pub fn is_curve(&self) -> bool {
@@ -141,6 +145,10 @@ pub struct Piece {
     /// grosor de todas las capas se suman.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<TextileId>,
+    /// El derecho de la tela mira hacia dentro de la prenda (forros, vistas):
+    /// se dibuja igual, vista desde fuera, pero lo que se ve es el revés.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub right_side_in: bool,
 }
 
 /// Forma serializada, para comprobar invariantes al deserializar.
@@ -158,6 +166,8 @@ struct RawPiece {
     fabric: TextileId,
     #[serde(default)]
     layers: Vec<TextileId>,
+    #[serde(default)]
+    right_side_in: bool,
 }
 
 impl TryFrom<RawPiece> for Piece {
@@ -171,6 +181,7 @@ impl TryFrom<RawPiece> for Piece {
                 zone: raw.zone,
                 fabric: raw.fabric,
                 layers: raw.layers,
+                right_side_in: raw.right_side_in,
                 ..p
             })
             .ok_or_else(|| format!("la pieza {} no tiene el mismo número de vértices que de aristas", id.0))
@@ -190,6 +201,7 @@ impl Piece {
             zone: BodyZone::default(),
             fabric: TextileId::default(),
             layers: Vec::new(),
+            right_side_in: false,
         })
     }
 
@@ -237,6 +249,13 @@ impl Piece {
 
     pub fn set_edge_kind(&mut self, i: usize, kind: EdgeKind) {
         self.edges[i].kind = kind;
+    }
+
+    /// Pone el margen de costura (mm) de la arista `i`; `None` = el del patrón.
+    pub fn set_edge_allowance(&mut self, i: usize, allowance: Option<f64>) {
+        if let Some(edge) = self.edges.get_mut(i) {
+            edge.allowance = allowance.map(|a| a.max(0.0));
+        }
     }
 
     /// Convierte la arista `i` en curva (con los manejadores a 1/3 y 2/3 del
@@ -315,6 +334,62 @@ impl Piece {
         self.to_bezpath().area()
     }
 
+    /// Normal unitaria hacia fuera de la pieza en el punto `t` de la arista `i`.
+    pub fn outward_normal(&self, i: usize, t: f64) -> Vec2 {
+        let d = match self.segment(i) {
+            PathSeg::Line(l) => l.p1 - l.p0,
+            PathSeg::Quad(q) => q.deriv().eval(t).to_vec2(),
+            PathSeg::Cubic(c) => c.deriv().eval(t).to_vec2(),
+        };
+        let len = d.hypot();
+        if len < 1e-12 {
+            return Vec2::ZERO;
+        }
+        // Con Y hacia abajo, área positiva = sentido horario en pantalla, y
+        // el exterior queda a la izquierda del avance: (d.y, -d.x).
+        let n = Vec2::new(d.y, -d.x) / len;
+        if self.area() >= 0.0 { n } else { -n }
+    }
+
+    /// Línea de corte: el contorno desplazado hacia fuera el margen de cada
+    /// arista (`allowances[i]`, en mm). Las esquinas se cortan en inglete
+    /// (las dos rectas se prolongan hasta cruzarse) salvo si son muy agudas.
+    pub fn allowance_outline(&self, allowances: &[f64]) -> Vec<Point> {
+        let n = self.len();
+        if n < 3 || allowances.len() != n {
+            return Vec::new();
+        }
+        // Puntos desplazados de cada arista, del principio al final.
+        let offset: Vec<Vec<Point>> = (0..n)
+            .map(|i| {
+                let steps = if self.edges[i].is_curve() { 16 } else { 1 };
+                let seg = self.segment(i);
+                (0..=steps)
+                    .map(|k| {
+                        let t = k as f64 / steps as f64;
+                        seg.eval(t) + self.outward_normal(i, t) * allowances[i]
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut out = Vec::new();
+        for i in 0..n {
+            let prev = (i + n - 1) % n;
+            let a = &offset[prev];
+            let b = &offset[i];
+            let (p, q) = (a[a.len() - 1], b[0]);
+            let corner = self.vertices[i];
+            let reach = 4.0 * allowances[prev].max(allowances[i]).max(1.0);
+            let join = line_intersection(p, p - a[a.len() - 2], q, b[1] - q).filter(|x| x.distance(corner) < reach);
+            match join {
+                Some(x) => out.push(x),
+                None => out.extend([p, q]),
+            }
+            out.extend(&b[1..b.len() - 1]);
+        }
+        out
+    }
+
     pub fn perimeter(&self) -> f64 {
         (0..self.len()).map(|i| self.edge_length(i)).sum()
     }
@@ -364,7 +439,7 @@ impl Piece {
             _ => (EdgeKind::Line, EdgeKind::Line),
         };
         self.edges[i].kind = first;
-        self.edges.insert(i + 1, Edge { id: new_edge, kind: second });
+        self.edges.insert(i + 1, Edge { id: new_edge, kind: second, allowance: self.edges[i].allowance });
         self.vertices.insert(i + 1, mid);
         Some(i + 1)
     }
@@ -436,6 +511,17 @@ pub fn polygon_self_intersects(poly: &[Point]) -> bool {
         }
     }
     false
+}
+
+/// Punto donde se cruzan la recta que pasa por `p` con dirección `dp` y la
+/// que pasa por `q` con dirección `dq`, si no son casi paralelas.
+fn line_intersection(p: Point, dp: Vec2, q: Point, dq: Vec2) -> Option<Point> {
+    let denom = dp.cross(dq);
+    if denom.abs() < 1e-9 * dp.hypot() * dq.hypot() {
+        return None;
+    }
+    let s = (q - p).cross(dq) / denom;
+    Some(p + dp * s)
 }
 
 fn segments_intersect(a: Point, b: Point, c: Point, d: Point) -> bool {
@@ -526,5 +612,36 @@ mod tests {
         assert_eq!(i, 1);
         assert!((t - 0.25).abs() < 1e-6);
         assert!((d - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn allowance_outline_of_a_rectangle() {
+        let (p, id) = square();
+        let piece = p.piece(id).unwrap();
+        let size = piece.bounding_box();
+        let outline = piece.allowance_outline(&[10.0, 5.0, 10.0, 0.0]);
+        assert_eq!(outline.len(), 4);
+        let bbox = outline.iter().fold(Rect::from_points(outline[0], outline[0]), |r, p| r.union_pt(*p));
+        // Arriba 10, derecha 5, abajo 10, izquierda 0.
+        assert!((bbox.y0 - (size.y0 - 10.0)).abs() < 1e-9, "{bbox:?}");
+        assert!((bbox.x1 - (size.x1 + 5.0)).abs() < 1e-9, "{bbox:?}");
+        assert!((bbox.y1 - (size.y1 + 10.0)).abs() < 1e-9, "{bbox:?}");
+        assert!((bbox.x0 - size.x0).abs() < 1e-9, "{bbox:?}");
+    }
+
+    #[test]
+    fn allowance_outline_follows_curves() {
+        let (mut p, id) = square();
+        let piece = p.piece_mut(id).unwrap();
+        piece.make_curve(0);
+        piece.set_control_point(0, 0, Point::new(30.0, -40.0));
+        let piece = p.piece(id).unwrap();
+        let outline = piece.allowance_outline(&[8.0; 4]);
+        // Cada punto queda a unos 8 mm del contorno.
+        let path = piece.to_bezpath();
+        for q in &outline {
+            let d = path.segments().map(|seg| seg.nearest(*q, 1e-6).distance_sq.sqrt()).fold(f64::INFINITY, f64::min);
+            assert!(d > 7.9 && d < 8.0 * 1.5, "{q:?} a {d} mm");
+        }
     }
 }

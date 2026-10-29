@@ -11,11 +11,13 @@
 mod io;
 mod piece;
 pub mod textile;
+mod seam;
 
 pub use io::{FORMAT_ID, FORMAT_VERSION, PatternFile, PatternIoError};
 pub use kurbo::{Point, Vec2};
 pub use piece::{Arrangement, BodyZone, Edge, EdgeKind, Piece, polygon_self_intersects};
 pub use textile::{Textile, TextileId};
+pub use seam::{AllowanceSide, DEFAULT_SEAM_ALLOWANCE, DEFAULT_STITCH_LENGTH, SeamFold, SeamKind, Topstitch};
 
 use serde::{Deserialize, Serialize};
 
@@ -63,12 +65,65 @@ impl SeamSide {
 /// Dos piezas dibujadas vistas desde fuera recorren su borde común en
 /// sentidos contrarios, así que lo normal es que uno de los dos lados vaya
 /// invertido.
+///
+/// El orden de las costuras en [`Pattern::seams`] es el orden de montaje.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Seam {
     pub id: SeamId,
     #[serde(default)]
     pub name: String,
     pub sides: Vec<SeamSide>,
+    #[serde(default, skip_serializing_if = "SeamKind::is_default")]
+    pub kind: SeamKind,
+    /// Lado (índice en `sides`) hacia el que se plancha el margen. `None` =
+    /// abierto, cada margen hacia su pieza (si el tipo lo permite).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pressed_to: Option<usize>,
+    #[serde(default, skip_serializing_if = "Topstitch::is_default")]
+    pub topstitch: Topstitch,
+    /// Largo de puntada (mm).
+    #[serde(default = "default_stitch_length", skip_serializing_if = "is_default_stitch_length")]
+    pub stitch_length: f64,
+}
+
+fn default_stitch_length() -> f64 {
+    DEFAULT_STITCH_LENGTH
+}
+
+fn is_default_stitch_length(x: &f64) -> bool {
+    *x == DEFAULT_STITCH_LENGTH
+}
+
+impl Seam {
+    /// Costura simple, con el margen abierto.
+    pub fn new(id: SeamId, name: impl Into<String>, sides: Vec<SeamSide>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            sides,
+            kind: SeamKind::default(),
+            pressed_to: None,
+            topstitch: Topstitch::default(),
+            stitch_length: DEFAULT_STITCH_LENGTH,
+        }
+    }
+
+    /// Cambia el tipo de costura y pone los pespuntes y el planchado que
+    /// suele llevar.
+    pub fn set_kind(&mut self, kind: SeamKind) {
+        self.kind = kind;
+        self.topstitch = kind.typical_topstitch();
+        if kind.pressed_together() && self.pressed_to.is_none() {
+            self.pressed_to = Some(0);
+        }
+    }
+
+    /// Lado hacia el que va el margen, si va a un lado. Un índice que ya no
+    /// existe (se ha quitado un lado) cuenta como el primero.
+    pub fn pressed_side(&self) -> Option<usize> {
+        let side = self.pressed_to.or(self.kind.pressed_together().then_some(0))?;
+        Some(if side < self.sides.len() { side } else { 0 })
+    }
 }
 
 /// Un patrón completo.
@@ -91,6 +146,13 @@ pub struct Pattern {
     /// genérica ([`Textile::library`]) y solo se guarda si cambia.
     #[serde(default = "Textile::library", skip_serializing_if = "textile::is_generic_library")]
     pub textiles: Vec<Textile>,
+    /// Margen de costura (mm) de los bordes que no dicen otro.
+    #[serde(default = "default_allowance", skip_serializing_if = "is_default_allowance")]
+    pub seam_allowance: f64,
+    /// La prenda está del revés (volteada): el derecho de la tela queda
+    /// dentro y los márgenes de las costuras, fuera.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inside_out: bool,
     /// Siguiente id libre (compartido por piezas, aristas y costuras).
     #[serde(default)]
     next_id: u64,
@@ -98,6 +160,14 @@ pub struct Pattern {
 
 fn is_zero(x: &f64) -> bool {
     *x == 0.0
+}
+
+fn default_allowance() -> f64 {
+    DEFAULT_SEAM_ALLOWANCE
+}
+
+fn is_default_allowance(x: &f64) -> bool {
+    *x == DEFAULT_SEAM_ALLOWANCE
 }
 
 impl Default for Pattern {
@@ -135,6 +205,8 @@ impl Pattern {
             on_avatar: false,
             pressure: 0.0,
             textiles: Textile::library(),
+            seam_allowance: DEFAULT_SEAM_ALLOWANCE,
+            inside_out: false,
             next_id: 1,
         }
     }
@@ -178,7 +250,7 @@ impl Pattern {
     pub fn duplicate_piece(&mut self, id: PieceId, offset: Vec2) -> Option<PieceId> {
         let src = self.piece(id)?.clone();
         let new_id = PieceId(self.alloc_id());
-        let edges = src.edges().iter().map(|e| Edge { id: EdgeId(self.alloc_id()), kind: e.kind }).collect();
+        let edges = src.edges().iter().map(|e| Edge { id: EdgeId(self.alloc_id()), ..*e }).collect();
         let points = src.vertices().iter().map(|p| *p + offset).collect();
         let mut piece =
             Piece::from_parts(new_id, format!("{} (copia)", src.name), points, edges).expect("misma longitud");
@@ -186,6 +258,7 @@ impl Pattern {
         piece.zone = src.zone;
         piece.fabric = src.fabric;
         piece.layers = src.layers.clone();
+        piece.right_side_in = src.right_side_in;
         self.pieces.push(piece);
         Some(new_id)
     }
@@ -236,7 +309,7 @@ impl Pattern {
             return None;
         }
         let id = SeamId(self.alloc_id());
-        self.seams.push(Seam { id, name: name.into(), sides });
+        self.seams.push(Seam::new(id, name, sides));
         Some(id)
     }
 
@@ -251,6 +324,25 @@ impl Pattern {
     pub fn remove_seam(&mut self, id: SeamId) -> Option<Seam> {
         let idx = self.seams.iter().position(|s| s.id == id)?;
         Some(self.seams.remove(idx))
+    }
+
+    /// Mueve una costura en el orden de montaje (`delta` < 0 = antes).
+    pub fn move_seam(&mut self, id: SeamId, delta: isize) {
+        let Some(from) = self.seams.iter().position(|s| s.id == id) else { return };
+        let to = (from as isize + delta).clamp(0, self.seams.len() as isize - 1) as usize;
+        let seam = self.seams.remove(from);
+        self.seams.insert(to, seam);
+    }
+
+    /// Margen de costura (mm) de una arista: el suyo o el del patrón.
+    pub fn allowance(&self, piece: PieceId, edge: EdgeId) -> f64 {
+        let piece = self.piece(piece);
+        piece.and_then(|p| p.edges()[p.edge_index(edge)?].allowance).unwrap_or(self.seam_allowance)
+    }
+
+    /// Márgenes (mm) de todas las aristas de una pieza, en orden.
+    pub fn allowances(&self, piece: &Piece) -> Vec<f64> {
+        piece.edges().iter().map(|e| e.allowance.unwrap_or(self.seam_allowance)).collect()
     }
 
     /// Costuras que usan una arista.
@@ -438,5 +530,63 @@ mod tests {
         let piece = p.piece(a).unwrap();
         assert_eq!(piece.vertices().len(), 5);
         assert_eq!(piece.edge_index(e2), Some(3));
+    }
+
+    #[test]
+    fn seam_options_round_trip_and_default_to_plain() {
+        let mut p = Pattern::new("t");
+        let a = p.add_rect("a", Point::ZERO, 100.0, 50.0);
+        let b = p.add_rect("b", Point::new(0.0, 50.0), 100.0, 50.0);
+        let ea = p.piece(a).unwrap().edges()[2].id;
+        let eb = p.piece(b).unwrap().edges()[0].id;
+        let id = p.add_seam("", vec![SeamSide::new(a, ea, false), SeamSide::new(b, eb, true)]).unwrap();
+
+        // Sin tocar nada, el fichero no cambia: no aparece ningún campo nuevo.
+        let plain = p.to_json().unwrap();
+        for field in ["kind", "pressed_to", "topstitch", "stitch_length", "seam_allowance", "inside_out", "allowance"] {
+            assert!(!plain.contains(field), "{field} en {plain}");
+        }
+        assert_eq!(p.allowance(a, ea), DEFAULT_SEAM_ALLOWANCE);
+
+        let seam = p.seam_mut(id).unwrap();
+        seam.set_kind(SeamKind::FlatFelled);
+        assert_eq!(seam.topstitch, Topstitch::Double);
+        assert_eq!(seam.pressed_side(), Some(0));
+        p.piece_mut(b).unwrap().right_side_in = true;
+        p.inside_out = true;
+        p.seam_allowance = 12.0;
+        let i = p.piece(a).unwrap().edge_index(ea).unwrap();
+        p.piece_mut(a).unwrap().set_edge_allowance(i, Some(15.0));
+        assert_eq!(p.allowance(a, ea), 15.0);
+        assert_eq!(p.allowance(b, eb), 12.0);
+
+        let back = Pattern::from_json(&p.to_json().unwrap()).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn split_edge_keeps_its_allowance() {
+        let mut p = Pattern::new("t");
+        let a = p.add_rect("a", Point::ZERO, 100.0, 50.0);
+        p.piece_mut(a).unwrap().set_edge_allowance(0, Some(20.0));
+        p.split_edge(a, 0, 0.5).unwrap();
+        let piece = p.piece(a).unwrap();
+        assert_eq!(piece.edges()[1].allowance, Some(20.0));
+        assert_eq!(p.allowances(piece), vec![20.0, 20.0, 10.0, 10.0, 10.0]);
+    }
+
+    #[test]
+    fn seams_can_be_reordered() {
+        let mut p = Pattern::new("t");
+        let a = p.add_rect("a", Point::ZERO, 100.0, 50.0);
+        let e: Vec<EdgeId> = p.piece(a).unwrap().edges().iter().map(|e| e.id).collect();
+        let s1 = p.add_seam("1", vec![SeamSide::new(a, e[0], false), SeamSide::new(a, e[2], true)]).unwrap();
+        let s2 = p.add_seam("2", vec![SeamSide::new(a, e[1], false), SeamSide::new(a, e[3], true)]).unwrap();
+        p.move_seam(s2, -1);
+        assert_eq!(p.seams.iter().map(|s| s.id).collect::<Vec<_>>(), vec![s2, s1]);
+        p.move_seam(s2, -1);
+        assert_eq!(p.seams[0].id, s2);
+        p.move_seam(s2, 5);
+        assert_eq!(p.seams[1].id, s2);
     }
 }
