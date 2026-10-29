@@ -1,6 +1,6 @@
 [package]
 name = "app"
-description = "Aplicación de escritorio: editor 2D de patrones (y, más adelante, vista 3D)."
+description = "Aplicación de escritorio: editor 2D de patrones y vista 3D con la tela simulada."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,9 @@ path = "src/main.rs"
 [dependencies]
 pattern.workspace = true
 mesher.workspace = true
+simulator.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
 eframe.workspace = true
 rfd.workspace = true
 kurbo.workspace = true

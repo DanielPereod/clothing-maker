@@ -1,4 +1,4 @@
-//! clothing-maker: editor de patrones.
+//! clothing-maker: editor de patrones con vista 3D.
 //!
 //! Uso: `clothing-maker [fichero.pattern.json]`
 
@@ -6,6 +6,7 @@ mod app;
 mod canvas;
 mod examples;
 mod history;
+mod view3d;
 
 use eframe::egui;
 
@@ -16,6 +17,7 @@ fn main() -> eframe::Result {
             .with_title("clothing-maker")
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([640.0, 400.0]),
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
     eframe::run_native("clothing-maker", options, Box::new(|cc| Ok(Box::new(app::ClothingMakerApp::new(cc, file)))))

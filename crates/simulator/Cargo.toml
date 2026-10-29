@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 mesher.workspace = true
 glam.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 pattern.workspace = true

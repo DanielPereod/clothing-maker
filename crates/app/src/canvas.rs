@@ -877,7 +877,7 @@ fn inward_normal(piece: &Piece, seg: &PathSeg, t: f64) -> Vec2 {
     if piece.area() >= 0.0 { n } else { -n }
 }
 
-fn piece_color(id: PieceId) -> Color32 {
+pub fn piece_color(id: PieceId) -> Color32 {
     let hue = (id.0 as f32 * 0.618_034).fract();
     egui::ecolor::Hsva::new(hue, 0.55, 0.85, 1.0).into()
 }
