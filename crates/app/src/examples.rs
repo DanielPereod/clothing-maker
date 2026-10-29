@@ -171,6 +171,21 @@ pub fn box_bag() -> Pattern {
     p
 }
 
+/// Bolso de cuero con forro de lino: la misma caja que la bolsa con fondo,
+/// pero cada pieza lleva dos capas que suman su firmeza, así que se sostiene
+/// casi sola.
+pub fn leather_bag() -> Pattern {
+    let mut p = box_bag();
+    p.name = "Bolso de cuero".into();
+    let named = |p: &Pattern, name: &str| p.textiles.iter().find(|t| t.name == name).expect("tela genérica").id;
+    let (leather, linen) = (named(&p, "Cuero"), named(&p, "Lino"));
+    for piece in &mut p.pieces {
+        piece.fabric = leather;
+        piece.layers = vec![linen];
+    }
+    p
+}
+
 /// Cose las aristas dadas por (pieza, índice de arista, invertida).
 fn sew(p: &mut Pattern, name: &str, sides: &[(PieceId, usize, bool)]) {
     let sides = sides
@@ -184,11 +199,12 @@ fn sew(p: &mut Pattern, name: &str, sides: &[(PieceId, usize, bool)]) {
 pub type Example = (&'static str, &'static str, fn() -> Pattern);
 
 /// Todos los ejemplos.
-pub const ALL: [Example; 5] = [
+pub const ALL: [Example; 6] = [
     ("Camiseta básica", "camiseta-basica", t_shirt),
     ("Camiseta con mangas", "camiseta-con-mangas", t_shirt_with_sleeves),
     ("Bolsa tote", "bolsa-tote", tote_bag),
     ("Bolsa con fondo", "bolsa-con-fondo", box_bag),
+    ("Bolso de cuero con forro", "bolso-de-cuero", leather_bag),
     ("Cojín", "cojin", cushion),
 ];
 

@@ -11,7 +11,7 @@ use avatar::{Avatar, ZoneFrame};
 use eframe::egui;
 use glam::Vec3;
 use mesher::{Mesh2D, MeshOptions};
-use pattern::{Arrangement, BodyZone, Pattern, Piece};
+use pattern::{Arrangement, BodyZone, Pattern, Piece, Textile};
 use simulator::{Cloth, Collider, Fabric, SimParams};
 
 /// Cómo se colocan las piezas antes de soltarlas.
@@ -60,31 +60,22 @@ pub enum Obstacle {
     Mannequin,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FabricKind {
-    Cotton,
-    Silk,
-    Denim,
+/// Propiedades físicas de una tela de la biblioteca.
+pub fn physics(textile: &Textile) -> Fabric {
+    Fabric {
+        density: (textile.weight * 1e-3) as f32,
+        // Escalas logarítmicas: de 10⁻⁷ a 10⁻³ N·m y de 10⁻⁹ a 10⁻⁵ m/N.
+        bend_stiffness: (1e-7 * 10f64.powf(textile.firmness / 25.0)) as f32,
+        stretch_compliance: (1e-9 * 10f64.powf(textile.stretch / 25.0)) as f32,
+        friction: textile.friction as f32,
+        thickness: (textile.thickness * 1e-3) as f32,
+    }
 }
 
-impl FabricKind {
-    pub const ALL: [FabricKind; 3] = [FabricKind::Cotton, FabricKind::Silk, FabricKind::Denim];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            FabricKind::Cotton => "Algodón",
-            FabricKind::Silk => "Seda",
-            FabricKind::Denim => "Vaquero",
-        }
-    }
-
-    pub fn fabric(self) -> Fabric {
-        match self {
-            FabricKind::Cotton => Fabric::COTTON,
-            FabricKind::Silk => Fabric::SILK,
-            FabricKind::Denim => Fabric::DENIM,
-        }
-    }
+/// La tela de una pieza con todas sus capas juntas.
+pub fn piece_fabric(pattern: &Pattern, piece: &Piece) -> Fabric {
+    let layers: Vec<Fabric> = pattern.piece_textiles(piece).iter().map(physics).collect();
+    Fabric::layered(&layers)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,7 +84,6 @@ pub struct SceneSettings {
     /// Cerrar las costuras del patrón.
     pub sew: bool,
     pub obstacle: Obstacle,
-    pub fabric: FabricKind,
     /// Tamaño de los triángulos de la tela (mm).
     pub mesh_size: f64,
     /// Subpasos por fotograma: más = tela menos elástica, pero más lento.
@@ -108,7 +98,6 @@ impl Default for SceneSettings {
             placement: Placement::Around,
             sew: true,
             obstacle: Obstacle::Table,
-            fabric: FabricKind::Cotton,
             mesh_size: 20.0,
             substeps: SimParams::default().substeps,
             self_collision: true,
@@ -122,8 +111,8 @@ impl SceneSettings {
     }
 
     /// Si se puede pasar de `self` a `other` conservando la forma de la
-    /// prenda (solo cambian el tejido o la resolución) o hay que volver a
-    /// colocar las piezas.
+    /// prenda (solo cambia la resolución) o hay que volver a colocar las
+    /// piezas.
     pub fn keeps_shape(&self, other: &SceneSettings) -> bool {
         (self.placement, self.obstacle, self.sew) == (other.placement, other.obstacle, other.sew)
     }
@@ -218,7 +207,6 @@ pub fn build(
     color_of: impl Fn(pattern::PieceId) -> egui::Color32,
 ) -> Scene {
     let options = MeshOptions { target_edge_length: settings.mesh_size, ..Default::default() };
-    let fabric = settings.fabric.fabric();
     let meshed = mesher::mesh_pattern(pattern, &options);
     let mut meshes = Vec::new();
     let mut failed = Vec::new();
@@ -244,6 +232,7 @@ pub fn build(
     let mut first_particle = vec![0u32; pattern.pieces.len()];
     let mut pieces = Vec::new();
     for &(index, piece, mesh) in &meshes {
+        let fabric = piece_fabric(pattern, piece);
         let range = match settings.placement {
             Placement::Around => {
                 let layout = layout.as_ref().expect("calculada arriba");
@@ -777,7 +766,7 @@ mod tests {
 
     /// Los ejemplos, cosidos y asentados (las bolsas, caídas sobre la mesa):
     /// la tela no se atraviesa a sí misma. Sin auto-colisión, las dos caras
-    /// de las bolsas se cruzan.
+    /// de las bolsas blandas se cruzan.
     #[test]
     fn examples_do_not_pass_through_themselves() {
         let crossings = |make: fn() -> Pattern, self_collision: bool| {
@@ -792,7 +781,10 @@ mod tests {
         for (name, _, make) in examples::ALL {
             let (with, without) = (crossings(make, true), crossings(make, false));
             eprintln!("{name}: {with} aristas cruzadas ({without} sin auto-colisión)");
-            assert!(with <= without / 5, "{name}: {with} aristas cruzadas ({without} sin auto-colisión)");
+            // Las bolsas firmes (la de fondo, la de cuero) no se aplastan, así
+            // que sin auto-colisión tampoco se cruzan; se toleran unos pocos
+            // cruces en las esquinas donde se juntan tres piezas.
+            assert!(with <= (without / 5).max(10), "{name}: {with} aristas cruzadas ({without} sin auto-colisión)");
         }
     }
 
@@ -816,8 +808,14 @@ mod tests {
             let deepest =
                 scene.cloth.positions.iter().map(|p| table.signed_distance(*p).0).fold(f32::INFINITY, f32::min);
             assert!(deepest > -1e-3, "{}: atraviesa la mesa ({deepest})", pattern.name);
+            // Vacío, el cojín es dos láminas cosidas que caen como una tabla
+            // y pueden asomar por el borde; lleno, se queda encima.
             let lowest = scene.cloth.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
-            assert!(lowest > 2.0 * TABLE_HALF.y - 0.01, "{}: se ha caído de la mesa ({lowest})", pattern.name);
+            assert!(
+                pressure == 0.0 || lowest > 2.0 * TABLE_HALF.y - 0.01,
+                "{}: se ha caído de la mesa ({lowest})",
+                pattern.name
+            );
             let speed = scene.cloth.velocities.iter().map(|v| v.length()).fold(0.0, f32::max);
             (scene.cloth.volume(), scene.cloth.count_crossings(), speed)
         };

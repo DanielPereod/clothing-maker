@@ -3,7 +3,7 @@ use kurbo::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{EdgeId, PieceId};
+use crate::{EdgeId, PieceId, TextileId};
 
 /// Precisión (mm) para longitudes y búsquedas sobre curvas.
 const ACCURACY: f64 = 1e-3;
@@ -133,6 +133,14 @@ pub struct Piece {
     /// Zona del maniquí en la que se coloca.
     #[serde(default, skip_serializing_if = "BodyZone::is_default")]
     pub zone: BodyZone,
+    /// Tela de la pieza (la capa de fuera), de la biblioteca del patrón.
+    #[serde(default, skip_serializing_if = "TextileId::is_cotton")]
+    pub fabric: TextileId,
+    /// Capas de tela extra cosidas o pegadas a toda la pieza, por dentro,
+    /// de fuera hacia dentro (forro, entretela...). La firmeza, el peso y el
+    /// grosor de todas las capas se suman.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<TextileId>,
 }
 
 /// Forma serializada, para comprobar invariantes al deserializar.
@@ -146,6 +154,10 @@ struct RawPiece {
     arrangement: Arrangement,
     #[serde(default)]
     zone: BodyZone,
+    #[serde(default)]
+    fabric: TextileId,
+    #[serde(default)]
+    layers: Vec<TextileId>,
 }
 
 impl TryFrom<RawPiece> for Piece {
@@ -154,7 +166,13 @@ impl TryFrom<RawPiece> for Piece {
     fn try_from(raw: RawPiece) -> Result<Self, Self::Error> {
         let id = raw.id;
         Piece::from_parts(raw.id, raw.name, raw.vertices, raw.edges)
-            .map(|p| Piece { arrangement: raw.arrangement, zone: raw.zone, ..p })
+            .map(|p| Piece {
+                arrangement: raw.arrangement,
+                zone: raw.zone,
+                fabric: raw.fabric,
+                layers: raw.layers,
+                ..p
+            })
             .ok_or_else(|| format!("la pieza {} no tiene el mismo número de vértices que de aristas", id.0))
     }
 }
@@ -170,7 +188,14 @@ impl Piece {
             edges,
             arrangement: Arrangement::default(),
             zone: BodyZone::default(),
+            fabric: TextileId::default(),
+            layers: Vec::new(),
         })
+    }
+
+    /// Todas las capas de tela, de fuera hacia dentro.
+    pub fn textiles(&self) -> impl Iterator<Item = TextileId> + '_ {
+        std::iter::once(self.fabric).chain(self.layers.iter().copied())
     }
 
     pub fn vertices(&self) -> &[Point] {

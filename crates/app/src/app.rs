@@ -2,6 +2,7 @@
 //! inspector, vistas 2D y 3D, ficheros y deshacer.
 
 mod panels;
+mod textiles;
 
 use std::path::PathBuf;
 
@@ -47,6 +48,8 @@ pub struct ClothingMakerApp {
     pending: Option<Pending>,
     allow_close: bool,
     title: String,
+    /// Tela de la biblioteca que hay que desplegar en el inspector.
+    open_textile: Option<pattern::TextileId>,
 }
 
 impl ClothingMakerApp {
@@ -66,6 +69,7 @@ impl ClothingMakerApp {
             pending: None,
             allow_close: false,
             title: String::new(),
+            open_textile: None,
         };
         if let Some(path) = file {
             app.load_from(path);

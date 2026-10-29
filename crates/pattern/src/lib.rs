@@ -10,10 +10,12 @@
 
 mod io;
 mod piece;
+pub mod textile;
 
 pub use io::{FORMAT_ID, FORMAT_VERSION, PatternFile, PatternIoError};
 pub use kurbo::{Point, Vec2};
 pub use piece::{Arrangement, BodyZone, Edge, EdgeKind, Piece, polygon_self_intersects};
+pub use textile::{Textile, TextileId};
 
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +87,10 @@ pub struct Pattern {
     /// un cojín. 0 = vacío, como una bolsa sin nada dentro.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub pressure: f64,
+    /// Biblioteca de telas que pueden usar las piezas. Empieza con la
+    /// genérica ([`Textile::library`]) y solo se guarda si cambia.
+    #[serde(default = "Textile::library", skip_serializing_if = "textile::is_generic_library")]
+    pub textiles: Vec<Textile>,
     /// Siguiente id libre (compartido por piezas, aristas y costuras).
     #[serde(default)]
     next_id: u64,
@@ -122,7 +128,15 @@ pub const SEAM_LENGTH_TOLERANCE: f64 = 1.0;
 
 impl Pattern {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), pieces: Vec::new(), seams: Vec::new(), on_avatar: false, pressure: 0.0, next_id: 1 }
+        Self {
+            name: name.into(),
+            pieces: Vec::new(),
+            seams: Vec::new(),
+            on_avatar: false,
+            pressure: 0.0,
+            textiles: Textile::library(),
+            next_id: 1,
+        }
     }
 
     /// Reserva un id nuevo. Sirve para piezas, aristas y costuras.
@@ -170,6 +184,8 @@ impl Pattern {
             Piece::from_parts(new_id, format!("{} (copia)", src.name), points, edges).expect("misma longitud");
         piece.arrangement = src.arrangement;
         piece.zone = src.zone;
+        piece.fabric = src.fabric;
+        piece.layers = src.layers.clone();
         self.pieces.push(piece);
         Some(new_id)
     }
@@ -247,6 +263,47 @@ impl Pattern {
         let piece = self.piece(piece)?;
         let idx = piece.edge_index(edge)?;
         Some(piece.edge_length(idx))
+    }
+
+    pub fn textile(&self, id: TextileId) -> Option<&Textile> {
+        self.textiles.iter().find(|t| t.id == id)
+    }
+
+    pub fn textile_mut(&mut self, id: TextileId) -> Option<&mut Textile> {
+        self.textiles.iter_mut().find(|t| t.id == id)
+    }
+
+    /// Las capas de tela de una pieza, de fuera hacia dentro. Si alguna no
+    /// está en la biblioteca (un fichero editado a mano), cuenta como
+    /// algodón.
+    pub fn piece_textiles(&self, piece: &Piece) -> Vec<Textile> {
+        piece.textiles().map(|id| self.textile(id).cloned().unwrap_or_default()).collect()
+    }
+
+    /// Cuántas piezas usan una tela (por fuera o como capa).
+    pub fn textile_uses(&self, id: TextileId) -> usize {
+        self.pieces.iter().filter(|p| p.textiles().any(|t| t == id)).count()
+    }
+
+    /// Añade a la biblioteca una copia de `from` con otro nombre, para
+    /// ajustarla sin cambiar la original.
+    pub fn duplicate_textile(&mut self, from: TextileId) -> Option<TextileId> {
+        let mut textile = self.textile(from)?.clone();
+        textile.id = TextileId(self.textiles.iter().map(|t| t.id.0).max().unwrap_or(0) + 1);
+        textile.name = format!("{} (copia)", textile.name);
+        let id = textile.id;
+        self.textiles.push(textile);
+        Some(id)
+    }
+
+    /// Quita una tela de la biblioteca si ninguna pieza la usa.
+    pub fn remove_textile(&mut self, id: TextileId) -> bool {
+        if self.textile_uses(id) > 0 {
+            return false;
+        }
+        let before = self.textiles.len();
+        self.textiles.retain(|t| t.id != id);
+        self.textiles.len() < before
     }
 
     /// Revisa el patrón y devuelve los problemas encontrados.
@@ -347,6 +404,29 @@ mod tests {
         assert_eq!(p.seams_of_edge(a, f).count(), 1);
         assert!(p.remove_seam(id).is_some());
         assert!(p.seams.is_empty());
+    }
+
+    #[test]
+    fn textile_library() {
+        let mut p = Pattern::new("bolso");
+        let a = p.add_rect("a", Point::ZERO, 100.0, 50.0);
+        assert_eq!(p.piece_textiles(p.piece(a).unwrap())[0].name, "Algodón");
+        let leather = p.textiles.iter().find(|t| t.name == "Cuero").unwrap().id;
+        let linen = p.textiles.iter().find(|t| t.name == "Lino").unwrap().id;
+        let piece = p.piece_mut(a).unwrap();
+        piece.fabric = leather;
+        piece.layers.push(linen);
+        let names: Vec<String> = p.piece_textiles(p.piece(a).unwrap()).into_iter().map(|t| t.name).collect();
+        assert_eq!(names, ["Cuero", "Lino"]);
+        // Lo que está en uso no se borra; lo demás, sí.
+        assert!(!p.remove_textile(linen));
+        let copy = p.duplicate_textile(linen).unwrap();
+        assert_eq!(p.textile(copy).unwrap().name, "Lino (copia)");
+        assert!(p.remove_textile(copy));
+        // La copia de una pieza lleva las mismas telas.
+        let b = p.duplicate_piece(a, Vec2::ZERO).unwrap();
+        assert_eq!(p.piece(b).unwrap().layers, [linen]);
+        assert_eq!(p.textile_uses(linen), 2);
     }
 
     #[test]

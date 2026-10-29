@@ -162,6 +162,7 @@ impl ClothingMakerApp {
                     ui.end_row();
                 });
             });
+            self.textile_library(ui);
         });
     }
 
@@ -316,6 +317,8 @@ impl ClothingMakerApp {
             }
             Selection::Piece(_) | Selection::Seam(_) | Selection::None => {}
         }
+
+        self.piece_textiles(ui, id);
 
         if duplicate && let Some(new) = self.pattern.duplicate_piece(id, pattern::Vec2::new(20.0, 20.0)) {
             self.editor.selection = Selection::Piece(new);
