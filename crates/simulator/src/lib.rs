@@ -23,6 +23,9 @@
 //! - **Auto-colisión** ([`SimParams::self_collision`]): las partículas no
 //!   se acercan a menos de una separación mínima de los triángulos de la
 //!   propia tela, así que los paneles no se atraviesan entre sí.
+//! - **Presión** ([`SimParams::pressure`]): empuja cada triángulo hacia
+//!   fuera, como un relleno, para que una prenda cerrada tenga volumen. Las
+//!   bocas sin coser se tapan con una tapa imaginaria (ver `pressure`).
 //!
 //! Las restricciones se reparten en «colores» (grupos sin partículas en
 //! común) para resolver cada grupo en paralelo con `rayon`.
@@ -31,6 +34,7 @@
 //! convierten al añadirlas.
 
 mod collider;
+mod pressure;
 mod remap;
 mod sdf;
 mod self_collision;
@@ -114,11 +118,22 @@ pub struct SimParams {
     pub sew_speed: f32,
     /// Evitar que la tela se atraviese a sí misma.
     pub self_collision: bool,
+    /// Presión interior (Pa) para dar volumen a las prendas cerradas, como
+    /// un relleno. 0 = vacía. El peso del algodón equivale a 1,5 Pa, así que
+    /// con unas decenas de pascales un cojín ya se hincha.
+    pub pressure: f32,
 }
 
 impl Default for SimParams {
     fn default() -> Self {
-        Self { gravity: Vec3::new(0.0, -9.81, 0.0), substeps: 20, damping: 0.5, sew_speed: 0.4, self_collision: true }
+        Self {
+            gravity: Vec3::new(0.0, -9.81, 0.0),
+            substeps: 20,
+            damping: 0.5,
+            sew_speed: 0.4,
+            self_collision: true,
+            pressure: 0.0,
+        }
     }
 }
 
@@ -153,6 +168,7 @@ pub struct Cloth {
     /// Posición en el patrón (m) y pieza de cada partícula.
     rest: Vec<(Vec3, u32)>,
     self_collision: self_collision::SelfCollision,
+    pressure: pressure::Pressure,
 }
 
 impl Cloth {
@@ -241,6 +257,7 @@ impl Cloth {
         };
         self.pieces.push(range);
         self.self_collision.dirty = true;
+        self.pressure.dirty = true;
         range
     }
 
@@ -263,12 +280,14 @@ impl Cloth {
         let rest_length = self.positions[a as usize].distance(self.positions[b as usize]);
         self.seams.push(DistanceConstraint { a, b, rest_length, compliance: 0.0 });
         self.self_collision.dirty = true;
+        self.pressure.dirty = true;
     }
 
     /// Quita todas las costuras.
     pub fn clear_seams(&mut self) {
         self.seams.clear();
         self.self_collision.dirty = true;
+        self.pressure.dirty = true;
     }
 
     pub fn seam_count(&self) -> usize {
@@ -311,7 +330,20 @@ impl Cloth {
                 let span = SELF_COLLISION_EVERY.min(substeps - substep) as f32 * h;
                 self.gather_self_contacts(span, params.gravity.length());
             }
-            let gravity = if self.is_sewing() { Vec3::ZERO } else { params.gravity };
+            let sewing = self.is_sewing();
+            let gravity = if sewing { Vec3::ZERO } else { params.gravity };
+            // Mientras se cose la prenda aún no está cerrada.
+            if !sewing && (params.pressure != 0.0 || self.pressure.current != 0.0) {
+                self.rebuild_pressure();
+                self.pressure.apply(
+                    params.pressure,
+                    h,
+                    &self.positions,
+                    &mut self.velocities,
+                    &self.inv_mass,
+                    &self.triangles,
+                );
+            }
             let shrink = params.sew_speed.max(0.0) * h;
             for c in &mut self.seams {
                 c.rest_length = (c.rest_length - shrink).max(0.0);
@@ -353,6 +385,37 @@ impl Cloth {
                     .for_each(|((v, x), p)| update((v, x, p)));
             }
         }
+    }
+
+    fn rebuild_pressure(&mut self) {
+        if self.pressure.dirty {
+            let seams: Vec<[u32; 2]> = self.seams.iter().map(|c| [c.a, c.b]).collect();
+            self.pressure.rebuild(self.positions.len(), &self.triangles, &seams);
+        }
+    }
+
+    /// Volumen (m³) que encierra la tela, con las bocas sin coser tapadas.
+    pub fn volume(&mut self) -> f32 {
+        self.rebuild_pressure();
+        self.pressure.volume(&self.positions, &self.triangles)
+    }
+
+    /// Bocas (tramos de borde sin coser) que tiene la tela.
+    pub fn opening_count(&mut self) -> usize {
+        self.rebuild_pressure();
+        self.pressure.opening_count()
+    }
+
+    /// Presión (Pa) que se está aplicando ahora: tras coser, sube poco a
+    /// poco hasta [`SimParams::pressure`].
+    pub fn applied_pressure(&self) -> f32 {
+        self.pressure.current
+    }
+
+    /// Empieza con esta presión ya aplicada, por ejemplo al seguir con la
+    /// misma prenda tras editarla, para que no se deshinche y vuelva a subir.
+    pub fn set_applied_pressure(&mut self, pressure: f32) {
+        self.pressure.current = pressure;
     }
 
     fn rebuild_self_collision(&mut self) {
@@ -787,6 +850,73 @@ mod tests {
         assert!(with > 0.0075, "la capa de arriba ha atravesado la de abajo: {with}");
         let without = drop(false);
         assert!(without < 0.005, "sin auto-colisión deberían mezclarse: {without}");
+    }
+
+    /// Dos cuadrados de 40 cm, uno sobre otro a 2 cm, cosidos por los
+    /// bordes `sewn` (0 arriba, 1 derecha, 2 abajo, 3 izquierda), en vertical
+    /// y sin gravedad ni obstáculos. Devuelve la tela tras `seconds`.
+    fn sewn_squares(sewn: &[usize], pressure: f32, seconds: f32) -> Cloth {
+        let size = 400.0;
+        let mesh = square_mesh(size);
+        let mut cloth = Cloth::new();
+        let place = |z: f32| move |p: [f64; 2]| Vec3::new(p[0] as f32 * 1e-3 - 0.2, 0.6 - p[1] as f32 * 1e-3, z);
+        let a = cloth.add_piece(&mesh, &Fabric::COTTON, place(0.01), Vec3::Z);
+        let b = cloth.add_piece(&mesh, &Fabric::COTTON, place(-0.01), -Vec3::Z);
+        let on_side = |p: [f64; 2], side: usize| match side {
+            0 => p[1] == 0.0,
+            1 => p[0] == size,
+            2 => p[1] == size,
+            _ => p[0] == 0.0,
+        };
+        for (i, &p) in mesh.positions.iter().enumerate() {
+            if sewn.iter().any(|&side| on_side(p, side)) {
+                cloth.add_seam(a.first_particle + i as u32, b.first_particle + i as u32);
+            }
+        }
+        let params = SimParams { gravity: Vec3::ZERO, pressure, ..Default::default() };
+        for _ in 0..(seconds * 60.0) as usize {
+            cloth.step(1.0 / 60.0, &params, &[]);
+        }
+        assert!(cloth.positions.iter().all(|p| p.is_finite()));
+        cloth
+    }
+
+    fn centroid(cloth: &Cloth) -> Vec3 {
+        cloth.positions.iter().copied().sum::<Vec3>() / cloth.positions.len() as f32
+    }
+
+    /// Un cojín cosido por los cuatro lados: sin presión queda plano; con
+    /// ella se hincha (un cojín de 40 × 40 cm lleno ronda los 10 l) sin
+    /// romper las costuras ni estirar mucho la tela.
+    #[test]
+    fn pressure_inflates_a_cushion() {
+        let flat = sewn_squares(&[0, 1, 2, 3], 0.0, 1.0).volume();
+        let mut cushion = sewn_squares(&[0, 1, 2, 3], 40.0, 3.0);
+        assert_eq!(cushion.opening_count(), 0);
+        let volume = cushion.volume();
+        eprintln!("cojín: {:.2} l plano, {:.2} l hinchado", flat * 1e3, volume * 1e3);
+        assert!(flat < 0.004, "sin presión debería quedar plano: {flat}");
+        assert!(volume > 0.007 && volume < 0.02, "volumen del cojín: {volume}");
+        assert!(cushion.max_seam_gap() < 2e-3, "costura abierta: {}", cushion.max_seam_gap());
+        let ratios = stretch_ratios(&cushion, &Fabric::COTTON);
+        assert!(ratios[ratios.len() / 2] < 1.02, "mediana del estiramiento: {}", ratios[ratios.len() / 2]);
+        // Las fuerzas se compensan: no se desplaza.
+        let drift = centroid(&cushion).distance(Vec3::new(0.0, 0.4, 0.0));
+        assert!(drift < 0.01, "el cojín se ha movido {drift} m");
+    }
+
+    /// Una bolsa abierta por arriba: la boca se tapa con una tapa imaginaria,
+    /// así que también se hincha, y la bolsa no sale disparada hacia abajo
+    /// (por donde la presión no tiene contrapeso sin tapa).
+    #[test]
+    fn pressure_fills_an_open_bag() {
+        let mut bag = sewn_squares(&[1, 2, 3], 30.0, 3.0);
+        assert_eq!(bag.opening_count(), 1);
+        let volume = bag.volume();
+        eprintln!("bolsa: {:.2} l", volume * 1e3);
+        assert!(volume > 0.006, "la bolsa no se ha llenado: {volume}");
+        let drift = centroid(&bag).distance(Vec3::new(0.0, 0.4, 0.0));
+        assert!(drift < 0.02, "la bolsa se ha movido {drift} m");
     }
 
     /// Una tira de 45 cm sobre el borde de una mesa con 10 cm colgando: el

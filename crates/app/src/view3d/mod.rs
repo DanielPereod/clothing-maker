@@ -211,7 +211,8 @@ impl View3D {
             seams: scene.seams,
             pieces: scene.pieces,
         });
-        self.runner.load(scene.cloth, scene.colliders, self.settings.params(), live);
+        let params = simulator::SimParams { pressure: pattern.pressure as f32, ..self.settings.params() };
+        self.runner.load(scene.cloth, scene.colliders, params, live);
         self.version = u64::MAX;
     }
 
@@ -389,6 +390,12 @@ impl View3D {
         }
         if stats.sewing {
             ui.colored_label(theme::ACCENT, "Cosiendo…");
+        }
+        if pattern.pressure > 0.0 || stats.pressure > 0.0 {
+            ui.label(
+                egui::RichText::new(format!("relleno {:.0} Pa, {:.1} l", stats.pressure, stats.volume * 1e3))
+                    .color(theme::TEXT_WEAK),
+            );
         }
         let slow = if stats.step_ms > scene::FRAME * 1000.0 { " (más lento que el tiempo real)" } else { "" };
         ui.label(

@@ -16,8 +16,8 @@ como mochilas o bolsas.
 - Longitud de cada arista en la pieza seleccionada, área y perímetro.
 - Guardar y abrir en JSON (`*.pattern.json`), con aviso de cambios sin guardar.
 - Vista previa de la malla de simulación.
-- Ejemplos: camiseta básica, camiseta con mangas, bolsa tote y bolsa con fondo
-  (Archivo → Ejemplos).
+- Ejemplos: camiseta básica, camiseta con mangas, bolsa tote, bolsa con fondo
+  y cojín (Archivo → Ejemplos).
 
 Navegación: rueda para zoom, arrastrar en vacío / botón central / derecho para
 desplazar, F para encuadrar todo.
@@ -81,7 +81,7 @@ desplazar, F para encuadrar todo.
   *Derecha* / *Izquierda* de las piezas sigue siendo la de quien mira la
   prenda de frente.
 
-**Fase 5 (esta):** cambios en vivo y auto-colisión.
+**Fase 5:** cambios en vivo y auto-colisión.
 
 - *En vivo* (activado por defecto): al editar el patrón, la prenda 3D se
   reajusta sin volver a empezar. Cada pieza se vuelve a mallar y cada punto
@@ -100,8 +100,25 @@ desplazar, F para encuadrar todo.
   triángulo; cada partícula recuerda de qué lado estaba y vuelve a él si se
   cuela. Encarece el paso (de unos 6 a 12 ms con la camiseta); se puede
   apagar.
-- Una bolsa vacía sigue quedando plana al apoyarla, como una de verdad sin
-  nada dentro; darle volumen (relleno o presión) es de la siguiente fase.
+
+**Fase 6 (esta):** relleno (presión interior).
+
+- *Relleno* en las propiedades del patrón (en pascales, se guarda en el
+  fichero): la prenda se hincha como si tuviera algo dentro. Con 0, una bolsa
+  vacía queda plana al apoyarla, como una de verdad. Con unos 10 Pa una bolsa
+  se llena; con 30, un cojín queda firme. Mucha más presión la pone redonda
+  como un globo.
+- Cada triángulo se empuja hacia fuera (el derecho de la tela) con
+  `presión × área`. Las bocas sin coser (la de una bolsa, el cuello de una
+  camiseta) se cierran con una tapa imaginaria que también empuja, así que la
+  boca se abre en vez de vaciarse y la suma de fuerzas es cero: la prenda no
+  sale disparada.
+- La presión empieza cuando la prenda, ya cosida, se ha parado, y sube en un
+  segundo: si se hinchara mientras cae, llegaría redonda y rodaría. Cambiar
+  el relleno en vivo no la deshincha.
+- La vista 3D muestra la presión aplicada y el volumen que encierra la tela.
+- Ejemplo nuevo: *Cojín* (dos cuadrados de 40 cm cosidos por los cuatro
+  lados, con 30 Pa).
 
 **Interfaz:** inspirada en los programas de CAD como Fusion 360, con tema
 oscuro.
@@ -125,8 +142,7 @@ oscuro.
 - Barra de estado: pista de la herramienta, estado de la simulación,
   coordenadas del cursor y zoom.
 
-**Siguientes fases:** tejidos (con relleno o presión para objetos), GPU y
-exportación.
+**Siguientes fases:** más tejidos, GPU y exportación.
 
 ## Cómo ejecutarlo
 
@@ -184,7 +200,8 @@ punto la curva le acompaña. Las costuras apuntan a ids de arista, que no
 cambian al añadir o quitar puntos en otras partes de la pieza. Cada lado de
 una costura puede llevar `"reversed": true` (se recorre del final al
 principio), y cada pieza un `"arrangement"` (`front`, `back`, `left`,
-`right`, `top` o `bottom`; si falta, `front`).
+`right`, `top` o `bottom`; si falta, `front`). El patrón puede llevar
+`"pressure"` (relleno en Pa; si falta, 0).
 
 ## Desarrollo
 
