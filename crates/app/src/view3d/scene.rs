@@ -98,6 +98,8 @@ pub struct SceneSettings {
     pub mesh_size: f64,
     /// Subpasos por fotograma: más = tela menos elástica, pero más lento.
     pub substeps: u32,
+    /// Que la tela no se atraviese a sí misma.
+    pub self_collision: bool,
 }
 
 impl Default for SceneSettings {
@@ -109,13 +111,21 @@ impl Default for SceneSettings {
             fabric: FabricKind::Cotton,
             mesh_size: 20.0,
             substeps: SimParams::default().substeps,
+            self_collision: true,
         }
     }
 }
 
 impl SceneSettings {
     pub fn params(&self) -> SimParams {
-        SimParams { substeps: self.substeps, ..Default::default() }
+        SimParams { substeps: self.substeps, self_collision: self.self_collision, ..Default::default() }
+    }
+
+    /// Si se puede pasar de `self` a `other` conservando la forma de la
+    /// prenda (solo cambian el tejido o la resolución) o hay que volver a
+    /// colocar las piezas.
+    pub fn keeps_shape(&self, other: &SceneSettings) -> bool {
+        (self.placement, self.obstacle, self.sew) == (other.placement, other.obstacle, other.sew)
     }
 }
 
@@ -129,6 +139,20 @@ pub struct Scene {
     pub failed: Vec<String>,
     /// Costuras que se van a cerrar.
     pub seams: usize,
+    /// Las piezas malladas, en el orden en que están en la tela.
+    pub pieces: Vec<ScenePiece>,
+    /// Partículas unidas por las costuras.
+    seam_pairs: Vec<[u32; 2]>,
+}
+
+/// Una pieza ya mallada y metida en la tela.
+pub struct ScenePiece {
+    pub id: pattern::PieceId,
+    /// Vértices del contorno en el patrón, para saber si la pieza se ha
+    /// movido en el editor.
+    pub outline: Vec<pattern::Point>,
+    pub mesh: Mesh2D,
+    pub first_particle: u32,
 }
 
 const SPHERE_RADIUS: f32 = 0.25;
@@ -218,6 +242,7 @@ pub fn build(
     let mut cloth = Cloth::new();
     let mut colors = Vec::new();
     let mut first_particle = vec![0u32; pattern.pieces.len()];
+    let mut pieces = Vec::new();
     for &(index, piece, mesh) in &meshes {
         let range = match settings.placement {
             Placement::Around => {
@@ -240,6 +265,12 @@ pub fn build(
             ),
         };
         first_particle[index] = range.first_particle;
+        pieces.push(ScenePiece {
+            id: piece.id,
+            outline: piece.vertices().to_vec(),
+            mesh: mesh.clone(),
+            first_particle: range.first_particle,
+        });
         if settings.placement == Placement::Hang {
             // Fija los puntos más altos de cada pieza (con 5 mm de margen).
             let top = mesh.positions.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
@@ -254,6 +285,7 @@ pub fn build(
     }
 
     let mut seams = 0;
+    let mut seam_pairs = Vec::new();
     if settings.sew {
         for seam in &meshed.seams {
             seams += 1;
@@ -261,16 +293,62 @@ pub fn build(
             for (i, a) in seam.sides.iter().enumerate() {
                 for b in &seam.sides[i + 1..] {
                     for (&va, &vb) in a.vertices.iter().zip(&b.vertices) {
-                        cloth.add_seam(first_particle[a.piece] + va, first_particle[b.piece] + vb);
+                        seam_pairs.push([first_particle[a.piece] + va, first_particle[b.piece] + vb]);
                     }
                 }
             }
         }
     }
+    for &[a, b] in &seam_pairs {
+        cloth.add_seam(a, b);
+    }
 
     let mut colliders = vec![Collider::ground(0.0)];
     colliders.extend(settings.obstacle.collider());
-    Scene { cloth, colliders, colors, failed, seams }
+    Scene { cloth, colliders, colors, failed, seams, pieces, seam_pairs }
+}
+
+/// Pasa la forma 3D de una escena anterior a una nueva del mismo patrón ya
+/// editado: cada pieza que ya existía toma la posición que tenía (aunque su
+/// malla haya cambiado) y las piezas nuevas se quedan en su sitio de
+/// salida. Las costuras se vuelven a crear a la distancia a la que quedan,
+/// así que las que ya estaban cosidas siguen cerradas.
+///
+/// `old_positions` son las posiciones actuales de la tela vieja.
+pub fn carry_over(old: &[ScenePiece], old_positions: &[Vec3], new: &mut Scene) {
+    let cloth = &mut new.cloth;
+    for piece in &new.pieces {
+        let Some(before) = old.iter().find(|p| p.id == piece.id) else { continue };
+        let start = before.first_particle as usize;
+        let Some(positions) = old_positions.get(start..start + before.mesh.positions.len()) else { continue };
+        let remap = simulator::Remap::new(&before.mesh, positions, outline_offset(&before.outline, &piece.outline));
+        for (i, &p) in piece.mesh.positions.iter().enumerate() {
+            cloth.positions[piece.first_particle as usize + i] = remap.at(p);
+        }
+    }
+    // Las costuras se crean con la distancia que hay al añadirlas: hay que
+    // rehacerlas con las posiciones nuevas.
+    cloth.clear_seams();
+    for &[a, b] in &new.seam_pairs {
+        cloth.add_seam(a, b);
+    }
+}
+
+/// Cuánto se ha movido una pieza en el editor: la mediana del movimiento de
+/// sus vértices (si solo se ha arrastrado un vértice, la pieza no se ha
+/// movido). Si ha cambiado el número de vértices, se supone que nada.
+fn outline_offset(before: &[pattern::Point], after: &[pattern::Point]) -> [f64; 2] {
+    if before.len() != after.len() || before.is_empty() {
+        return [0.0, 0.0];
+    }
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    [
+        median(before.iter().zip(after).map(|(a, b)| b.x - a.x).collect()),
+        median(before.iter().zip(after).map(|(a, b)| b.y - a.y).collect()),
+    ]
 }
 
 fn bounds(meshes: &[&Mesh2D]) -> ([f64; 2], [f64; 2]) {
@@ -488,14 +566,18 @@ impl Runner {
         Self { commands, shared, thread: Some(thread), running: false }
     }
 
-    pub fn load(&mut self, cloth: Cloth, colliders: Vec<Collider>, params: SimParams) {
+    /// Carga una tela nueva. Con `keep_time` el reloj sigue contando: es la
+    /// misma prenda, editada.
+    pub fn load(&mut self, cloth: Cloth, colliders: Vec<Collider>, params: SimParams, keep_time: bool) {
         let generation = {
             let mut shared = self.shared.lock().unwrap();
             shared.generation += 1;
             shared.positions.clone_from(&cloth.positions);
             shared.version += 1;
-            shared.sim_time = 0.0;
-            shared.step_ms = 0.0;
+            if !keep_time {
+                shared.sim_time = 0.0;
+                shared.step_ms = 0.0;
+            }
             shared.sewing = cloth.is_sewing();
             shared.generation
         };
@@ -672,5 +754,81 @@ mod tests {
             let lowest = scene.cloth.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
             assert!(lowest > -1e-3, "{name}: atraviesa el suelo ({lowest})");
         }
+    }
+
+    /// Los ejemplos, cosidos y asentados (las bolsas, caídas sobre la mesa):
+    /// la tela no se atraviesa a sí misma. Sin auto-colisión, las dos caras
+    /// de las bolsas se cruzan.
+    #[test]
+    fn examples_do_not_pass_through_themselves() {
+        let crossings = |make: fn() -> Pattern, self_collision: bool| {
+            let settings = settings_for(make, SceneSettings { mesh_size: 30.0, self_collision, ..Default::default() });
+            let mut scene = build_example(make, &settings);
+            for _ in 0..300 {
+                scene.cloth.step(FRAME, &settings.params(), &scene.colliders);
+            }
+            assert!(scene.cloth.positions.iter().all(|p| p.is_finite()));
+            scene.cloth.count_crossings()
+        };
+        for (name, _, make) in examples::ALL {
+            let (with, without) = (crossings(make, true), crossings(make, false));
+            eprintln!("{name}: {with} aristas cruzadas ({without} sin auto-colisión)");
+            assert!(with <= without / 5, "{name}: {with} aristas cruzadas ({without} sin auto-colisión)");
+        }
+    }
+
+    /// Con la camiseta ya puesta en el maniquí, se edita el patrón: la
+    /// prenda nueva empieza donde estaba la vieja y se reajusta sin caerse.
+    #[test]
+    fn edits_carry_over_the_draped_garment() {
+        let settings = SceneSettings { obstacle: Obstacle::Mannequin, mesh_size: 25.0, ..Default::default() };
+        let mut pattern = examples::t_shirt();
+        let mut scene = build(&pattern, &settings, |_| egui::Color32::WHITE);
+        for _ in 0..300 {
+            scene.cloth.step(FRAME, &settings.params(), &scene.colliders);
+        }
+        let extent = |positions: &[Vec3]| {
+            positions.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)))
+        };
+        let (lo, hi) = extent(&scene.cloth.positions);
+        let front = pattern.pieces[0].id;
+
+        // Escote más profundo, el delantero movido en el editor y una malla
+        // más fina: la prenda queda igual, con las costuras cerradas.
+        let piece = pattern.piece_mut(front).unwrap();
+        piece.set_edge_kind(
+            0,
+            pattern::EdgeKind::Cubic { h1: pattern::Vec2::new(5.0, 160.0), h2: pattern::Vec2::new(-5.0, 160.0) },
+        );
+        piece.translate(pattern::Vec2::new(-200.0, 50.0));
+        let settings = SceneSettings { mesh_size: 20.0, ..settings };
+        let mut edited = build(&pattern, &settings, |_| egui::Color32::WHITE);
+        carry_over(&scene.pieces, &scene.cloth.positions, &mut edited);
+        assert!(edited.cloth.positions.len() > scene.cloth.positions.len());
+        let gap = edited.cloth.max_seam_gap();
+        assert!(gap < 0.01, "las costuras se han abierto al pasar la prenda: {gap}");
+        let (new_lo, new_hi) = extent(&edited.cloth.positions);
+        assert!(
+            (new_lo - lo).abs() < 0.01 && (new_hi - hi).abs() < 0.01,
+            "se ha movido: {lo}..{hi} → {new_lo}..{new_hi}"
+        );
+
+        // Bajo del delantero 6 cm más largo: los costados ya no miden lo
+        // mismo y se vuelven a coser; la prenda sigue puesta y baja.
+        let piece = pattern.piece_mut(front).unwrap();
+        for i in [4, 5] {
+            let v = piece.vertices()[i];
+            piece.set_vertex(i, v + pattern::Vec2::new(0.0, 60.0));
+        }
+        let mut longer = build(&pattern, &settings, |_| egui::Color32::WHITE);
+        carry_over(&edited.pieces, &edited.cloth.positions, &mut longer);
+        for _ in 0..180 {
+            longer.cloth.step(FRAME, &settings.params(), &longer.colliders);
+        }
+        assert!(longer.cloth.positions.iter().all(|p| p.is_finite()));
+        assert!(longer.cloth.max_seam_gap() < 5e-3, "costura abierta: {}", longer.cloth.max_seam_gap());
+        let (new_lo, new_hi) = extent(&longer.cloth.positions);
+        assert!(new_hi > 1.35, "se ha caído: {new_hi}");
+        assert!(new_lo < lo - 0.02, "el bajo no ha bajado: {lo} → {new_lo}");
     }
 }

@@ -5,12 +5,19 @@
 mod render;
 mod scene;
 
+use std::time::{Duration, Instant};
+
 use eframe::egui::{self, Color32, PointerButton, Sense, Ui};
 use glam::{Mat4, Vec3};
 use pattern::{Pattern, PieceId};
 
 use render::{Renderer, Vertex};
-use scene::{FabricKind, Obstacle, Placement, Runner, SceneSettings};
+use scene::{FabricKind, Obstacle, Placement, Runner, ScenePiece, SceneSettings};
+
+/// Tiempo mínimo entre dos actualizaciones en vivo: mallar y montar la
+/// escena cuesta unos milisegundos, y al arrastrar el patrón cambia en cada
+/// fotograma.
+const LIVE_INTERVAL: Duration = Duration::from_millis(100);
 
 const OBSTACLE_COLOR: [f32; 3] = [0.42, 0.44, 0.48];
 const MANNEQUIN_COLOR: [f32; 3] = [0.62, 0.58, 0.54];
@@ -91,6 +98,7 @@ struct Loaded {
     colors: Vec<[f32; 3]>,
     failed: Vec<String>,
     seams: usize,
+    pieces: Vec<ScenePiece>,
 }
 
 pub struct View3D {
@@ -109,6 +117,13 @@ pub struct View3D {
     on_avatar: Option<bool>,
     /// Último obstáculo elegido sin maniquí, para volver a él.
     object_obstacle: Obstacle,
+    /// Reajustar la prenda en cuanto cambia el patrón, sin reiniciar.
+    live: bool,
+    /// Cuándo se hizo la última actualización en vivo.
+    last_live: Instant,
+    /// Último patrón que no se ha podido pasar en vivo (alguna pieza no se
+    /// puede mallar), para no reintentarlo en cada fotograma.
+    rejected: Option<Pattern>,
 }
 
 impl View3D {
@@ -128,18 +143,48 @@ impl View3D {
             obstacle: None,
             on_avatar: None,
             object_obstacle: SceneSettings::default().obstacle,
+            live: true,
+            last_live: Instant::now(),
+            rejected: None,
         }
     }
 
     /// Vuelve a montar la escena con el patrón actual, manteniendo si estaba
     /// en marcha o en pausa.
     fn reload(&mut self, pattern: &Pattern, color_of: &impl Fn(PieceId) -> Color32) {
-        let scene = scene::build(pattern, &self.settings, color_of);
+        self.load(pattern, color_of, false);
+    }
+
+    /// Pasa la prenda simulada al patrón o los ajustes actuales sin
+    /// desmontarla: cada pieza conserva su forma 3D y la simulación sigue
+    /// desde ahí. Si los ajustes nuevos obligan a recolocar las piezas, o
+    /// no hay nada cargado, vuelve a empezar.
+    fn update_live(&mut self, pattern: &Pattern, color_of: &impl Fn(PieceId) -> Color32) {
+        let keeps = self.loaded.as_ref().is_some_and(|l| l.settings.keeps_shape(&self.settings));
+        self.load(pattern, color_of, keeps);
+        self.last_live = Instant::now();
+    }
+
+    fn load(&mut self, pattern: &Pattern, color_of: &impl Fn(PieceId) -> Color32, live: bool) {
+        self.rejected = None;
+        let mut scene = scene::build(pattern, &self.settings, color_of);
+        if live && let Some(loaded) = &self.loaded {
+            // Mientras se edita, una pieza puede quedar sin poder mallarse
+            // (un contorno que se cruza): se espera a que vuelva a estar bien
+            // en vez de quitarla de la prenda.
+            if scene.failed.iter().any(|name| !loaded.failed.contains(name)) {
+                self.rejected = Some(pattern.clone());
+                return;
+            }
+            self.version = self.runner.read(self.version, &mut self.positions);
+            scene::carry_over(&loaded.pieces, &self.positions, &mut scene);
+        }
         let indices = scene.cloth.triangles.iter().flatten().copied().collect();
         // Al cambiar de colocación u obstáculo, la cámara vuelve a encuadrar.
-        let reframe = self.loaded.as_ref().is_none_or(|l| {
-            (l.settings.placement, l.settings.obstacle) != (self.settings.placement, self.settings.obstacle)
-        });
+        let reframe = !live
+            && self.loaded.as_ref().is_none_or(|l| {
+                (l.settings.placement, l.settings.obstacle) != (self.settings.placement, self.settings.obstacle)
+            });
         let mut framed = scene.cloth.positions.clone();
         if let Some(avatar) = self.settings.obstacle.avatar() {
             // Que se vea el maniquí entero, no solo la prenda.
@@ -157,8 +202,9 @@ impl View3D {
             colors: scene.colors,
             failed: scene.failed,
             seams: scene.seams,
+            pieces: scene.pieces,
         });
-        self.runner.load(scene.cloth, scene.colliders, self.settings.params());
+        self.runner.load(scene.cloth, scene.colliders, self.settings.params(), live);
         self.version = u64::MAX;
     }
 
@@ -180,7 +226,17 @@ impl View3D {
             self.runner.set_running(true);
         }
         let settings_before = self.settings;
-        let outdated = self.loaded.as_ref().is_some_and(|l| l.pattern != *pattern);
+        let mut outdated = self.loaded.as_ref().is_some_and(|l| l.pattern != *pattern);
+        let rejected = self.rejected.as_ref() == Some(pattern);
+        if self.live && outdated && !rejected {
+            let wait = LIVE_INTERVAL.saturating_sub(self.last_live.elapsed());
+            if wait.is_zero() {
+                self.update_live(pattern, &color_of);
+                outdated = self.loaded.as_ref().is_some_and(|l| l.pattern != *pattern);
+            } else {
+                ui.ctx().request_repaint_after(wait);
+            }
+        }
 
         ui.horizontal_wrapped(|ui| {
             let running = self.runner.is_running();
@@ -193,6 +249,8 @@ impl View3D {
             if ui.button("⟲ Reiniciar").on_hover_text("Vuelve a colocar las piezas y empieza de nuevo").clicked() {
                 self.reload(pattern, &color_of);
             }
+            ui.checkbox(&mut self.live, "En vivo")
+                .on_hover_text("Al editar el patrón, la prenda se reajusta sin volver a empezar");
             ui.separator();
             egui::ComboBox::from_id_salt("placement").selected_text(self.settings.placement.label()).show_ui(
                 ui,
@@ -223,13 +281,16 @@ impl View3D {
                 ui.label("Subpasos por fotograma");
                 ui.add(egui::Slider::new(&mut self.settings.substeps, 5..=60))
                     .on_hover_text("Más subpasos: la tela se estira menos, pero cuesta más");
+                ui.checkbox(&mut self.settings.self_collision, "Auto-colisión")
+                    .on_hover_text("Que la tela no se atraviese a sí misma (un panel con otro)");
                 if ui.button("Encuadrar cámara").clicked() {
                     self.camera = self.home;
                 }
             });
         });
         if self.settings != settings_before {
-            self.reload(pattern, &color_of);
+            // Cambiar el tejido o la malla no desmonta la prenda.
+            self.update_live(pattern, &color_of);
         }
 
         let stats = self.runner.stats();
@@ -248,7 +309,12 @@ impl View3D {
             if stats.sewing {
                 ui.colored_label(Color32::from_rgb(90, 170, 230), "Cosiendo…");
             }
-            if outdated {
+            if self.rejected.as_ref() == Some(pattern) {
+                ui.colored_label(
+                    Color32::from_rgb(230, 150, 40),
+                    "Hay una pieza que no se puede mallar: la prenda se actualizará cuando se arregle.",
+                );
+            } else if outdated && !self.live {
                 ui.colored_label(Color32::from_rgb(230, 150, 40), "El patrón ha cambiado: pulsa Reiniciar para verlo.");
             }
             if !loaded.failed.is_empty() {

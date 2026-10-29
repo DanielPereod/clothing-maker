@@ -61,10 +61,7 @@ desplazar, F para encuadrar todo.
   costura se cierra poco a poco y sin gravedad; cuando está cerrada, la pieza
   cae sobre el obstáculo. No hace falta avatar: sirve para bolsas y mochilas.
 
-Aún no hay colisión de la tela consigo misma: dos paneles cosidos pueden
-atravesarse al caer, y una bolsa vacía se queda aplastada.
-
-**Fase 4 (esta):** maniquí y puntos de colocación.
+**Fase 4:** maniquí y puntos de colocación.
 
 - Maniquí sacado de la malla base de MakeHuman (CC0, ver
   [`assets/README.md`](assets/README.md)). Es opcional: la casilla *Prenda
@@ -83,9 +80,30 @@ atravesarse al caer, y una bolsa vacía se queda aplastada.
   *Derecha* / *Izquierda* de las piezas sigue siendo la de quien mira la
   prenda de frente.
 
-**Siguientes fases:** remallado en vivo y
-auto-colisión, y después tejidos (con relleno o presión para objetos),
-GPU y exportación.
+**Fase 5 (esta):** cambios en vivo y auto-colisión.
+
+- *En vivo* (activado por defecto): al editar el patrón, la prenda 3D se
+  reajusta sin volver a empezar. Cada pieza se vuelve a mallar y cada punto
+  nuevo toma la posición 3D que tenía ese punto del patrón en la malla vieja
+  (interpolando en su triángulo). Funciona aunque cambie el tamaño de los
+  triángulos, se mueva la pieza en el editor o la pieza crezca (los puntos
+  nuevos siguen la forma del borde). Las piezas nuevas aparecen en su sitio
+  de salida y se cosen; las costuras que cambian de largo se vuelven a
+  cerrar. Mientras una pieza no se pueda mallar (un contorno que se cruza),
+  la vista 3D espera. Cambiar el tejido o la malla tampoco reinicia; cambiar
+  la colocación, el obstáculo o *Coser* sí, igual que *Reiniciar*.
+- Auto-colisión (en ⚙, activada por defecto): las partículas no se acercan a
+  menos de dos grosores de los triángulos de la propia tela, así que los
+  paneles no se atraviesan: las dos caras de una bolsa quedan una encima de
+  otra, una manga no entra en el cuerpo. Hash espacial y prueba punto contra
+  triángulo; cada partícula recuerda de qué lado estaba y vuelve a él si se
+  cuela. Encarece el paso (de unos 6 a 12 ms con la camiseta); se puede
+  apagar.
+- Una bolsa vacía sigue quedando plana al apoyarla, como una de verdad sin
+  nada dentro; darle volumen (relleno o presión) es de la siguiente fase.
+
+**Siguientes fases:** tejidos (con relleno o presión para objetos), GPU y
+exportación.
 
 ## Cómo ejecutarlo
 
