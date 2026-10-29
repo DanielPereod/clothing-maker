@@ -85,6 +85,40 @@ impl Arrangement {
     }
 }
 
+/// Zona del cuerpo del maniquí alrededor de la que se coloca una pieza
+/// (sus «puntos de colocación»). Dentro de la zona, [`Arrangement`] dice en
+/// qué lado va. Sin maniquí no se usa.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyZone {
+    #[default]
+    Torso,
+    /// Brazo derecho del maniquí (a la izquierda de quien lo mira de frente).
+    RightArm,
+    LeftArm,
+    RightLeg,
+    LeftLeg,
+}
+
+impl BodyZone {
+    pub const ALL: [BodyZone; 5] =
+        [BodyZone::Torso, BodyZone::RightArm, BodyZone::LeftArm, BodyZone::RightLeg, BodyZone::LeftLeg];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BodyZone::Torso => "Torso",
+            BodyZone::RightArm => "Brazo derecho",
+            BodyZone::LeftArm => "Brazo izquierdo",
+            BodyZone::RightLeg => "Pierna derecha",
+            BodyZone::LeftLeg => "Pierna izquierda",
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        *self == BodyZone::default()
+    }
+}
+
 /// Una pieza de tela: un contorno cerrado de vértices y aristas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawPiece")]
@@ -96,6 +130,9 @@ pub struct Piece {
     /// Colocación en 3D antes de coser.
     #[serde(default, skip_serializing_if = "Arrangement::is_default")]
     pub arrangement: Arrangement,
+    /// Zona del maniquí en la que se coloca.
+    #[serde(default, skip_serializing_if = "BodyZone::is_default")]
+    pub zone: BodyZone,
 }
 
 /// Forma serializada, para comprobar invariantes al deserializar.
@@ -107,6 +144,8 @@ struct RawPiece {
     edges: Vec<Edge>,
     #[serde(default)]
     arrangement: Arrangement,
+    #[serde(default)]
+    zone: BodyZone,
 }
 
 impl TryFrom<RawPiece> for Piece {
@@ -115,7 +154,7 @@ impl TryFrom<RawPiece> for Piece {
     fn try_from(raw: RawPiece) -> Result<Self, Self::Error> {
         let id = raw.id;
         Piece::from_parts(raw.id, raw.name, raw.vertices, raw.edges)
-            .map(|p| Piece { arrangement: raw.arrangement, ..p })
+            .map(|p| Piece { arrangement: raw.arrangement, zone: raw.zone, ..p })
             .ok_or_else(|| format!("la pieza {} no tiene el mismo número de vértices que de aristas", id.0))
     }
 }
@@ -130,6 +169,7 @@ impl Piece {
             vertices,
             edges,
             arrangement: Arrangement::default(),
+            zone: BodyZone::default(),
         })
     }
 

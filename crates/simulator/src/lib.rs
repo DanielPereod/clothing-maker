@@ -12,8 +12,9 @@
 //!   triángulos vecinos. Es más barata y más estable que la de ángulo
 //!   diedro y, con una flexibilidad (*compliance*) alta, se comporta igual
 //!   para tela normal.
-//! - **Colisión** con una lista de [`Collider`]s (suelo, esferas, cajas),
-//!   con grosor y rozamiento.
+//! - **Colisión** con una lista de [`Collider`]s (suelo, esferas, cajas y
+//!   mallas cerradas como el maniquí, vía [`MeshSdf`]), con grosor y
+//!   rozamiento.
 //! - **Costuras:** distancia entre los puntos emparejados de dos bordes. La
 //!   distancia de reposo empieza siendo la de la colocación inicial y baja a
 //!   velocidad constante hasta cero ([`SimParams::sew_speed`]), así que las
@@ -27,8 +28,10 @@
 //! convierten al añadirlas.
 
 mod collider;
+mod sdf;
 
 pub use collider::Collider;
+pub use sdf::MeshSdf;
 
 use glam::Vec3;
 use mesher::Mesh2D;
@@ -682,7 +685,7 @@ mod tests {
             let table =
                 Collider::Cuboid { center: Vec3::new(-0.5, 0.25, 0.0), half_extents: Vec3::new(0.5, 0.25, 0.5) };
             for _ in 0..300 {
-                cloth.step(1.0 / 60.0, &SimParams::default(), &[Collider::ground(0.0), table]);
+                cloth.step(1.0 / 60.0, &SimParams::default(), &[Collider::ground(0.0), table.clone()]);
             }
             cloth.positions.iter().map(|p| p.x).fold(f32::INFINITY, f32::min)
         };

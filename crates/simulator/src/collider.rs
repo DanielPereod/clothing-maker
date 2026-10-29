@@ -1,11 +1,15 @@
-//! Objetos de colisión genéricos: el suelo, primitivas y, más adelante, el
-//! avatar (como una malla convertida a campo de distancia). La tela no sabe
-//! si hay un cuerpo o no; solo ve una lista de colisionadores.
+//! Objetos de colisión genéricos: el suelo, primitivas y cualquier malla
+//! cerrada (como el maniquí) convertida a campo de distancia. La tela no
+//! sabe si hay un cuerpo o no; solo ve una lista de colisionadores.
+
+use std::sync::Arc;
 
 use glam::Vec3;
 
+use crate::MeshSdf;
+
 /// Un objeto rígido y quieto contra el que choca la tela.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Collider {
     /// Semiespacio: todo lo que queda por debajo del plano es sólido.
     Plane {
@@ -21,6 +25,22 @@ pub enum Collider {
         center: Vec3,
         half_extents: Vec3,
     },
+    /// Malla cerrada, con su campo de distancia ya calculado (compartido:
+    /// copiar el colisionador no copia la rejilla).
+    Mesh(Arc<MeshSdf>),
+}
+
+impl PartialEq for Collider {
+    fn eq(&self, other: &Self) -> bool {
+        use Collider::*;
+        match (self, other) {
+            (Plane { point: a, normal: n }, Plane { point: b, normal: m }) => a == b && n == m,
+            (Sphere { center: a, radius: r }, Sphere { center: b, radius: s }) => a == b && r == s,
+            (Cuboid { center: a, half_extents: e }, Cuboid { center: b, half_extents: f }) => a == b && e == f,
+            (Mesh(a), Mesh(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
 }
 
 impl Collider {
@@ -33,6 +53,7 @@ impl Collider {
     /// dirección hacia fuera.
     pub fn signed_distance(&self, p: Vec3) -> (f32, Vec3) {
         match *self {
+            Collider::Mesh(ref sdf) => sdf.signed_distance(p),
             Collider::Plane { point, normal } => {
                 let n = normal.normalize_or(Vec3::Y);
                 ((p - point).dot(n), n)

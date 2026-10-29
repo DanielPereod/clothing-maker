@@ -4,12 +4,13 @@
 //! quien mira), así que dos piezas vecinas recorren su borde común en
 //! sentidos contrarios y uno de los dos lados de cada costura va invertido.
 
-use pattern::{Arrangement, EdgeKind, Pattern, PieceId, Point, SeamSide, Vec2};
+use pattern::{Arrangement, BodyZone, EdgeKind, Pattern, PieceId, Point, SeamSide, Vec2};
 
 /// Camiseta básica: delantero y espalda con escote y sisas curvas, unidos
 /// por hombros y costados.
 pub fn t_shirt() -> Pattern {
     let mut p = Pattern::new("Camiseta básica");
+    p.on_avatar = true;
     let front = t_shirt_panel(&mut p, "Delantero", Point::ZERO, 95.0);
     let back = t_shirt_panel(&mut p, "Espalda", Point::new(600.0, 0.0), 25.0);
     p.piece_mut(back).unwrap().arrangement = Arrangement::Back;
@@ -44,6 +45,67 @@ fn t_shirt_panel(p: &mut Pattern, name: &str, origin: Point, neck_depth: f64) ->
     // Sisas.
     piece.set_edge_kind(2, EdgeKind::Cubic { h1: Vec2::new(-20.0, 80.0), h2: Vec2::new(-40.0, -10.0) });
     piece.set_edge_kind(6, EdgeKind::Cubic { h1: Vec2::new(40.0, -10.0), h2: Vec2::new(20.0, 80.0) });
+    id
+}
+
+/// Camiseta con mangas: la básica más dos mangas cortas, cada una colocada
+/// en su brazo del maniquí.
+pub fn t_shirt_with_sleeves() -> Pattern {
+    let mut p = t_shirt();
+    p.name = "Camiseta con mangas".into();
+    let (front, back) = (p.pieces[0].id, p.pieces[1].id);
+    // Sisas: aristas 2 (lado +x del dibujo) y 6. Del delantero, la 2 cae en
+    // el brazo izquierdo del maniquí; de la espalda (vista desde detrás), en
+    // el derecho.
+    let armhole = p.piece(front).unwrap().edge_length(2);
+    for (name, x, zone, front_edge, back_edge) in
+        [("Manga dcha.", 0.0, BodyZone::RightArm, 6, 2), ("Manga izda.", 450.0, BodyZone::LeftArm, 2, 6)]
+    {
+        let sleeve = sleeve(&mut p, name, Point::new(x, 800.0), armhole);
+        p.piece_mut(sleeve).unwrap().zone = zone;
+        // La mitad derecha del dibujo de la copa (arista 1) queda detrás en
+        // el brazo izquierdo y delante en el derecho.
+        let (to_front, to_back) = if zone == BodyZone::LeftArm { (0, 1) } else { (1, 0) };
+        sew(&mut p, &format!("Copa delantera ({name})"), &[(front, front_edge, false), (sleeve, to_front, true)]);
+        sew(&mut p, &format!("Copa trasera ({name})"), &[(back, back_edge, false), (sleeve, to_back, true)]);
+        sew(&mut p, &format!("Bajo brazo ({name})"), &[(sleeve, 2, false), (sleeve, 4, true)]);
+    }
+    p
+}
+
+/// Manga corta: copa en dos mitades (aristas 0 y 1) del largo de la sisa,
+/// costados bajo el brazo (2 y 4) y bajo (3). La altura de la copa se
+/// ajusta para que cada mitad mida `armhole`.
+fn sleeve(p: &mut Pattern, name: &str, origin: Point, armhole: f64) -> PieceId {
+    const WIDTH: f64 = 360.0;
+    const LENGTH: f64 = 120.0;
+    const TAPER: f64 = 20.0;
+    let shape = |cap: f64| {
+        let pts = [(0.0, cap), (WIDTH / 2.0, 0.0), (WIDTH, cap), (WIDTH - TAPER, cap + LENGTH), (TAPER, cap + LENGTH)]
+            .map(|(x, y)| origin + Vec2::new(x, y));
+        let mut piece = pattern::Piece::from_parts(
+            PieceId(0),
+            name,
+            pts.to_vec(),
+            (0..5).map(|i| pattern::Edge::line(pattern::EdgeId(i))).collect(),
+        )
+        .unwrap();
+        piece.set_edge_kind(0, EdgeKind::Cubic { h1: Vec2::new(WIDTH * 0.15, 0.0), h2: Vec2::new(-WIDTH * 0.2, 0.0) });
+        piece.set_edge_kind(1, EdgeKind::Cubic { h1: Vec2::new(WIDTH * 0.2, 0.0), h2: Vec2::new(-WIDTH * 0.15, 0.0) });
+        (pts, piece)
+    };
+    // Bisección: la mitad de la copa crece con su altura.
+    let (mut lo, mut hi) = (0.0, armhole);
+    for _ in 0..50 {
+        let mid = (lo + hi) / 2.0;
+        if shape(mid).1.edge_length(0) < armhole { lo = mid } else { hi = mid }
+    }
+    let (pts, template) = shape((lo + hi) / 2.0);
+    let id = p.add_polygon(name, pts.to_vec());
+    let piece = p.piece_mut(id).unwrap();
+    for i in 0..2 {
+        piece.set_edge_kind(i, template.edges()[i].kind);
+    }
     id
 }
 
@@ -107,8 +169,9 @@ fn sew(p: &mut Pattern, name: &str, sides: &[(PieceId, usize, bool)]) {
 pub type Example = (&'static str, &'static str, fn() -> Pattern);
 
 /// Todos los ejemplos.
-pub const ALL: [Example; 3] = [
+pub const ALL: [Example; 4] = [
     ("Camiseta básica", "camiseta-basica", t_shirt),
+    ("Camiseta con mangas", "camiseta-con-mangas", t_shirt_with_sleeves),
     ("Bolsa tote", "bolsa-tote", tote_bag),
     ("Bolsa con fondo", "bolsa-con-fondo", box_bag),
 ];

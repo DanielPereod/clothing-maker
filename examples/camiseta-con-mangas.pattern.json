@@ -1,0 +1,486 @@
+{
+  "format": "clothing-maker/pattern",
+  "version": 1,
+  "pattern": {
+    "name": "Camiseta con mangas",
+    "pieces": [
+      {
+        "id": 1,
+        "name": "Delantero",
+        "vertices": [
+          {
+            "x": 180.0,
+            "y": 0.0
+          },
+          {
+            "x": 320.0,
+            "y": 0.0
+          },
+          {
+            "x": 470.0,
+            "y": 40.0
+          },
+          {
+            "x": 500.0,
+            "y": 230.0
+          },
+          {
+            "x": 500.0,
+            "y": 700.0
+          },
+          {
+            "x": 0.0,
+            "y": 700.0
+          },
+          {
+            "x": 0.0,
+            "y": 230.0
+          },
+          {
+            "x": 30.0,
+            "y": 40.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 2,
+            "type": "cubic",
+            "h1": {
+              "x": 5.0,
+              "y": 95.0
+            },
+            "h2": {
+              "x": -5.0,
+              "y": 95.0
+            }
+          },
+          {
+            "id": 3,
+            "type": "line"
+          },
+          {
+            "id": 4,
+            "type": "cubic",
+            "h1": {
+              "x": -20.0,
+              "y": 80.0
+            },
+            "h2": {
+              "x": -40.0,
+              "y": -10.0
+            }
+          },
+          {
+            "id": 5,
+            "type": "line"
+          },
+          {
+            "id": 6,
+            "type": "line"
+          },
+          {
+            "id": 7,
+            "type": "line"
+          },
+          {
+            "id": 8,
+            "type": "cubic",
+            "h1": {
+              "x": 40.0,
+              "y": -10.0
+            },
+            "h2": {
+              "x": 20.0,
+              "y": 80.0
+            }
+          },
+          {
+            "id": 9,
+            "type": "line"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "name": "Espalda",
+        "vertices": [
+          {
+            "x": 780.0,
+            "y": 0.0
+          },
+          {
+            "x": 920.0,
+            "y": 0.0
+          },
+          {
+            "x": 1070.0,
+            "y": 40.0
+          },
+          {
+            "x": 1100.0,
+            "y": 230.0
+          },
+          {
+            "x": 1100.0,
+            "y": 700.0
+          },
+          {
+            "x": 600.0,
+            "y": 700.0
+          },
+          {
+            "x": 600.0,
+            "y": 230.0
+          },
+          {
+            "x": 630.0,
+            "y": 40.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 11,
+            "type": "cubic",
+            "h1": {
+              "x": 5.0,
+              "y": 25.0
+            },
+            "h2": {
+              "x": -5.0,
+              "y": 25.0
+            }
+          },
+          {
+            "id": 12,
+            "type": "line"
+          },
+          {
+            "id": 13,
+            "type": "cubic",
+            "h1": {
+              "x": -20.0,
+              "y": 80.0
+            },
+            "h2": {
+              "x": -40.0,
+              "y": -10.0
+            }
+          },
+          {
+            "id": 14,
+            "type": "line"
+          },
+          {
+            "id": 15,
+            "type": "line"
+          },
+          {
+            "id": 16,
+            "type": "line"
+          },
+          {
+            "id": 17,
+            "type": "cubic",
+            "h1": {
+              "x": 40.0,
+              "y": -10.0
+            },
+            "h2": {
+              "x": 20.0,
+              "y": 80.0
+            }
+          },
+          {
+            "id": 18,
+            "type": "line"
+          }
+        ],
+        "arrangement": "back"
+      },
+      {
+        "id": 23,
+        "name": "Manga dcha.",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 889.2955421046341
+          },
+          {
+            "x": 180.0,
+            "y": 800.0
+          },
+          {
+            "x": 360.0,
+            "y": 889.2955421046341
+          },
+          {
+            "x": 340.0,
+            "y": 1009.2955421046341
+          },
+          {
+            "x": 20.0,
+            "y": 1009.2955421046341
+          }
+        ],
+        "edges": [
+          {
+            "id": 24,
+            "type": "cubic",
+            "h1": {
+              "x": 54.0,
+              "y": 0.0
+            },
+            "h2": {
+              "x": -72.0,
+              "y": 0.0
+            }
+          },
+          {
+            "id": 25,
+            "type": "cubic",
+            "h1": {
+              "x": 72.0,
+              "y": 0.0
+            },
+            "h2": {
+              "x": -54.0,
+              "y": 0.0
+            }
+          },
+          {
+            "id": 26,
+            "type": "line"
+          },
+          {
+            "id": 27,
+            "type": "line"
+          },
+          {
+            "id": 28,
+            "type": "line"
+          }
+        ],
+        "zone": "right_arm"
+      },
+      {
+        "id": 32,
+        "name": "Manga izda.",
+        "vertices": [
+          {
+            "x": 450.0,
+            "y": 889.2955421046341
+          },
+          {
+            "x": 630.0,
+            "y": 800.0
+          },
+          {
+            "x": 810.0,
+            "y": 889.2955421046341
+          },
+          {
+            "x": 790.0,
+            "y": 1009.2955421046341
+          },
+          {
+            "x": 470.0,
+            "y": 1009.2955421046341
+          }
+        ],
+        "edges": [
+          {
+            "id": 33,
+            "type": "cubic",
+            "h1": {
+              "x": 54.0,
+              "y": 0.0
+            },
+            "h2": {
+              "x": -72.0,
+              "y": 0.0
+            }
+          },
+          {
+            "id": 34,
+            "type": "cubic",
+            "h1": {
+              "x": 72.0,
+              "y": 0.0
+            },
+            "h2": {
+              "x": -54.0,
+              "y": 0.0
+            }
+          },
+          {
+            "id": 35,
+            "type": "line"
+          },
+          {
+            "id": 36,
+            "type": "line"
+          },
+          {
+            "id": 37,
+            "type": "line"
+          }
+        ],
+        "zone": "left_arm"
+      }
+    ],
+    "seams": [
+      {
+        "id": 19,
+        "name": "Hombro dcho.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 3
+          },
+          {
+            "piece": 10,
+            "edge": 18,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 20,
+        "name": "Costado dcho.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 5
+          },
+          {
+            "piece": 10,
+            "edge": 16,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 21,
+        "name": "Costado izdo.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 7
+          },
+          {
+            "piece": 10,
+            "edge": 14,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 22,
+        "name": "Hombro izdo.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 9
+          },
+          {
+            "piece": 10,
+            "edge": 12,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 29,
+        "name": "Copa delantera (Manga dcha.)",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 8
+          },
+          {
+            "piece": 23,
+            "edge": 25,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 30,
+        "name": "Copa trasera (Manga dcha.)",
+        "sides": [
+          {
+            "piece": 10,
+            "edge": 13
+          },
+          {
+            "piece": 23,
+            "edge": 24,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 31,
+        "name": "Bajo brazo (Manga dcha.)",
+        "sides": [
+          {
+            "piece": 23,
+            "edge": 26
+          },
+          {
+            "piece": 23,
+            "edge": 28,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 38,
+        "name": "Copa delantera (Manga izda.)",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 4
+          },
+          {
+            "piece": 32,
+            "edge": 33,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 39,
+        "name": "Copa trasera (Manga izda.)",
+        "sides": [
+          {
+            "piece": 10,
+            "edge": 17
+          },
+          {
+            "piece": 32,
+            "edge": 34,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 40,
+        "name": "Bajo brazo (Manga izda.)",
+        "sides": [
+          {
+            "piece": 32,
+            "edge": 35
+          },
+          {
+            "piece": 32,
+            "edge": 37,
+            "reversed": true
+          }
+        ]
+      }
+    ],
+    "on_avatar": true,
+    "next_id": 41
+  }
+}
