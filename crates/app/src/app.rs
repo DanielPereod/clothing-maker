@@ -1,14 +1,20 @@
-//! Ventana principal: menús, panel de propiedades, ficheros y deshacer.
+//! Ventana principal: barra superior, cinta de herramientas, navegador,
+//! inspector, vistas 2D y 3D, ficheros y deshacer.
+
+mod panels;
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Ui};
-use pattern::{Arrangement, BodyZone, EdgeKind, Issue, Pattern, Point, SeamId};
+use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Ui};
+use pattern::{Pattern, Point};
 
 use crate::canvas::{self, Editor, Selection, Tool};
 use crate::examples;
 use crate::history::History;
+use crate::icons::{self, Icon};
+use crate::theme;
 use crate::view3d::View3D;
+use crate::widgets::{self, Part};
 
 const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 const SAVE_AS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
@@ -35,7 +41,8 @@ pub struct ClothingMakerApp {
     history: History,
     editor: Editor,
     view3d: View3D,
-    show_3d: bool,
+    tab: Tab,
+    layout: ViewLayout,
     status: Option<(String, bool)>,
     pending: Option<Pending>,
     allow_close: bool,
@@ -44,6 +51,7 @@ pub struct ClothingMakerApp {
 
 impl ClothingMakerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, file: Option<PathBuf>) -> Self {
+        theme::apply(&cc.egui_ctx);
         let pattern = Pattern::new("Sin título");
         let mut app = Self {
             history: History::new(&pattern),
@@ -52,7 +60,8 @@ impl ClothingMakerApp {
             path: None,
             editor: Editor::default(),
             view3d: View3D::new(cc),
-            show_3d: true,
+            tab: Tab::Pattern,
+            layout: ViewLayout::Split,
             status: None,
             pending: None,
             allow_close: false,
@@ -178,364 +187,386 @@ impl ClothingMakerApp {
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut Ui) {
+    fn undo(&mut self) {
+        self.history.undo(&mut self.pattern);
+    }
+
+    fn redo(&mut self) {
+        self.history.redo(&mut self.pattern);
+    }
+
+    fn can_undo(&self) -> bool {
+        self.history.can_undo() || self.is_dirty()
+    }
+
+    fn set_layout(&mut self, layout: ViewLayout) {
+        self.layout = layout;
+        if !layout.shows_3d() && self.tab == Tab::Simulation {
+            self.tab = Tab::Pattern;
+        }
+    }
+
+    /// Barra superior: menús, accesos rápidos, el documento abierto y la
+    /// disposición de las vistas.
+    fn app_bar(&mut self, ui: &mut Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("Archivo", |ui| {
-                if ui.add(egui::Button::new("Nuevo").shortcut_text(ui.ctx().format_shortcut(&NEW))).clicked() {
-                    self.request(Pending::New);
-                }
-                if ui.add(egui::Button::new("Abrir…").shortcut_text(ui.ctx().format_shortcut(&OPEN))).clicked() {
-                    self.request(Pending::Open);
-                }
-                ui.menu_button("Ejemplos", |ui| {
-                    for (name, _, make) in examples::ALL {
-                        if ui.button(name).clicked() {
-                            self.request(Pending::Example(make));
-                        }
+            self.menus(ui);
+            ui.spacing_mut().item_spacing.x = 2.0;
+            widgets::separator_v(ui, 26.0);
+            if widgets::icon_button(ui, Icon::New, "Nuevo (Ctrl+N)", false).clicked() {
+                self.request(Pending::New);
+            }
+            if widgets::icon_button(ui, Icon::Open, "Abrir… (Ctrl+O)", false).clicked() {
+                self.request(Pending::Open);
+            }
+            if widgets::icon_button_enabled(ui, Icon::Save, "Guardar (Ctrl+S)", false, self.is_dirty()).clicked() {
+                self.save();
+            }
+            widgets::separator_v(ui, 26.0);
+            if widgets::icon_button_enabled(ui, Icon::Undo, "Deshacer (Ctrl+Z)", false, self.can_undo()).clicked() {
+                self.undo();
+            }
+            if widgets::icon_button_enabled(ui, Icon::Redo, "Rehacer (Ctrl+Mayús+Z)", false, self.history.can_redo())
+                .clicked()
+            {
+                self.redo();
+            }
+
+            // El documento abierto, centrado, como una pestaña.
+            let bar = ui.max_rect();
+            let name = self.path.as_ref().and_then(|p| p.file_name()).map(|f| f.to_string_lossy().into_owned());
+            let name = name.unwrap_or_else(|| self.pattern.name.clone());
+            let galley = ui.painter().layout_no_wrap(name, egui::FontId::proportional(12.5), theme::TEXT);
+            let tab = egui::Rect::from_center_size(bar.center(), egui::vec2(galley.size().x + 56.0, bar.height()));
+            let painter = ui.painter();
+            painter.rect_filled(tab, egui::CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 }, theme::RIBBON);
+            icons::paint(
+                painter,
+                egui::Rect::from_center_size(tab.left_center() + egui::vec2(16.0, 0.0), egui::vec2(14.0, 14.0)),
+                Icon::Pattern,
+                theme::TEXT,
+            );
+            painter.galley(tab.left_center() + egui::vec2(30.0, -galley.size().y / 2.0), galley, theme::TEXT);
+            if self.is_dirty() {
+                painter.circle_filled(tab.right_center() - egui::vec2(13.0, 0.0), 3.5, theme::ACCENT);
+            }
+            if let Some(path) = &self.path {
+                ui.interact(tab, ui.scope_id().with("document_tab"), egui::Sense::hover())
+                    .on_hover_text(path.display().to_string());
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                for layout in ViewLayout::ALL.into_iter().rev() {
+                    if widgets::icon_button(ui, layout.icon(), layout.label(), self.layout == layout).clicked() {
+                        self.set_layout(layout);
                     }
-                });
-                ui.separator();
-                if ui.add(egui::Button::new("Guardar").shortcut_text(ui.ctx().format_shortcut(&SAVE))).clicked() {
-                    self.save();
                 }
-                if ui
-                    .add(egui::Button::new("Guardar como…").shortcut_text(ui.ctx().format_shortcut(&SAVE_AS)))
+            });
+        });
+    }
+
+    fn menus(&mut self, ui: &mut Ui) {
+        ui.menu_button("Archivo", |ui| {
+            if ui.add(egui::Button::new("Nuevo").shortcut_text(ui.ctx().format_shortcut(&NEW))).clicked() {
+                self.request(Pending::New);
+            }
+            if ui.add(egui::Button::new("Abrir…").shortcut_text(ui.ctx().format_shortcut(&OPEN))).clicked() {
+                self.request(Pending::Open);
+            }
+            ui.menu_button("Ejemplos", |ui| self.examples_menu(ui));
+            ui.separator();
+            if ui.add(egui::Button::new("Guardar").shortcut_text(ui.ctx().format_shortcut(&SAVE))).clicked() {
+                self.save();
+            }
+            if ui.add(egui::Button::new("Guardar como…").shortcut_text(ui.ctx().format_shortcut(&SAVE_AS))).clicked()
+            {
+                self.save_as();
+            }
+            ui.separator();
+            if ui.button("Salir").clicked() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        });
+        ui.menu_button("Editar", |ui| {
+            let undo = egui::Button::new("Deshacer").shortcut_text(ui.ctx().format_shortcut(&UNDO));
+            if ui.add_enabled(self.can_undo(), undo).clicked() {
+                self.undo();
+            }
+            let redo = egui::Button::new("Rehacer").shortcut_text(ui.ctx().format_shortcut(&REDO));
+            if ui.add_enabled(self.history.can_redo(), redo).clicked() {
+                self.redo();
+            }
+        });
+        ui.menu_button("Ver", |ui| {
+            if ui.add(egui::Button::new("Encuadrar el patrón").shortcut_text("F")).clicked() {
+                self.editor.fit_view();
+            }
+            ui.checkbox(&mut self.editor.show_mesh, "Mostrar malla de simulación");
+            ui.separator();
+            for layout in ViewLayout::ALL {
+                if ui.radio(self.layout == layout, layout.label()).clicked() {
+                    self.set_layout(layout);
+                }
+            }
+        });
+    }
+
+    fn examples_menu(&mut self, ui: &mut Ui) {
+        for (name, _, make) in examples::ALL {
+            if ui.button(name).clicked() {
+                self.request(Pending::Example(make));
+            }
+        }
+    }
+
+    /// Cinta de herramientas: pestañas de los espacios de trabajo y, debajo,
+    /// los grupos de órdenes del espacio activo.
+    fn ribbon(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for (tab, label) in [(Tab::Pattern, "Patrón"), (Tab::Simulation, "Simulación")] {
+                if widgets::tab(ui, label, self.tab == tab).clicked() {
+                    self.tab = tab;
+                    if tab == Tab::Simulation && !self.layout.shows_3d() {
+                        self.layout = ViewLayout::Split;
+                    }
+                }
+            }
+        });
+        let rect = ui.max_rect();
+        ui.painter().hline(rect.x_range(), ui.min_rect().bottom(), egui::Stroke::new(1.0, theme::BORDER));
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            // La misma altura en todas las pestañas, para que las vistas no salten.
+            ui.set_min_height(80.0);
+            match self.tab {
+                Tab::Pattern => self.pattern_ribbon(ui),
+                Tab::Simulation => {
+                    self.view3d.ribbon(ui, &self.pattern, canvas::piece_color);
+                    self.fill_group(ui);
+                }
+            }
+        });
+    }
+
+    fn tool_button(&mut self, ui: &mut Ui, tool: Tool, icon: Icon, label: &str, key: &str) {
+        let response = widgets::ribbon_button(ui, icon, label, self.editor.tool == tool, true)
+            .on_hover_text(format!("{label} ({key})\n\n{}", tool.hint()));
+        if response.clicked() {
+            self.editor.set_tool(tool);
+        }
+    }
+
+    fn pattern_ribbon(&mut self, ui: &mut Ui) {
+        widgets::ribbon_group(ui, "SELECCIONAR", false, |ui, _| {
+            self.tool_button(ui, Tool::Select, Icon::Select, "Seleccionar", "V");
+        });
+        widgets::ribbon_group(ui, "CREAR", true, |ui, part| match part {
+            Part::Buttons => {
+                self.tool_button(ui, Tool::Pen, Icon::Pen, "Pluma", "P");
+                self.tool_button(ui, Tool::Rect, Icon::Rect, "Rectángulo", "R");
+            }
+            Part::Menu => {
+                if ui.button("Rectángulo de 30 × 40 cm en el centro").clicked() {
+                    self.add_rect();
+                    ui.close();
+                }
+                ui.separator();
+                ui.menu_button("Empezar desde un ejemplo", |ui| self.examples_menu(ui));
+            }
+        });
+        let selection = self.editor.selection;
+        widgets::ribbon_group(ui, "MODIFICAR", true, |ui, part| match part {
+            Part::Buttons => {
+                let piece = selection.piece().filter(|_| !matches!(selection, Selection::Seam(_)));
+                if widgets::ribbon_button(ui, Icon::Duplicate, "Duplicar", false, piece.is_some())
+                    .on_hover_text("Duplicar la pieza seleccionada (Ctrl+D)")
+                    .clicked()
+                    && let Some(id) = piece
+                    && let Some(new) = self.pattern.duplicate_piece(id, pattern::Vec2::new(20.0, 20.0))
+                {
+                    self.editor.selection = Selection::Piece(new);
+                }
+                if widgets::ribbon_button(ui, Icon::Delete, "Borrar", false, selection != Selection::None)
+                    .on_hover_text("Borrar la selección (Supr)")
                     .clicked()
                 {
-                    self.save_as();
-                }
-                ui.separator();
-                if ui.button("Salir").clicked() {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            });
-            ui.menu_button("Editar", |ui| {
-                let undo = egui::Button::new("Deshacer").shortcut_text(ui.ctx().format_shortcut(&UNDO));
-                if ui.add_enabled(self.history.can_undo() || self.is_dirty(), undo).clicked() {
-                    self.history.undo(&mut self.pattern);
-                }
-                let redo = egui::Button::new("Rehacer").shortcut_text(ui.ctx().format_shortcut(&REDO));
-                if ui.add_enabled(self.history.can_redo(), redo).clicked() {
-                    self.history.redo(&mut self.pattern);
-                }
-            });
-            ui.menu_button("Ver", |ui| {
-                if ui.button("Encuadrar todo (F)").clicked() {
-                    self.editor.fit_view();
-                }
-                ui.checkbox(&mut self.editor.show_mesh, "Mostrar malla de simulación");
-                ui.checkbox(&mut self.show_3d, "Vista 3D");
-            });
-        });
-    }
-
-    fn toolbar(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            for tool in Tool::ALL {
-                if ui.selectable_label(self.editor.tool == tool, tool.label()).clicked() {
-                    self.editor.set_tool(tool);
-                }
-            }
-            ui.separator();
-            ui.checkbox(&mut self.editor.snap, "Ajustar a rejilla");
-            ui.add_enabled(
-                self.editor.snap,
-                egui::DragValue::new(&mut self.editor.snap_step).range(0.5..=100.0).speed(0.5).suffix(" mm"),
-            );
-            ui.separator();
-            ui.checkbox(&mut self.editor.show_mesh, "Malla");
-            ui.add_enabled(
-                self.editor.show_mesh,
-                egui::DragValue::new(&mut self.editor.mesh_size).range(3.0..=200.0).speed(0.5).suffix(" mm"),
-            );
-        });
-    }
-
-    fn status_bar(&self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            match &self.status {
-                Some((msg, true)) => {
-                    ui.label(RichText::new(msg).color(Color32::from_rgb(230, 80, 80)));
-                }
-                Some((msg, false)) => {
-                    ui.label(msg);
-                }
-                None => {
-                    ui.label(self.editor.tool.hint());
-                }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(format!("{:.0} %", self.editor.zoom_percent()));
-                if let Some(c) = self.editor.cursor {
-                    ui.monospace(format!("x {:>7.1}  y {:>7.1} cm", c.x / 10.0, c.y / 10.0));
-                }
-            });
-        });
-    }
-
-    fn properties(&mut self, ui: &mut Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading("Patrón");
-            ui.text_edit_singleline(&mut self.pattern.name);
-            ui.checkbox(&mut self.pattern.on_avatar, "Prenda para el maniquí").on_hover_text(
-                "La vista 3D la viste sobre el maniquí y cada pieza se coloca en su zona del cuerpo. \
-                 Quítalo para objetos como bolsas o mochilas.",
-            );
-            ui.horizontal(|ui| {
-                ui.label("Relleno");
-                ui.add(egui::Slider::new(&mut self.pattern.pressure, 0.0..=60.0).suffix(" Pa").max_decimals(0))
-                    .on_hover_text(
-                        "Presión interior en la vista 3D: hincha la prenda como si estuviera rellena. \
-                         0 = vacía (una bolsa sin nada dentro queda plana). Con unos 10 Pa una bolsa se llena \
-                         y con 30 un cojín queda firme; mucho más y se pone redonda como un globo. Las bocas \
-                         sin coser se abren.",
-                    );
-            });
-            ui.add_space(8.0);
-
-            ui.heading("Piezas");
-            let selected = self.editor.selection.piece();
-            for piece in &self.pattern.pieces {
-                if ui.selectable_label(selected == Some(piece.id), &piece.name).clicked() {
-                    self.editor.selection = Selection::Piece(piece.id);
-                }
-            }
-            if self.pattern.pieces.is_empty() {
-                ui.weak("Aún no hay piezas. Usa la pluma (P) o el rectángulo (R).");
-            }
-            ui.horizontal(|ui| {
-                if ui.button("＋ Rectángulo").clicked() {
-                    let c = self.editor.view_center();
-                    let name = format!("Pieza {}", self.pattern.pieces.len() + 1);
-                    let id = self.pattern.add_rect(name, Point::new(c.x - 150.0, c.y - 200.0), 300.0, 400.0);
-                    self.editor.selection = Selection::Piece(id);
-                }
-                if let Some(id) = selected {
-                    if ui.button("Duplicar").clicked()
-                        && let Some(new) = self.pattern.duplicate_piece(id, pattern::Vec2::new(20.0, 20.0))
-                    {
-                        self.editor.selection = Selection::Piece(new);
-                    }
-                    if ui.button("Borrar").clicked() {
-                        self.pattern.remove_piece(id);
-                        self.editor.selection = Selection::None;
-                    }
-                }
-            });
-            ui.separator();
-
-            self.selection_details(ui);
-
-            let issues = self.pattern.validate();
-            if !issues.is_empty() {
-                ui.separator();
-                ui.heading("Avisos");
-                for issue in issues {
-                    ui.label(RichText::new(self.describe(&issue)).color(Color32::from_rgb(230, 150, 40)));
-                }
-            }
-
-            ui.separator();
-            ui.heading("Costuras");
-            for (k, seam) in self.pattern.seams.iter().enumerate() {
-                let pieces: Vec<&str> =
-                    seam.sides.iter().filter_map(|s| self.pattern.piece(s.piece).map(|p| p.name.as_str())).collect();
-                let text = RichText::new(format!("{}. {} — {}", k + 1, seam.name, pieces.join(" + ")))
-                    .color(canvas::seam_color(k));
-                if ui.selectable_label(self.editor.selection == Selection::Seam(seam.id), text).clicked() {
-                    self.editor.selection = Selection::Seam(seam.id);
-                }
-            }
-            if self.pattern.seams.is_empty() {
-                ui.weak("Aún no hay costuras.");
-            }
-            if ui.button("＋ Costura (S)").on_hover_text(Tool::Seam.hint()).clicked() {
-                self.editor.set_tool(Tool::Seam);
-            }
-        });
-    }
-
-    fn seam_details(&mut self, ui: &mut Ui, id: SeamId) {
-        let Some(k) = self.pattern.seams.iter().position(|s| s.id == id) else { return };
-        ui.heading(RichText::new(format!("Costura {}", k + 1)).color(canvas::seam_color(k)));
-        ui.text_edit_singleline(&mut self.pattern.seams[k].name);
-        ui.weak("Todos los lados se cosen a la vez desde el punto gordo, en el sentido de la flecha.");
-        let sides = self.pattern.seams[k].sides.clone();
-        let mut flip = None;
-        let mut remove = None;
-        egui::Grid::new("seam_sides").num_columns(3).striped(true).show(ui, |ui| {
-            for (j, side) in sides.iter().enumerate() {
-                let piece = self.pattern.piece(side.piece);
-                let name = piece.map_or("?", |p| p.name.as_str());
-                let edge = piece.and_then(|p| p.edge_index(side.edge));
-                let length = self.pattern.edge_length(side.piece, side.edge).unwrap_or(0.0);
-                ui.label(format!("{name} · arista {}", edge.map_or(0, |i| i + 1)));
-                ui.label(format!("{:.1} cm", length / 10.0));
-                ui.horizontal(|ui| {
-                    if ui.small_button("⇄").on_hover_text("Invertir el sentido de este lado").clicked() {
-                        flip = Some(j);
-                    }
-                    if sides.len() > 2 && ui.small_button("✕").on_hover_text("Quitar este lado").clicked() {
-                        remove = Some(j);
-                    }
-                });
-                ui.end_row();
-            }
-        });
-        let seam = &mut self.pattern.seams[k];
-        if let Some(j) = flip {
-            seam.sides[j].reversed = !seam.sides[j].reversed;
-        }
-        if let Some(j) = remove {
-            seam.sides.remove(j);
-        }
-        if ui.button("Borrar costura").clicked() {
-            self.pattern.remove_seam(id);
-            self.editor.selection = Selection::None;
-        }
-    }
-
-    fn selection_details(&mut self, ui: &mut Ui) {
-        let selection = self.editor.selection;
-        if let Selection::Seam(id) = selection {
-            self.seam_details(ui, id);
-            return;
-        }
-        let on_avatar = self.pattern.on_avatar;
-        let Some(piece) = selection.piece().and_then(|id| self.pattern.piece_mut(id)) else {
-            ui.weak("Selecciona una pieza, un punto o una arista para ver sus propiedades.");
-            return;
-        };
-
-        ui.heading("Pieza");
-        ui.text_edit_singleline(&mut piece.name);
-        egui::Grid::new("piece_info").num_columns(2).show(ui, |ui| {
-            ui.label("Área");
-            ui.label(format!("{:.1} cm²", piece.area().abs() / 100.0));
-            ui.end_row();
-            ui.label("Perímetro");
-            ui.label(format!("{:.1} cm", piece.perimeter() / 10.0));
-            ui.end_row();
-            ui.label("Puntos");
-            ui.label(piece.len().to_string());
-            ui.end_row();
-            ui.label("Colocación 3D").on_hover_text(
-                "Dónde va la pieza al coser en la vista 3D (modo Alrededor), mirando la prenda de frente. \
-                 Dibuja cada pieza como se ve desde fuera.",
-            );
-            egui::ComboBox::from_id_salt("arrangement").selected_text(piece.arrangement.label()).show_ui(ui, |ui| {
-                for a in Arrangement::ALL {
-                    ui.selectable_value(&mut piece.arrangement, a, a.label());
-                }
-            });
-            ui.end_row();
-            if on_avatar {
-                ui.label("Zona del cuerpo").on_hover_text(
-                    "Alrededor de qué parte del maniquí se coloca: el torso, un brazo (mangas) o una pierna. \
-                     Derecha e izquierda son las del maniquí.",
-                );
-                egui::ComboBox::from_id_salt("zone").selected_text(piece.zone.label()).show_ui(ui, |ui| {
-                    for zone in BodyZone::ALL {
-                        ui.selectable_value(&mut piece.zone, zone, zone.label());
-                    }
-                });
-                ui.end_row();
-            }
-        });
-
-        match selection {
-            Selection::Vertex(_, i) => {
-                ui.add_space(8.0);
-                ui.heading(format!("Punto {}", i + 1));
-                let mut p = piece.vertices()[i];
-                if point_editor(ui, &mut p) {
-                    piece.set_vertex(i, p);
-                }
-                if ui.add_enabled(piece.len() > 3, egui::Button::new("Borrar punto")).clicked() {
                     self.editor.delete_selection(&mut self.pattern);
                 }
             }
-            Selection::Edge(_, i) => {
-                ui.add_space(8.0);
-                ui.heading(format!("Arista {}", i + 1));
-                ui.label(format!("Longitud: {:.1} cm", piece.edge_length(i) / 10.0));
-                let mut curve = piece.edges()[i].is_curve();
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut curve, false, "Recta");
-                    ui.radio_value(&mut curve, true, "Curva");
-                });
-                if curve != piece.edges()[i].is_curve() {
-                    if curve { piece.make_curve(i) } else { piece.make_line(i) }
-                }
-                if let Some((mut c1, mut c2)) = piece.control_points(i) {
-                    ui.label("Manejador 1");
-                    if point_editor(ui, &mut c1) {
-                        piece.set_control_point(i, 0, c1);
-                    }
-                    ui.label("Manejador 2");
-                    if point_editor(ui, &mut c2) {
-                        piece.set_control_point(i, 1, c2);
-                    }
-                    if ui.button("Enderezar manejadores").clicked() {
-                        piece.set_edge_kind(i, EdgeKind::Line);
+            Part::Menu => match selection {
+                Selection::Edge(id, i) => {
+                    let Some(piece) = self.pattern.piece_mut(id) else { return };
+                    if piece.edges()[i].is_curve() {
+                        if ui.add(egui::Button::new("Convertir en recta").shortcut_text("L")).clicked() {
+                            piece.make_line(i);
+                        }
+                    } else if ui.add(egui::Button::new("Convertir en curva").shortcut_text("C")).clicked() {
                         piece.make_curve(i);
                     }
-                }
-                let (id, edge) = (piece.id, piece.edges()[i].id);
-                if ui.button("Añadir punto en el centro").clicked()
-                    && let Some(v) = self.pattern.split_edge(id, i, 0.5)
-                {
-                    self.editor.selection = Selection::Vertex(id, v);
-                }
-                let seams: Vec<(SeamId, String)> =
-                    self.pattern.seams_of_edge(id, edge).map(|s| (s.id, s.name.clone())).collect();
-                if !seams.is_empty() {
-                    ui.label("Costuras de esta arista:");
-                    for (seam, name) in seams {
-                        if ui.link(name).clicked() {
-                            self.editor.selection = Selection::Seam(seam);
-                        }
+                    if ui.button("Añadir punto en el centro").clicked()
+                        && let Some(v) = self.pattern.split_edge(id, i, 0.5)
+                    {
+                        self.editor.selection = Selection::Vertex(id, v);
                     }
                 }
+                _ => {
+                    ui.weak("Selecciona una arista para convertirla en curva o recta, o partirla.");
+                }
+            },
+        });
+        widgets::ribbon_group(ui, "COSER", false, |ui, _| {
+            self.tool_button(ui, Tool::Seam, Icon::Seam, "Costura", "S");
+        });
+        widgets::ribbon_group(ui, "INSPECCIONAR", true, |ui, part| match part {
+            Part::Buttons => {
+                if widgets::ribbon_button(ui, Icon::Grid, "Rejilla", self.editor.snap, true)
+                    .on_hover_text("Ajustar los puntos a la rejilla (Alt para soltarlos)")
+                    .clicked()
+                {
+                    self.editor.snap = !self.editor.snap;
+                }
+                if widgets::ribbon_button(ui, Icon::Mesh, "Malla", self.editor.show_mesh, true)
+                    .on_hover_text("Mostrar la malla de simulación sobre las piezas")
+                    .clicked()
+                {
+                    self.editor.show_mesh = !self.editor.show_mesh;
+                }
             }
-            Selection::Piece(_) | Selection::Seam(_) | Selection::None => {}
-        }
+            Part::Menu => {
+                widgets::properties(ui, "inspect", |ui| {
+                    widgets::prop_label(ui, "Paso de rejilla");
+                    ui.add(
+                        egui::DragValue::new(&mut self.editor.snap_step).range(0.5..=100.0).speed(0.5).suffix(" mm"),
+                    );
+                    ui.end_row();
+                    widgets::prop_label(ui, "Triángulos");
+                    ui.add(
+                        egui::DragValue::new(&mut self.editor.mesh_size).range(3.0..=200.0).speed(0.5).suffix(" mm"),
+                    );
+                    ui.end_row();
+                });
+            }
+        });
+        widgets::ribbon_group(ui, "PRENDA", false, |ui, _| {
+            if widgets::ribbon_button(ui, Icon::Mannequin, "Maniquí", self.pattern.on_avatar, true)
+                .on_hover_text(
+                    "Prenda para el maniquí: la vista 3D la viste sobre él. Quítalo para objetos como bolsas.",
+                )
+                .clicked()
+            {
+                self.pattern.on_avatar = !self.pattern.on_avatar;
+            }
+        });
+        widgets::ribbon_group(ui, "VISTA", false, |ui, _| {
+            if widgets::ribbon_button(ui, Icon::Fit, "Encuadrar", false, true)
+                .on_hover_text("Encuadrar el patrón (F)")
+                .clicked()
+            {
+                self.editor.fit_view();
+            }
+        });
     }
 
-    fn describe(&self, issue: &Issue) -> String {
-        let piece = |id| self.pattern.piece(id).map_or("?".to_owned(), |p| p.name.clone());
-        let seam = |id| self.pattern.seams.iter().find(|s| s.id == id).map_or("?".to_owned(), |s| s.name.clone());
-        match *issue {
-            Issue::TooFewVertices { piece: id } => format!("«{}» tiene menos de 3 puntos", piece(id)),
-            Issue::DegeneratePiece { piece: id } => format!("«{}» no tiene área", piece(id)),
-            Issue::SelfIntersecting { piece: id } => format!("El contorno de «{}» se cruza consigo mismo", piece(id)),
-            Issue::DanglingSeam { seam: id } => format!("La costura «{}» apunta a una arista que no existe", seam(id)),
-            Issue::SeamTooFewSides { seam: id } => format!("La costura «{}» tiene menos de dos lados", seam(id)),
-            Issue::SeamLengthMismatch { seam: id, min, max } => format!(
-                "Los lados de la costura «{}» no miden lo mismo ({:.1}–{:.1} cm)",
-                seam(id),
-                min / 10.0,
-                max / 10.0
-            ),
-        }
+    /// Relleno (presión interior) del patrón, también a mano en la cinta de simulación.
+    fn fill_group(&mut self, ui: &mut Ui) {
+        widgets::ribbon_group(ui, "RELLENO", false, |ui, _| {
+            ui.vertical(|ui| {
+                ui.add_space(8.0);
+                ui.add(egui::Slider::new(&mut self.pattern.pressure, 0.0..=60.0).suffix(" Pa").max_decimals(0))
+                    .on_hover_text(
+                        "Presión interior: hincha la prenda como si estuviera rellena. 0 = vacía; \
+                         unos 10 Pa llenan una bolsa y 30 dejan firme un cojín.",
+                    );
+            });
+        });
+    }
+
+    fn add_rect(&mut self) {
+        let c = self.editor.view_center();
+        let name = format!("Pieza {}", self.pattern.pieces.len() + 1);
+        let id = self.pattern.add_rect(name, Point::new(c.x - 150.0, c.y - 200.0), 300.0, 400.0);
+        self.editor.selection = Selection::Piece(id);
+    }
+
+    fn status_bar(&self, ui: &mut Ui) {
+        // Primero lo de la derecha, para que el mensaje se recorte si no cabe.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if self.layout.shows_2d() {
+                ui.monospace(format!("{:.0} %", self.editor.zoom_percent()));
+                if let Some(c) = self.editor.cursor {
+                    ui.monospace(format!("x {:>7.1}  y {:>7.1} cm", c.x / 10.0, c.y / 10.0));
+                }
+            }
+            if self.layout.shows_3d() {
+                widgets::separator_v(ui, 18.0);
+                ui.horizontal(|ui| self.view3d.status(ui, &self.pattern));
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let text = match &self.status {
+                    Some((msg, true)) => RichText::new(msg).color(theme::ERROR),
+                    Some((msg, false)) => RichText::new(msg).color(theme::OK),
+                    None => RichText::new(self.tool_hint()).color(theme::TEXT_WEAK),
+                };
+                ui.add(egui::Label::new(text).truncate());
+            });
+        });
+    }
+
+    /// El lienzo 2D, con su barra de navegación.
+    fn pattern_view(&mut self, ui: &mut Ui) {
+        self.editor.ui(ui, &mut self.pattern);
+        let rect = self.editor.rect();
+        widgets::viewport_label(ui, rect, "Patrón 2D");
+        widgets::nav_bar(ui, rect, "2d", |ui| {
+            if widgets::icon_button(ui, Icon::Fit, "Encuadrar (F)", false).clicked() {
+                self.editor.fit_view();
+            }
+            widgets::separator_v(ui, 24.0);
+            if widgets::icon_button(ui, Icon::ZoomOut, "Alejar", false).clicked() {
+                self.editor.zoom_by(1.0 / 1.25);
+            }
+            ui.add_sized(
+                egui::vec2(46.0, 22.0),
+                egui::Label::new(RichText::new(format!("{:.0} %", self.editor.zoom_percent())).size(11.5)),
+            );
+            if widgets::icon_button(ui, Icon::ZoomIn, "Acercar", false).clicked() {
+                self.editor.zoom_by(1.25);
+            }
+            widgets::separator_v(ui, 24.0);
+            if widgets::icon_button(ui, Icon::Grid, "Ajustar a la rejilla", self.editor.snap).clicked() {
+                self.editor.snap = !self.editor.snap;
+            }
+            if widgets::icon_button(ui, Icon::Mesh, "Mostrar la malla de simulación", self.editor.show_mesh).clicked()
+            {
+                self.editor.show_mesh = !self.editor.show_mesh;
+            }
+        });
     }
 
     fn unsaved_dialog(&mut self, ctx: &egui::Context) {
         let Some(action) = self.pending else { return };
         let mut choice = None;
         egui::Modal::new(egui::Id::unique("unsaved_changes")).show(ctx, |ui| {
-            ui.heading("Hay cambios sin guardar");
-            ui.label(format!("¿Quieres guardar «{}» antes de continuar?", self.pattern.name));
-            ui.add_space(8.0);
+            ui.set_max_width(360.0);
             ui.horizontal(|ui| {
-                if ui.button("Guardar").clicked() {
-                    choice = Some(true);
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                icons::paint(ui.painter(), rect, Icon::Warning, theme::WARN);
+                ui.heading("Hay cambios sin guardar");
+            });
+            ui.add_space(4.0);
+            ui.label(format!("¿Quieres guardar «{}» antes de continuar?", self.pattern.name));
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Cancelar").clicked() {
+                    self.pending = None;
                 }
                 if ui.button("No guardar").clicked() {
                     choice = Some(false);
                 }
-                if ui.button("Cancelar").clicked() {
-                    self.pending = None;
+                let save = egui::Button::new(RichText::new("Guardar").color(egui::Color32::WHITE)).fill(theme::ACCENT);
+                if ui.add(save).clicked() {
+                    choice = Some(true);
                 }
             });
         });
@@ -571,24 +602,6 @@ impl ClothingMakerApp {
     }
 }
 
-/// Editor de un punto en cm. Devuelve `true` si ha cambiado.
-fn point_editor(ui: &mut Ui, p: &mut Point) -> bool {
-    let (mut x, mut y) = (p.x / 10.0, p.y / 10.0);
-    let changed = ui
-        .horizontal(|ui| {
-            ui.label("x");
-            let a = ui.add(egui::DragValue::new(&mut x).speed(0.1).fixed_decimals(1).suffix(" cm")).changed();
-            ui.label("y");
-            let b = ui.add(egui::DragValue::new(&mut y).speed(0.1).fixed_decimals(1).suffix(" cm")).changed();
-            a || b
-        })
-        .inner;
-    if changed {
-        *p = Point::new(x * 10.0, y * 10.0);
-    }
-    changed
-}
-
 impl eframe::App for ClothingMakerApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -603,21 +616,47 @@ impl eframe::App for ClothingMakerApp {
             self.status = None;
         }
 
-        egui::Panel::top("menu").show(ui, |ui| {
-            self.menu_bar(ui);
-            self.toolbar(ui);
-        });
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::Panel::right("properties").resizable(true).default_size(280.0).show(ui, |ui| {
-            self.properties(ui);
-        });
-        if self.show_3d {
-            egui::Panel::right("view3d").resizable(true).default_size(560.0).show(ui, |ui| {
-                self.view3d.ui(ui, &self.pattern, canvas::piece_color);
-            });
+        let bar = |fill| egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(6, 3));
+        egui::Panel::top("app_bar").frame(bar(theme::APP_BAR)).show(ui, |ui| self.app_bar(ui));
+        egui::Panel::top("ribbon")
+            .frame(egui::Frame::NONE.fill(theme::RIBBON).inner_margin(egui::Margin {
+                left: 6,
+                right: 6,
+                top: 0,
+                bottom: 2,
+            }))
+            .show(ui, |ui| self.ribbon(ui));
+        egui::Panel::bottom("status").frame(bar(theme::HEADER)).show(ui, |ui| self.status_bar(ui));
+        let side = egui::Frame::NONE.fill(theme::PANEL);
+        egui::Panel::left("browser")
+            .resizable(true)
+            .default_size(230.0)
+            .size_range(170.0..=420.0)
+            .frame(side)
+            .show(ui, |ui| self.browser(ui));
+        egui::Panel::right("inspector")
+            .resizable(true)
+            .default_size(290.0)
+            .size_range(220.0..=480.0)
+            .frame(side)
+            .show(ui, |ui| self.inspector(ui));
+
+        if self.layout.shows_3d() {
+            self.view3d.sync(&ctx, &self.pattern, canvas::piece_color);
         }
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-            self.editor.ui(ui, &mut self.pattern);
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| match self.layout {
+            ViewLayout::Pattern => self.pattern_view(ui),
+            ViewLayout::Garment => self.view3d.viewport(ui, &self.pattern, canvas::piece_color),
+            ViewLayout::Split => {
+                let half = ui.available_width() / 2.0;
+                egui::Panel::right("view3d")
+                    .resizable(true)
+                    .default_size(half)
+                    .size_range(200.0..=ui.available_width() - 200.0)
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| self.view3d.viewport(ui, &self.pattern, canvas::piece_color));
+                self.pattern_view(ui);
+            }
         });
 
         self.unsaved_dialog(&ctx);
@@ -627,5 +666,48 @@ impl eframe::App for ClothingMakerApp {
             self.history.commit(&self.pattern);
         }
         self.update_title(&ctx);
+    }
+}
+
+/// Espacio de trabajo de la cinta.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Pattern,
+    Simulation,
+}
+
+/// Qué vistas se ven en el centro.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewLayout {
+    Pattern,
+    Split,
+    Garment,
+}
+
+impl ViewLayout {
+    const ALL: [ViewLayout; 3] = [ViewLayout::Pattern, ViewLayout::Split, ViewLayout::Garment];
+
+    fn label(self) -> &'static str {
+        match self {
+            ViewLayout::Pattern => "Solo el patrón 2D",
+            ViewLayout::Split => "Patrón 2D y vista 3D",
+            ViewLayout::Garment => "Solo la vista 3D",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            ViewLayout::Pattern => Icon::Layout2D,
+            ViewLayout::Split => Icon::LayoutSplit,
+            ViewLayout::Garment => Icon::Layout3D,
+        }
+    }
+
+    fn shows_2d(self) -> bool {
+        self != ViewLayout::Garment
+    }
+
+    fn shows_3d(self) -> bool {
+        self != ViewLayout::Pattern
     }
 }
