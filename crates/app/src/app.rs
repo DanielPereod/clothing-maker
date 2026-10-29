@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Ui};
-use pattern::{EdgeKind, Issue, Pattern, Point};
+use pattern::{Arrangement, EdgeKind, Issue, Pattern, Point, SeamId};
 
 use crate::canvas::{self, Editor, Selection, Tool};
 use crate::examples;
@@ -188,11 +188,10 @@ impl ClothingMakerApp {
                     self.request(Pending::Open);
                 }
                 ui.menu_button("Ejemplos", |ui| {
-                    if ui.button("Camiseta básica").clicked() {
-                        self.request(Pending::Example(examples::t_shirt));
-                    }
-                    if ui.button("Bolsa tote").clicked() {
-                        self.request(Pending::Example(examples::tote_bag));
+                    for (name, _, make) in examples::ALL {
+                        if ui.button(name).clicked() {
+                            self.request(Pending::Example(make));
+                        }
                     }
                 });
                 ui.separator();
@@ -232,7 +231,7 @@ impl ClothingMakerApp {
 
     fn toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            for tool in [Tool::Select, Tool::Pen, Tool::Rect] {
+            for tool in Tool::ALL {
                 if ui.selectable_label(self.editor.tool == tool, tool.label()).clicked() {
                     self.editor.set_tool(tool);
                 }
@@ -322,24 +321,72 @@ impl ClothingMakerApp {
                 }
             }
 
-            if !self.pattern.seams.is_empty() {
-                ui.separator();
-                ui.heading("Costuras");
-                for (k, seam) in self.pattern.seams.iter().enumerate() {
-                    let pieces: Vec<&str> = seam
-                        .sides
-                        .iter()
-                        .filter_map(|s| self.pattern.piece(s.piece).map(|p| p.name.as_str()))
-                        .collect();
-                    ui.label(format!("{}. {} — {}", k + 1, seam.name, pieces.join(" + ")));
+            ui.separator();
+            ui.heading("Costuras");
+            for (k, seam) in self.pattern.seams.iter().enumerate() {
+                let pieces: Vec<&str> =
+                    seam.sides.iter().filter_map(|s| self.pattern.piece(s.piece).map(|p| p.name.as_str())).collect();
+                let text = RichText::new(format!("{}. {} — {}", k + 1, seam.name, pieces.join(" + ")))
+                    .color(canvas::seam_color(k));
+                if ui.selectable_label(self.editor.selection == Selection::Seam(seam.id), text).clicked() {
+                    self.editor.selection = Selection::Seam(seam.id);
                 }
-                ui.weak("La edición de costuras llega en la siguiente fase.");
+            }
+            if self.pattern.seams.is_empty() {
+                ui.weak("Aún no hay costuras.");
+            }
+            if ui.button("＋ Costura (S)").on_hover_text(Tool::Seam.hint()).clicked() {
+                self.editor.set_tool(Tool::Seam);
             }
         });
     }
 
+    fn seam_details(&mut self, ui: &mut Ui, id: SeamId) {
+        let Some(k) = self.pattern.seams.iter().position(|s| s.id == id) else { return };
+        ui.heading(RichText::new(format!("Costura {}", k + 1)).color(canvas::seam_color(k)));
+        ui.text_edit_singleline(&mut self.pattern.seams[k].name);
+        ui.weak("Todos los lados se cosen a la vez desde el punto gordo, en el sentido de la flecha.");
+        let sides = self.pattern.seams[k].sides.clone();
+        let mut flip = None;
+        let mut remove = None;
+        egui::Grid::new("seam_sides").num_columns(3).striped(true).show(ui, |ui| {
+            for (j, side) in sides.iter().enumerate() {
+                let piece = self.pattern.piece(side.piece);
+                let name = piece.map_or("?", |p| p.name.as_str());
+                let edge = piece.and_then(|p| p.edge_index(side.edge));
+                let length = self.pattern.edge_length(side.piece, side.edge).unwrap_or(0.0);
+                ui.label(format!("{name} · arista {}", edge.map_or(0, |i| i + 1)));
+                ui.label(format!("{:.1} cm", length / 10.0));
+                ui.horizontal(|ui| {
+                    if ui.small_button("⇄").on_hover_text("Invertir el sentido de este lado").clicked() {
+                        flip = Some(j);
+                    }
+                    if sides.len() > 2 && ui.small_button("✕").on_hover_text("Quitar este lado").clicked() {
+                        remove = Some(j);
+                    }
+                });
+                ui.end_row();
+            }
+        });
+        let seam = &mut self.pattern.seams[k];
+        if let Some(j) = flip {
+            seam.sides[j].reversed = !seam.sides[j].reversed;
+        }
+        if let Some(j) = remove {
+            seam.sides.remove(j);
+        }
+        if ui.button("Borrar costura").clicked() {
+            self.pattern.remove_seam(id);
+            self.editor.selection = Selection::None;
+        }
+    }
+
     fn selection_details(&mut self, ui: &mut Ui) {
         let selection = self.editor.selection;
+        if let Selection::Seam(id) = selection {
+            self.seam_details(ui, id);
+            return;
+        }
         let Some(piece) = selection.piece().and_then(|id| self.pattern.piece_mut(id)) else {
             ui.weak("Selecciona una pieza, un punto o una arista para ver sus propiedades.");
             return;
@@ -356,6 +403,16 @@ impl ClothingMakerApp {
             ui.end_row();
             ui.label("Puntos");
             ui.label(piece.len().to_string());
+            ui.end_row();
+            ui.label("Colocación 3D").on_hover_text(
+                "Dónde va la pieza al coser en la vista 3D (modo Alrededor), mirando la prenda de frente. \
+                 Dibuja cada pieza como se ve desde fuera.",
+            );
+            egui::ComboBox::from_id_salt("arrangement").selected_text(piece.arrangement.label()).show_ui(ui, |ui| {
+                for a in Arrangement::ALL {
+                    ui.selectable_value(&mut piece.arrangement, a, a.label());
+                }
+            });
             ui.end_row();
         });
 
@@ -397,14 +454,24 @@ impl ClothingMakerApp {
                         piece.make_curve(i);
                     }
                 }
-                if ui.button("Añadir punto en el centro").clicked() {
-                    let id = piece.id;
-                    if let Some(v) = self.pattern.split_edge(id, i, 0.5) {
-                        self.editor.selection = Selection::Vertex(id, v);
+                let (id, edge) = (piece.id, piece.edges()[i].id);
+                if ui.button("Añadir punto en el centro").clicked()
+                    && let Some(v) = self.pattern.split_edge(id, i, 0.5)
+                {
+                    self.editor.selection = Selection::Vertex(id, v);
+                }
+                let seams: Vec<(SeamId, String)> =
+                    self.pattern.seams_of_edge(id, edge).map(|s| (s.id, s.name.clone())).collect();
+                if !seams.is_empty() {
+                    ui.label("Costuras de esta arista:");
+                    for (seam, name) in seams {
+                        if ui.link(name).clicked() {
+                            self.editor.selection = Selection::Seam(seam);
+                        }
                     }
                 }
             }
-            Selection::Piece(_) | Selection::None => {}
+            Selection::Piece(_) | Selection::Seam(_) | Selection::None => {}
         }
     }
 

@@ -41,6 +41,50 @@ impl Edge {
     }
 }
 
+/// Dónde se coloca una pieza en 3D antes de coser, mirando la prenda (u
+/// objeto) de frente. Las piezas se dibujan en 2D vistas desde fuera, con el
+/// derecho de la tela hacia quien mira: la espalda, por ejemplo, se dibuja
+/// como se vería desde detrás.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Arrangement {
+    #[default]
+    Front,
+    Back,
+    Left,
+    Right,
+    /// Tumbada encima, con el borde superior del dibujo hacia detrás.
+    Top,
+    /// Tumbada debajo, con el borde superior del dibujo hacia delante.
+    Bottom,
+}
+
+impl Arrangement {
+    pub const ALL: [Arrangement; 6] = [
+        Arrangement::Front,
+        Arrangement::Back,
+        Arrangement::Left,
+        Arrangement::Right,
+        Arrangement::Top,
+        Arrangement::Bottom,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Arrangement::Front => "Delante",
+            Arrangement::Back => "Detrás",
+            Arrangement::Left => "Izquierda",
+            Arrangement::Right => "Derecha",
+            Arrangement::Top => "Arriba",
+            Arrangement::Bottom => "Abajo",
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        *self == Arrangement::default()
+    }
+}
+
 /// Una pieza de tela: un contorno cerrado de vértices y aristas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawPiece")]
@@ -49,6 +93,9 @@ pub struct Piece {
     pub name: String,
     vertices: Vec<Point>,
     edges: Vec<Edge>,
+    /// Colocación en 3D antes de coser.
+    #[serde(default, skip_serializing_if = "Arrangement::is_default")]
+    pub arrangement: Arrangement,
 }
 
 /// Forma serializada, para comprobar invariantes al deserializar.
@@ -58,6 +105,8 @@ struct RawPiece {
     name: String,
     vertices: Vec<Point>,
     edges: Vec<Edge>,
+    #[serde(default)]
+    arrangement: Arrangement,
 }
 
 impl TryFrom<RawPiece> for Piece {
@@ -66,6 +115,7 @@ impl TryFrom<RawPiece> for Piece {
     fn try_from(raw: RawPiece) -> Result<Self, Self::Error> {
         let id = raw.id;
         Piece::from_parts(raw.id, raw.name, raw.vertices, raw.edges)
+            .map(|p| Piece { arrangement: raw.arrangement, ..p })
             .ok_or_else(|| format!("la pieza {} no tiene el mismo número de vértices que de aristas", id.0))
     }
 }
@@ -74,7 +124,13 @@ impl Piece {
     /// Construye una pieza. Devuelve `None` si hay distinto número de
     /// vértices que de aristas.
     pub fn from_parts(id: PieceId, name: impl Into<String>, vertices: Vec<Point>, edges: Vec<Edge>) -> Option<Self> {
-        (vertices.len() == edges.len()).then(|| Self { id, name: name.into(), vertices, edges })
+        (vertices.len() == edges.len()).then(|| Self {
+            id,
+            name: name.into(),
+            vertices,
+            edges,
+            arrangement: Arrangement::default(),
+        })
     }
 
     pub fn vertices(&self) -> &[Point] {

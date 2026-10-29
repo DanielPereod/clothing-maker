@@ -2,8 +2,8 @@
 //!
 //! Todas las piezas de una prenda viven en un solo sistema de partículas
 //! ([`Cloth`]): cada pieza aporta sus vértices y triángulos con un
-//! desplazamiento. Así, en la siguiente fase, una costura será solo otra
-//! restricción entre partículas de piezas distintas.
+//! desplazamiento, y una costura es solo otra restricción entre partículas
+//! de piezas distintas.
 //!
 //! Restricciones por pieza:
 //! - **Estiramiento:** distancia en cada arista de la malla, con la longitud
@@ -14,6 +14,11 @@
 //!   para tela normal.
 //! - **Colisión** con una lista de [`Collider`]s (suelo, esferas, cajas),
 //!   con grosor y rozamiento.
+//! - **Costuras:** distancia entre los puntos emparejados de dos bordes. La
+//!   distancia de reposo empieza siendo la de la colocación inicial y baja a
+//!   velocidad constante hasta cero ([`SimParams::sew_speed`]), así que las
+//!   piezas se acercan poco a poco en vez de saltar. Mientras se cose no hay
+//!   gravedad, para que las piezas no se caigan antes de estar unidas.
 //!
 //! Las restricciones se reparten en «colores» (grupos sin partículas en
 //! común) para resolver cada grupo en paralelo con `rayon`.
@@ -93,11 +98,13 @@ pub struct SimParams {
     /// Amortiguación de la velocidad por segundo (0..1), como el rozamiento
     /// con el aire. Sin ella los pliegues que cuelgan tardan mucho en parar.
     pub damping: f32,
+    /// Velocidad (m/s) a la que se cierran las costuras.
+    pub sew_speed: f32,
 }
 
 impl Default for SimParams {
     fn default() -> Self {
-        Self { gravity: Vec3::new(0.0, -9.81, 0.0), substeps: 20, damping: 0.5 }
+        Self { gravity: Vec3::new(0.0, -9.81, 0.0), substeps: 20, damping: 0.5, sew_speed: 0.4 }
     }
 }
 
@@ -121,6 +128,8 @@ pub struct Cloth {
     colors: Vec<usize>,
     /// Restricciones añadidas desde el último coloreado.
     pending: Vec<DistanceConstraint>,
+    /// Costuras: pocas comparadas con la tela, así que van en serie.
+    seams: Vec<DistanceConstraint>,
     scratch: Vec<(Vec3, Vec3)>,
     /// Normal y profundidad del contacto de cada partícula en este subpaso.
     contacts: Vec<(Vec3, f32)>,
@@ -219,6 +228,33 @@ impl Cloth {
         self.constraints.len() + self.pending.len()
     }
 
+    /// Une dos partículas con una costura. Empieza a la distancia a la que
+    /// estén ahora y se va cerrando al simular.
+    pub fn add_seam(&mut self, a: u32, b: u32) {
+        if a == b {
+            return;
+        }
+        let rest_length = self.positions[a as usize].distance(self.positions[b as usize]);
+        self.seams.push(DistanceConstraint { a, b, rest_length, compliance: 0.0 });
+    }
+
+    pub fn seam_count(&self) -> usize {
+        self.seams.len()
+    }
+
+    /// `true` mientras quede alguna costura por cerrar.
+    pub fn is_sewing(&self) -> bool {
+        self.seams.iter().any(|c| c.rest_length > 0.0)
+    }
+
+    /// Separación máxima (m) que queda entre dos puntos cosidos.
+    pub fn max_seam_gap(&self) -> f32 {
+        self.seams
+            .iter()
+            .map(|c| self.positions[c.a as usize].distance(self.positions[c.b as usize]))
+            .fold(0.0, f32::max)
+    }
+
     /// Normales por vértice, hacia el derecho de la tela.
     pub fn vertex_normals(&self) -> Vec<Vec3> {
         vertex_normals(&self.positions, &self.triangles)
@@ -235,10 +271,15 @@ impl Cloth {
         let parallel = self.positions.len() >= PAR_MIN_LEN;
         self.contacts.resize(self.positions.len(), (Vec3::ZERO, 0.0));
         for _ in 0..substeps {
+            let gravity = if self.is_sewing() { Vec3::ZERO } else { params.gravity };
+            let shrink = params.sew_speed.max(0.0) * h;
+            for c in &mut self.seams {
+                c.rest_length = (c.rest_length - shrink).max(0.0);
+            }
             self.prev_positions.copy_from_slice(&self.positions);
             let integrate = |(x, v, w): (&mut Vec3, &mut Vec3, &f32)| {
                 if *w > 0.0 {
-                    *v += params.gravity * h;
+                    *v += gravity * h;
                     *x += *v * h;
                 }
             };
@@ -256,6 +297,7 @@ impl Cloth {
             // a meter un poco las partículas, pero siempre dentro del grosor.
             self.solve_collisions(colliders, parallel);
             self.solve_distances(h);
+            self.solve_seams(h);
             self.apply_friction(parallel);
             let update = |(v, x, prev): (&mut Vec3, &Vec3, &Vec3)| *v = (*x - *prev) / h * damping;
             if parallel {
@@ -334,6 +376,15 @@ impl Cloth {
                 self.positions[c.a as usize] += da;
                 self.positions[c.b as usize] += db;
             }
+        }
+    }
+
+    fn solve_seams(&mut self, h: f32) {
+        let inv_h2 = 1.0 / (h * h);
+        for c in &self.seams {
+            let (da, db) = distance_correction(c, &self.positions, &self.inv_mass, inv_h2);
+            self.positions[c.a as usize] += da;
+            self.positions[c.b as usize] += db;
         }
     }
 
@@ -501,6 +552,41 @@ mod tests {
         let mut cloth = Cloth::new();
         cloth.add_piece(&mesh, &Fabric::COTTON, |p| Vec3::new(p[0] as f32, 0.5, p[1] as f32) * 1e-3, Vec3::Y);
         assert!(cloth.vertex_normals().iter().all(|n| n.dot(Vec3::Y) > 0.99));
+    }
+
+    /// Dos cuadrados de 20 cm, uno frente a otro a 30 cm, cosidos por un
+    /// borde: el borde se cierra y, al acabar de coser, caen al suelo.
+    #[test]
+    fn seam_closes_and_then_gravity_acts() {
+        let mesh = square_mesh(200.0);
+        let mut cloth = Cloth::new();
+        let place = |z: f32| move |p: [f64; 2]| Vec3::new(p[0] as f32 * 1e-3, 1.0 - p[1] as f32 * 1e-3, z);
+        let a = cloth.add_piece(&mesh, &Fabric::COTTON, place(0.15), Vec3::Z);
+        let b = cloth.add_piece(&mesh, &Fabric::COTTON, place(-0.15), -Vec3::Z);
+        // Borde izquierdo de los dos (x = 0), punto a punto.
+        let left: Vec<u32> =
+            (0..mesh.positions.len() as u32).filter(|&i| mesh.positions[i as usize][0] == 0.0).collect();
+        assert!(left.len() > 5);
+        for &i in &left {
+            cloth.add_seam(a.first_particle + i, b.first_particle + i);
+        }
+        assert_eq!(cloth.seam_count(), left.len());
+        assert!(cloth.is_sewing());
+        let start_y = min_y(&cloth);
+        // 0,3 m a 0,4 m/s: en 0,75 s está cerrada.
+        for _ in 0..50 {
+            cloth.step(1.0 / 60.0, &SimParams::default(), &[Collider::ground(0.0)]);
+        }
+        assert!(!cloth.is_sewing());
+        assert!(cloth.max_seam_gap() < 1e-3, "la costura sigue abierta: {}", cloth.max_seam_gap());
+        // Sin gravedad mientras cosía: no se ha caído.
+        assert!(min_y(&cloth) > start_y - 0.05, "ha caído mientras cosía: {}", min_y(&cloth));
+        for _ in 0..240 {
+            cloth.step(1.0 / 60.0, &SimParams::default(), &[Collider::ground(0.0)]);
+        }
+        assert!(cloth.positions.iter().all(|p| p.is_finite()));
+        assert!(min_y(&cloth) < 0.01, "no ha llegado al suelo: {}", min_y(&cloth));
+        assert!(cloth.max_seam_gap() < 2e-3, "la costura se ha abierto: {}", cloth.max_seam_gap());
     }
 
     /// Deja caer un cuadrado de tela de 80 cm desde 50 cm sobre el suelo y

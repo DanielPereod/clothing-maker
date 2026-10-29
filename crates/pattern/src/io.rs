@@ -91,6 +91,17 @@ mod tests {
     }
 
     #[test]
+    fn arrangement_is_optional() {
+        let mut p = sample();
+        let json = p.to_json().unwrap();
+        assert!(!json.contains("arrangement"), "la colocación por defecto no se guarda");
+        p.pieces[1].arrangement = crate::Arrangement::Back;
+        let back = Pattern::from_json(&p.to_json().unwrap()).unwrap();
+        assert_eq!(back.pieces[1].arrangement, crate::Arrangement::Back);
+        assert_eq!(back.pieces[0].arrangement, crate::Arrangement::Front);
+    }
+
+    #[test]
     fn next_id_never_collides_after_load() {
         let mut p = sample();
         let json = p.to_json().unwrap().replace("\"next_id\"", "\"ignored\"");

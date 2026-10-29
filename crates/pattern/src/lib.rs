@@ -13,7 +13,7 @@ mod piece;
 
 pub use io::{FORMAT_ID, FORMAT_VERSION, PatternFile, PatternIoError};
 pub use kurbo::{Point, Vec2};
-pub use piece::{Edge, EdgeKind, Piece, polygon_self_intersects};
+pub use piece::{Arrangement, Edge, EdgeKind, Piece, polygon_self_intersects};
 
 use serde::{Deserialize, Serialize};
 
@@ -41,11 +41,26 @@ pub struct SeamSide {
     pub edge: EdgeId,
     /// Si es `true`, la arista se recorre al revés (de su vértice final al
     /// inicial) al emparejarla con los demás lados.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reversed: bool,
 }
 
-/// Una costura que une dos o más aristas.
+impl SeamSide {
+    pub fn new(piece: PieceId, edge: EdgeId, reversed: bool) -> Self {
+        Self { piece, edge, reversed }
+    }
+
+    /// `true` si es la misma arista (en cualquier sentido).
+    pub fn same_edge(&self, other: &SeamSide) -> bool {
+        self.piece == other.piece && self.edge == other.edge
+    }
+}
+
+/// Una costura que une dos o más aristas. Todos los lados se recorren a la
+/// vez, del principio al final (según su sentido), y se unen punto a punto.
+/// Dos piezas dibujadas vistas desde fuera recorren su borde común en
+/// sentidos contrarios, así que lo normal es que uno de los dos lados vaya
+/// invertido.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Seam {
     pub id: SeamId,
@@ -139,7 +154,9 @@ impl Pattern {
         let new_id = PieceId(self.alloc_id());
         let edges = src.edges().iter().map(|e| Edge { id: EdgeId(self.alloc_id()), kind: e.kind }).collect();
         let points = src.vertices().iter().map(|p| *p + offset).collect();
-        let piece = Piece::from_parts(new_id, format!("{} (copia)", src.name), points, edges).expect("misma longitud");
+        let mut piece =
+            Piece::from_parts(new_id, format!("{} (copia)", src.name), points, edges).expect("misma longitud");
+        piece.arrangement = src.arrangement;
         self.pieces.push(piece);
         Some(new_id)
     }
@@ -183,14 +200,33 @@ impl Pattern {
         true
     }
 
-    /// Crea una costura entre dos o más aristas.
+    /// Crea una costura entre dos o más aristas distintas.
     pub fn add_seam(&mut self, name: impl Into<String>, sides: Vec<SeamSide>) -> Option<SeamId> {
-        if sides.len() < 2 || !sides.iter().all(|s| self.edge_length(s.piece, s.edge).is_some()) {
+        let repeated = sides.iter().enumerate().any(|(i, a)| sides[..i].iter().any(|b| a.same_edge(b)));
+        if sides.len() < 2 || repeated || !sides.iter().all(|s| self.edge_length(s.piece, s.edge).is_some()) {
             return None;
         }
         let id = SeamId(self.alloc_id());
         self.seams.push(Seam { id, name: name.into(), sides });
         Some(id)
+    }
+
+    pub fn seam(&self, id: SeamId) -> Option<&Seam> {
+        self.seams.iter().find(|s| s.id == id)
+    }
+
+    pub fn seam_mut(&mut self, id: SeamId) -> Option<&mut Seam> {
+        self.seams.iter_mut().find(|s| s.id == id)
+    }
+
+    pub fn remove_seam(&mut self, id: SeamId) -> Option<Seam> {
+        let idx = self.seams.iter().position(|s| s.id == id)?;
+        Some(self.seams.remove(idx))
+    }
+
+    /// Costuras que usan una arista.
+    pub fn seams_of_edge(&self, piece: PieceId, edge: EdgeId) -> impl Iterator<Item = &Seam> {
+        self.seams.iter().filter(move |s| s.sides.iter().any(|side| side.piece == piece && side.edge == edge))
     }
 
     /// Longitud real (mm) de una arista.
@@ -285,6 +321,19 @@ mod tests {
             vec![SeamSide { piece: a, edge: ea, reversed: false }, SeamSide { piece: b, edge: eb, reversed: true }],
         );
         assert!(matches!(p.validate()[..], [Issue::SeamLengthMismatch { .. }]));
+    }
+
+    #[test]
+    fn seam_rejects_repeated_edges() {
+        let mut p = Pattern::new("t");
+        let a = p.add_rect("a", Point::ZERO, 100.0, 50.0);
+        let e = p.piece(a).unwrap().edges()[0].id;
+        assert!(p.add_seam("", vec![SeamSide::new(a, e, false), SeamSide::new(a, e, true)]).is_none());
+        let f = p.piece(a).unwrap().edges()[2].id;
+        let id = p.add_seam("", vec![SeamSide::new(a, e, false), SeamSide::new(a, f, true)]).unwrap();
+        assert_eq!(p.seams_of_edge(a, f).count(), 1);
+        assert!(p.remove_seam(id).is_some());
+        assert!(p.seams.is_empty());
     }
 
     #[test]

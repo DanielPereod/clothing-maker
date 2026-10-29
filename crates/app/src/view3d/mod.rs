@@ -1,5 +1,6 @@
-//! Vista 3D: las piezas del patrón como tela simulada, cayendo sobre el
-//! suelo y, si se quiere, sobre un obstáculo (esfera o mesa).
+//! Vista 3D: las piezas del patrón como tela simulada, cosidas entre sí y
+//! cayendo sobre el suelo y, si se quiere, sobre un obstáculo (esfera o
+//! mesa).
 
 mod render;
 mod scene;
@@ -88,6 +89,7 @@ struct Loaded {
     indices: Vec<u32>,
     colors: Vec<[f32; 3]>,
     failed: Vec<String>,
+    seams: usize,
 }
 
 pub struct View3D {
@@ -138,6 +140,7 @@ impl View3D {
             indices,
             colors: scene.colors,
             failed: scene.failed,
+            seams: scene.seams,
         });
         self.runner.load(scene.cloth, scene.colliders, self.settings.params());
         self.version = u64::MAX;
@@ -162,17 +165,16 @@ impl View3D {
                 self.reload(pattern, &color_of);
             }
             ui.separator();
-            egui::ComboBox::from_id_salt("placement")
-                .selected_text(match self.settings.placement {
-                    Placement::Drop => "Soltar",
-                    Placement::Hang => "Colgar",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.settings.placement, Placement::Drop, "Soltar")
-                        .on_hover_text("Las piezas caen en horizontal sobre el obstáculo");
-                    ui.selectable_value(&mut self.settings.placement, Placement::Hang, "Colgar")
-                        .on_hover_text("Las piezas cuelgan de su borde superior");
-                });
+            egui::ComboBox::from_id_salt("placement").selected_text(self.settings.placement.label()).show_ui(
+                ui,
+                |ui| {
+                    for placement in Placement::ALL {
+                        ui.selectable_value(&mut self.settings.placement, placement, placement.label())
+                            .on_hover_text(placement.hint());
+                    }
+                },
+            );
+            ui.checkbox(&mut self.settings.sew, "Coser").on_hover_text("Cierra las costuras del patrón");
             egui::ComboBox::from_id_salt("obstacle")
                 .selected_text(match self.settings.obstacle {
                     Obstacle::None => "Solo suelo",
@@ -204,12 +206,21 @@ impl View3D {
             self.reload(pattern, &color_of);
         }
 
-        let (sim_time, step_ms) = self.runner.stats();
+        let stats = self.runner.stats();
         ui.horizontal_wrapped(|ui| {
             let loaded = self.loaded.as_ref().expect("cargado arriba");
-            ui.weak(format!("{:.1} s · {} partículas · {:.1} ms por paso", sim_time, loaded.colors.len(), step_ms));
-            if step_ms > scene::FRAME * 1000.0 {
+            ui.weak(format!(
+                "{:.1} s · {} partículas · {} costuras · {:.1} ms por paso",
+                stats.sim_time,
+                loaded.colors.len(),
+                loaded.seams,
+                stats.step_ms
+            ));
+            if stats.step_ms > scene::FRAME * 1000.0 {
                 ui.weak("(más lento que el tiempo real)");
+            }
+            if stats.sewing {
+                ui.colored_label(Color32::from_rgb(90, 170, 230), "Cosiendo…");
             }
             if outdated {
                 ui.colored_label(Color32::from_rgb(230, 150, 40), "El patrón ha cambiado: pulsa Reiniciar para verlo.");
