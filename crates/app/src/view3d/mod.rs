@@ -148,7 +148,9 @@ impl View3D {
 
     pub fn ui(&mut self, ui: &mut Ui, pattern: &Pattern, color_of: impl Fn(PieceId) -> Color32) {
         if self.loaded.is_none() {
+            // La primera vez arranca sola, para que se vea coser sin buscar el botón.
             self.reload(pattern, &color_of);
+            self.runner.set_running(true);
         }
         let settings_before = self.settings;
         let outdated = self.loaded.as_ref().is_some_and(|l| l.pattern != *pattern);
@@ -311,5 +313,14 @@ impl View3D {
         );
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         ui.painter_at(rect).image(texture, rect, uv, Color32::WHITE);
+        if !self.runner.is_running() && self.runner.stats().sim_time == 0.0 {
+            ui.painter_at(rect).text(
+                rect.center_top() + egui::vec2(0.0, 16.0),
+                egui::Align2::CENTER_TOP,
+                "En pausa: pulsa ▶ Simular para coser",
+                egui::FontId::proportional(14.0),
+                ui.visuals().strong_text_color(),
+            );
+        }
     }
 }
