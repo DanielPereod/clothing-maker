@@ -195,6 +195,7 @@ mod tests {
             inward: (0..n as u32).map(|k| Some(3 * k + offset)).collect(),
             inward_rest: vec![0.02; n],
             compliance: 1e-3,
+            firm: false,
             thickness: 0.003,
             allowance: 0.01,
             right_sign: 1.0,

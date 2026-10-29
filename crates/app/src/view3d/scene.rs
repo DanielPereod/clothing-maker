@@ -172,6 +172,8 @@ pub struct SeamSideDraw {
     pub inward_rest: Vec<f32>,
     /// Flexibilidad (m/N) de la costura en este lado y grosor (m) de su tela.
     pub compliance: f32,
+    /// La tela es tan firme que la costura no cambia cómo se dobla.
+    pub firm: bool,
     pub thickness: f32,
     /// Ancho del margen que se ve (m).
     pub allowance: f32,
@@ -200,6 +202,15 @@ fn seam_compliance(fabric: &Fabric, kind: SeamKind) -> f32 {
     const REFERENCE: f32 = 1e-8;
     REFERENCE / (fabric.bend_stiffness.max(1e-9) * kind.stiffness())
 }
+
+/// Firmeza (N·m) a partir de la cual la tela manda sobre la costura (del
+/// vaquero para arriba): ahí la costura no añade rigidez, peso ni pliegue.
+/// Sumarlos a una tela tan firme como el cuero chocaba con su flexión y con
+/// la auto-colisión y la tela se disparaba.
+const FIRM_FABRIC: f32 = 2e-5;
+/// El pliegue preferido es una tendencia, no una bisagra rígida: cede
+/// bastante más que la rigidez a lo largo de la costura.
+const FOLD_SOFTNESS: f32 = 4.0;
 
 /// Color del revés de una tela del color `c` (lineal): más claro y apagado.
 pub fn wrong_side_color(c: [f32; 3]) -> [f32; 3] {
@@ -431,8 +442,11 @@ pub fn build(
                 let edge = seam.sides[side.side];
                 let allowance = pattern.allowance(edge.piece, edge.edge) * 1e-3;
 
-                // La costura es más rígida a lo largo que la tela sola.
-                for k in 2..v.len() {
+                // La costura es más rígida a lo largo que la tela sola (la
+                // simple es la referencia y se queda como la tela).
+                let firm = fabric.bend_stiffness > FIRM_FABRIC;
+                let stiffer = if kind.stiffness() > 1.0 && !firm { v.len() } else { 0 };
+                for k in 2..stiffer {
                     let rest = (at(k).distance(at(k - 2)) * 1e-3) as f32;
                     cloth.add_constraint(base + v[k - 2], base + v[k], rest, compliance);
                 }
@@ -443,10 +457,10 @@ pub fn build(
                     let before = if k > 0 { at(k).distance(at(k - 1)) } else { 0.0 };
                     let after = if k + 1 < v.len() { at(k).distance(at(k + 1)) } else { 0.0 };
                     let spacing = (before + after) / 2.0 * 1e-3;
-                    let plies = (kind.layers() - 2.0) / 2.0;
+                    let plies = if firm { 0.0 } else { (kind.layers() - 2.0) / 2.0 };
                     let particle = (base + v[k]) as usize;
                     cloth.add_mass(particle, fabric.density * (allowance * spacing) as f32 * plies);
-                    cloth.thicken(particle, fabric.thickness * (1.0 + 0.25 * (kind.layers() - 2.0)));
+                    cloth.thicken(particle, fabric.thickness * (1.0 + 0.5 * plies));
                 }
 
                 let color = egui::Rgba::from(color_of(piece.id));
@@ -464,6 +478,7 @@ pub fn build(
                     inward: inward.iter().map(|n| n.map(|i| base + i)).collect(),
                     inward_rest,
                     compliance,
+                    firm,
                     thickness: fabric.thickness,
                     allowance: (allowance * kind.visible_allowance()) as f32,
                     right_sign: right_sign(pattern, piece),
@@ -482,13 +497,16 @@ pub fn build(
                 for (i, a) in sides.iter().enumerate() {
                     for b in &sides[i + 1..] {
                         for k in 0..a.particles.len().min(b.particles.len()) {
+                            if a.firm || b.firm {
+                                continue;
+                            }
                             let (Some(na), Some(nb)) = (a.inward[k], b.inward[k]) else { continue };
                             let (da, db) = (a.inward_rest[k], b.inward_rest[k]);
                             let rest = match fold {
                                 SeamFold::Flat => da + db,
                                 _ => (da - db).abs() + a.thickness + b.thickness,
                             };
-                            cloth.add_constraint(na, nb, rest, (a.compliance + b.compliance) / 2.0);
+                            cloth.add_constraint(na, nb, rest, (a.compliance + b.compliance) / 2.0 * FOLD_SOFTNESS);
                         }
                     }
                 }
@@ -994,6 +1012,8 @@ mod tests {
         let mut pattern = Pattern::new("bisagra");
         let a = pattern.add_rect("fijo", pattern::Point::ZERO, 200.0, 200.0);
         let b = pattern.add_rect("suelto", pattern::Point::new(200.0, 0.0), width, 200.0);
+        // Al soltar piezas cosidas, la de la derecha se tumba a la derecha de la de delante.
+        pattern.piece_mut(b).unwrap().arrangement = Arrangement::Right;
         let ea = pattern.piece(a).unwrap().edges()[1].id;
         let eb = pattern.piece(b).unwrap().edges()[3].id;
         let sides = vec![pattern::SeamSide::new(a, ea, false), pattern::SeamSide::new(b, eb, true)];
@@ -1024,7 +1044,8 @@ mod tests {
             .filter(|(_, p)| p[0] - 200.0 < 25.0 && p[0] > 200.0)
             .map(|(i, _)| scene.cloth.positions[i].y)
             .collect();
-        let top = Obstacle::Table.top() + 0.1;
+        // El panel fijo está en horizontal, a la altura de la costura.
+        let top = scene.cloth.positions[scene.pieces[0].first_particle as usize].y;
         top - near.iter().sum::<f32>() / near.len() as f32
     }
 
@@ -1044,11 +1065,18 @@ mod tests {
     fn bagged_seams_fold_back() {
         let reach = |kind| {
             let (scene, free) = hinge(kind, 80.0);
-            // Hasta dónde llega el panel suelto hacia el fijo (la costura está en x = 0).
-            scene.cloth.positions[free].iter().map(|p| p.x).fold(f32::INFINITY, f32::min)
+            // Hasta dónde llega el panel suelto hacia el fijo, desde la
+            // costura (el borde derecho del panel fijo).
+            let fixed = &scene.pieces[0];
+            let start = fixed.first_particle as usize;
+            let seam = scene.cloth.positions[start..start + fixed.mesh.positions.len()]
+                .iter()
+                .map(|p| p.x)
+                .fold(f32::NEG_INFINITY, f32::max);
+            scene.cloth.positions[free].iter().map(|p| p.x).fold(f32::INFINITY, f32::min) - seam
         };
         let (plain, bagged) = (reach(SeamKind::Plain), reach(SeamKind::Bagged));
-        eprintln!("el panel suelto llega a x = {plain:.3} m con la simple y {bagged:.3} m con la volteada");
+        eprintln!("el panel suelto llega a {plain:.3} m de la costura con la simple y a {bagged:.3} m con la volteada");
         assert!(bagged < plain - 0.02, "{bagged} ≥ {plain} - 0,02");
     }
 

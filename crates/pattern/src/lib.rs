@@ -10,14 +10,14 @@
 
 mod io;
 mod piece;
-pub mod textile;
 mod seam;
+pub mod textile;
 
 pub use io::{FORMAT_ID, FORMAT_VERSION, PatternFile, PatternIoError};
 pub use kurbo::{Point, Vec2};
 pub use piece::{Arrangement, BodyZone, Edge, EdgeKind, Piece, polygon_self_intersects};
-pub use textile::{Textile, TextileId};
 pub use seam::{AllowanceSide, DEFAULT_SEAM_ALLOWANCE, DEFAULT_STITCH_LENGTH, SeamFold, SeamKind, Topstitch};
+pub use textile::{Textile, TextileId};
 
 use serde::{Deserialize, Serialize};
 
