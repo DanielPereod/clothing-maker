@@ -341,7 +341,10 @@ impl ClothingMakerApp {
             ui.set_min_height(80.0);
             match self.tab {
                 Tab::Pattern => self.pattern_ribbon(ui),
-                Tab::Simulation => self.view3d.ribbon(ui, &self.pattern, canvas::piece_color),
+                Tab::Simulation => {
+                    self.view3d.ribbon(ui, &self.pattern, canvas::piece_color);
+                    self.fill_group(ui);
+                }
             }
         });
     }
@@ -462,6 +465,20 @@ impl ClothingMakerApp {
             {
                 self.editor.fit_view();
             }
+        });
+    }
+
+    /// Relleno (presión interior) del patrón, también a mano en la cinta de simulación.
+    fn fill_group(&mut self, ui: &mut Ui) {
+        widgets::ribbon_group(ui, "RELLENO", false, |ui, _| {
+            ui.vertical(|ui| {
+                ui.add_space(8.0);
+                ui.add(egui::Slider::new(&mut self.pattern.pressure, 0.0..=60.0).suffix(" Pa").max_decimals(0))
+                    .on_hover_text(
+                        "Presión interior: hincha la prenda como si estuviera rellena. 0 = vacía; \
+                         unos 10 Pa llenan una bolsa y 30 dejan firme un cojín.",
+                    );
+            });
         });
     }
 

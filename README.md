@@ -129,8 +129,8 @@ oscuro.
 - Cinta de herramientas con dos espacios de trabajo. *Patrón*: seleccionar,
   crear (pluma, rectángulo), modificar, coser, inspeccionar (rejilla, malla),
   prenda (maniquí) y encuadrar. *Simulación*: simular / pausa, reiniciar, en
-  vivo, montaje (colocación, coser), entorno (obstáculo, tejido), precisión e
-  inicio de cámara. Los grupos con ⏷ despliegan más órdenes.
+  vivo, montaje (colocación, coser), entorno (obstáculo, tejido), precisión,
+  inicio de cámara y relleno (también en las propiedades del patrón). Los grupos con ⏷ despliegan más órdenes.
 - Navegador a la izquierda: árbol con las piezas, las costuras y los avisos
   (clic para seleccionar, botón derecho para duplicar o borrar).
 - Propiedades a la derecha: lo seleccionado (pieza, punto, arista o costura)
