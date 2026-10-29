@@ -443,7 +443,8 @@ impl Cloth {
 
     fn solve_distances(&mut self, h: f32) {
         let inv_h2 = 1.0 / (h * h);
-        let groups = self.colors.len() - 1;
+        // Sin restricciones (una tela vacía) no hay ningún grupo.
+        let groups = self.colors.len().saturating_sub(1);
         for k in 0..groups {
             let range = self.colors[k]..self.colors[k + 1];
             if range.is_empty() {
@@ -619,6 +620,14 @@ mod tests {
         // La tela cae pero no se estira de forma absurda (< 10 %).
         let lowest = cloth.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
         assert!(lowest < -0.15 && lowest > -0.31, "punto más bajo: {lowest}");
+    }
+
+    /// Un patrón sin piezas da una tela vacía: simularla no hace nada.
+    #[test]
+    fn empty_cloth_steps() {
+        let mut cloth = Cloth::new();
+        cloth.step(1.0 / 60.0, &SimParams::default(), &[Collider::ground(0.0)]);
+        assert!(cloth.positions.is_empty());
     }
 
     #[test]
