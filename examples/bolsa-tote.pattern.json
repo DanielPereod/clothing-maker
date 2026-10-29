@@ -82,98 +82,18 @@
             "id": 10,
             "type": "line"
           }
-        ]
-      },
-      {
-        "id": 11,
-        "name": "Asa 1",
-        "vertices": [
-          {
-            "x": 0.0,
-            "y": 500.0
-          },
-          {
-            "x": 600.0,
-            "y": 500.0
-          },
-          {
-            "x": 600.0,
-            "y": 560.0
-          },
-          {
-            "x": 0.0,
-            "y": 560.0
-          }
         ],
-        "edges": [
-          {
-            "id": 12,
-            "type": "line"
-          },
-          {
-            "id": 13,
-            "type": "line"
-          },
-          {
-            "id": 14,
-            "type": "line"
-          },
-          {
-            "id": 15,
-            "type": "line"
-          }
-        ]
-      },
-      {
-        "id": 16,
-        "name": "Asa 2",
-        "vertices": [
-          {
-            "x": 0.0,
-            "y": 600.0
-          },
-          {
-            "x": 600.0,
-            "y": 600.0
-          },
-          {
-            "x": 600.0,
-            "y": 660.0
-          },
-          {
-            "x": 0.0,
-            "y": 660.0
-          }
-        ],
-        "edges": [
-          {
-            "id": 17,
-            "type": "line"
-          },
-          {
-            "id": 18,
-            "type": "line"
-          },
-          {
-            "id": 19,
-            "type": "line"
-          },
-          {
-            "id": 20,
-            "type": "line"
-          }
-        ]
+        "arrangement": "back"
       }
     ],
     "seams": [
       {
-        "id": 21,
+        "id": 11,
         "name": "Fondo",
         "sides": [
           {
             "piece": 1,
-            "edge": 4,
-            "reversed": false
+            "edge": 4
           },
           {
             "piece": 6,
@@ -183,13 +103,12 @@
         ]
       },
       {
-        "id": 22,
+        "id": 12,
         "name": "Lateral dcho.",
         "sides": [
           {
             "piece": 1,
-            "edge": 3,
-            "reversed": false
+            "edge": 3
           },
           {
             "piece": 6,
@@ -199,13 +118,12 @@
         ]
       },
       {
-        "id": 23,
+        "id": 13,
         "name": "Lateral izdo.",
         "sides": [
           {
             "piece": 1,
-            "edge": 5,
-            "reversed": false
+            "edge": 5
           },
           {
             "piece": 6,
@@ -215,6 +133,6 @@
         ]
       }
     ],
-    "next_id": 24
+    "next_id": 14
   }
 }

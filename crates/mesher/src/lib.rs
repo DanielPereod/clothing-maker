@@ -4,9 +4,15 @@
 //! del borde tengan un tamaño parecido (importante para coser luego dos
 //! piezas vértice a vértice), y el interior se rellena con una triangulación
 //! de Delaunay restringida y refinada (`spade`).
+//!
+//! [`mesh_pattern`] malla todas las piezas de un patrón a la vez y reparte
+//! los puntos de modo que todos los lados de una costura tengan los mismos,
+//! para poder unirlos punto a punto aunque midan algo distinto.
+
+use std::collections::HashMap;
 
 use kurbo::{ParamCurve, ParamCurveArclen, PathSeg, Point};
-use pattern::{EdgeId, Piece, polygon_self_intersects};
+use pattern::{EdgeId, Pattern, Piece, PieceId, SeamId, polygon_self_intersects};
 use spade::{ConstrainedDelaunayTriangulation, Point2, RefinementParameters, Triangulation};
 
 /// Parámetros del mallado.
@@ -58,6 +64,17 @@ impl Mesh2D {
         edges
     }
 
+    /// Vértices del borde a lo largo de una arista del patrón, del principio
+    /// al final, con los dos extremos.
+    pub fn edge_vertices(&self, edge: EdgeId) -> Option<Vec<u32>> {
+        let first = self.boundary.iter().position(|b| b.edge == edge)?;
+        let mut out: Vec<u32> =
+            self.boundary[first..].iter().take_while(|b| b.edge == edge).map(|b| b.vertex).collect();
+        let end = (first + out.len()) % self.boundary.len();
+        out.push(self.boundary[end].vertex);
+        Some(out)
+    }
+
     pub fn area(&self) -> f64 {
         self.triangles
             .iter()
@@ -69,7 +86,7 @@ impl Mesh2D {
     }
 }
 
-#[derive(Debug, thiserror::Error, PartialEq)]
+#[derive(Clone, Debug, thiserror::Error, PartialEq)]
 pub enum MeshError {
     #[error("la pieza necesita al menos 3 vértices")]
     TooFewVertices,
@@ -81,6 +98,113 @@ pub enum MeshError {
 
 /// Malla una pieza.
 pub fn mesh_piece(piece: &Piece, options: &MeshOptions) -> Result<Mesh2D, MeshError> {
+    mesh_piece_with(piece, options, |_| None)
+}
+
+/// Lo que mide de verdad cada lado de una costura en la malla.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeamSideMesh {
+    /// Índice de la pieza en [`PatternMesh::pieces`] (el mismo que en el patrón).
+    pub piece: usize,
+    /// Vértices del borde de la pieza a lo largo de la arista, en el sentido
+    /// de la costura y con los dos extremos incluidos.
+    pub vertices: Vec<u32>,
+}
+
+/// Una costura ya mallada: todos sus lados tienen el mismo número de
+/// vértices, y el vértice `k` de cada lado se une con el `k` de los demás.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeamMesh {
+    pub seam: SeamId,
+    pub sides: Vec<SeamSideMesh>,
+}
+
+/// Mallas de todas las piezas de un patrón y sus costuras.
+#[derive(Clone, Debug)]
+pub struct PatternMesh {
+    /// Una entrada por pieza, en el orden del patrón.
+    pub pieces: Vec<Result<Mesh2D, MeshError>>,
+    /// Solo las costuras con al menos dos lados en piezas bien malladas.
+    pub seams: Vec<SeamMesh>,
+}
+
+/// Malla todas las piezas de un patrón. Los lados de cada costura (y de las
+/// costuras que comparten aristas con ella) reciben el mismo número de
+/// divisiones: el mayor de los que les tocarían por separado.
+pub fn mesh_pattern(pattern: &Pattern, options: &MeshOptions) -> PatternMesh {
+    let target = options.target_edge_length.max(0.1);
+    // Divisiones que pediría cada arista cosida por su cuenta.
+    let mut divisions: HashMap<(PieceId, EdgeId), usize> = HashMap::new();
+    for seam in &pattern.seams {
+        for side in &seam.sides {
+            let Some(piece) = pattern.piece(side.piece) else { continue };
+            let Some(i) = piece.edge_index(side.edge) else { continue };
+            divisions.insert((side.piece, side.edge), edge_divisions(&piece.segment(i), target, options));
+        }
+    }
+    // Aristas unidas por costuras, directa o indirectamente, comparten el
+    // número de divisiones. Se propaga el máximo hasta que no cambia nada.
+    loop {
+        let mut changed = false;
+        for seam in &pattern.seams {
+            let keys = seam.sides.iter().map(|s| (s.piece, s.edge));
+            let max = keys.clone().filter_map(|k| divisions.get(&k).copied()).max().unwrap_or(1);
+            for k in keys {
+                if let Some(n) = divisions.get_mut(&k)
+                    && *n < max
+                {
+                    *n = max;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let pieces: Vec<Result<Mesh2D, MeshError>> = pattern
+        .pieces
+        .iter()
+        .map(|piece| mesh_piece_with(piece, options, |edge| divisions.get(&(piece.id, edge)).copied()))
+        .collect();
+
+    let index: HashMap<PieceId, usize> = pattern.pieces.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
+    let mut seams = Vec::new();
+    for seam in &pattern.seams {
+        let mut sides: Vec<SeamSideMesh> = Vec::new();
+        for side in &seam.sides {
+            let Some(&piece) = index.get(&side.piece) else { continue };
+            let Ok(mesh) = &pieces[piece] else { continue };
+            let Some(mut vertices) = mesh.edge_vertices(side.edge) else { continue };
+            if side.reversed {
+                vertices.reverse();
+            }
+            sides.push(SeamSideMesh { piece, vertices });
+        }
+        // Por si el remuestreo ha fundido algún punto (aristas casi nulas):
+        // solo se cosen los lados con el número de puntos esperado.
+        let expected = seam.sides.first().and_then(|s| divisions.get(&(s.piece, s.edge))).map_or(0, |n| n + 1);
+        sides.retain(|s| s.vertices.len() == expected);
+        if sides.len() >= 2 {
+            seams.push(SeamMesh { seam: seam.id, sides });
+        }
+    }
+    PatternMesh { pieces, seams }
+}
+
+fn edge_divisions(seg: &PathSeg, target: f64, options: &MeshOptions) -> usize {
+    let len = seg.arclen(1e-3);
+    ((len / target).ceil() as usize).max(curve_min_divisions(seg, options.curve_tolerance)).max(1)
+}
+
+/// Malla una pieza. `divisions` puede fijar en cuántos tramos se divide una
+/// arista (si devuelve `None`, se decide por la longitud objetivo).
+pub fn mesh_piece_with(
+    piece: &Piece,
+    options: &MeshOptions,
+    divisions: impl Fn(EdgeId) -> Option<usize>,
+) -> Result<Mesh2D, MeshError> {
     if piece.len() < 3 {
         return Err(MeshError::TooFewVertices);
     }
@@ -91,7 +215,7 @@ pub fn mesh_piece(piece: &Piece, options: &MeshOptions) -> Result<Mesh2D, MeshEr
     for (i, seg) in piece.segments().enumerate() {
         let edge = piece.edges()[i].id;
         let len = seg.arclen(1e-3);
-        let n = ((len / target).ceil() as usize).max(curve_min_divisions(&seg, options.curve_tolerance)).max(1);
+        let n = divisions(edge).unwrap_or_else(|| edge_divisions(&seg, target, options)).max(1);
         for k in 0..n {
             let s = k as f64 / n as f64;
             let t = if k == 0 { 0.0 } else { seg.inv_arclen(s * len, 1e-4) };
@@ -213,6 +337,43 @@ mod tests {
         let mesh = mesh_piece(piece, &MeshOptions::default()).unwrap();
         let rel = (mesh.area() - piece.area().abs()).abs() / piece.area().abs();
         assert!(rel < 0.01, "área de la malla desviada un {:.2}%", rel * 100.0);
+    }
+
+    #[test]
+    fn seam_sides_get_the_same_points() {
+        use pattern::SeamSide;
+        let mut p = Pattern::new("t");
+        let a = p.add_rect("a", Point::ZERO, 200.0, 100.0);
+        let b = p.add_rect("b", Point::new(300.0, 0.0), 230.0, 100.0);
+        let c = p.add_rect("c", Point::new(600.0, 0.0), 100.0, 100.0);
+        // La arista de abajo de «b» es curva y más larga.
+        p.piece_mut(b).unwrap().make_curve(2);
+        p.piece_mut(b).unwrap().set_control_point(2, 0, Point::new(480.0, 160.0));
+        let e = |p: &Pattern, id, i: usize| p.piece(id).unwrap().edges()[i].id;
+        let (ea, eb, ec) = (e(&p, a, 0), e(&p, b, 2), e(&p, c, 1));
+        p.add_seam("abc", vec![SeamSide::new(a, ea, false), SeamSide::new(b, eb, true), SeamSide::new(c, ec, false)]);
+        let mesh = mesh_pattern(&p, &MeshOptions::default());
+        assert_eq!(mesh.seams.len(), 1);
+        let seam = &mesh.seams[0];
+        assert_eq!(seam.sides.len(), 3);
+        let n = seam.sides[0].vertices.len();
+        assert!(n > 11, "la curva larga debería pedir más puntos: {n}");
+        assert!(seam.sides.iter().all(|s| s.vertices.len() == n));
+
+        // Extremos: el lado de «a» va de (0,0) a (200,0); el de «b», al revés.
+        let pos = |side: &SeamSideMesh, k: usize| {
+            mesh.pieces[side.piece].as_ref().unwrap().positions[side.vertices[k] as usize]
+        };
+        assert_eq!(pos(&seam.sides[0], 0), [0.0, 0.0]);
+        assert_eq!(pos(&seam.sides[0], n - 1), [200.0, 0.0]);
+        assert_eq!(pos(&seam.sides[1], 0), [300.0, 100.0]);
+        assert_eq!(pos(&seam.sides[1], n - 1), [530.0, 100.0]);
+        // Los puntos de cada lado son vértices distintos del borde.
+        for side in &seam.sides {
+            let mut v = side.vertices.clone();
+            v.dedup();
+            assert_eq!(v.len(), n);
+        }
     }
 
     #[test]

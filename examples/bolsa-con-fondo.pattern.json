@@ -1,0 +1,336 @@
+{
+  "format": "clothing-maker/pattern",
+  "version": 1,
+  "pattern": {
+    "name": "Bolsa con fondo",
+    "pieces": [
+      {
+        "id": 1,
+        "name": "Delantero",
+        "vertices": [
+          {
+            "x": 150.0,
+            "y": 0.0
+          },
+          {
+            "x": 530.0,
+            "y": 0.0
+          },
+          {
+            "x": 530.0,
+            "y": 300.0
+          },
+          {
+            "x": 150.0,
+            "y": 300.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 2,
+            "type": "line"
+          },
+          {
+            "id": 3,
+            "type": "line"
+          },
+          {
+            "id": 4,
+            "type": "line"
+          },
+          {
+            "id": 5,
+            "type": "line"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "name": "Lateral dcho.",
+        "vertices": [
+          {
+            "x": 560.0,
+            "y": 0.0
+          },
+          {
+            "x": 680.0,
+            "y": 0.0
+          },
+          {
+            "x": 680.0,
+            "y": 300.0
+          },
+          {
+            "x": 560.0,
+            "y": 300.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 7,
+            "type": "line"
+          },
+          {
+            "id": 8,
+            "type": "line"
+          },
+          {
+            "id": 9,
+            "type": "line"
+          },
+          {
+            "id": 10,
+            "type": "line"
+          }
+        ],
+        "arrangement": "right"
+      },
+      {
+        "id": 11,
+        "name": "Trasero",
+        "vertices": [
+          {
+            "x": 710.0,
+            "y": 0.0
+          },
+          {
+            "x": 1090.0,
+            "y": 0.0
+          },
+          {
+            "x": 1090.0,
+            "y": 300.0
+          },
+          {
+            "x": 710.0,
+            "y": 300.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 12,
+            "type": "line"
+          },
+          {
+            "id": 13,
+            "type": "line"
+          },
+          {
+            "id": 14,
+            "type": "line"
+          },
+          {
+            "id": 15,
+            "type": "line"
+          }
+        ],
+        "arrangement": "back"
+      },
+      {
+        "id": 16,
+        "name": "Lateral izdo.",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 0.0
+          },
+          {
+            "x": 120.0,
+            "y": 0.0
+          },
+          {
+            "x": 120.0,
+            "y": 300.0
+          },
+          {
+            "x": 0.0,
+            "y": 300.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 17,
+            "type": "line"
+          },
+          {
+            "id": 18,
+            "type": "line"
+          },
+          {
+            "id": 19,
+            "type": "line"
+          },
+          {
+            "id": 20,
+            "type": "line"
+          }
+        ],
+        "arrangement": "left"
+      },
+      {
+        "id": 21,
+        "name": "Base",
+        "vertices": [
+          {
+            "x": 150.0,
+            "y": 340.0
+          },
+          {
+            "x": 530.0,
+            "y": 340.0
+          },
+          {
+            "x": 530.0,
+            "y": 460.0
+          },
+          {
+            "x": 150.0,
+            "y": 460.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 22,
+            "type": "line"
+          },
+          {
+            "id": 23,
+            "type": "line"
+          },
+          {
+            "id": 24,
+            "type": "line"
+          },
+          {
+            "id": 25,
+            "type": "line"
+          }
+        ],
+        "arrangement": "bottom"
+      }
+    ],
+    "seams": [
+      {
+        "id": 26,
+        "name": "Esquina delantera dcha.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 3
+          },
+          {
+            "piece": 6,
+            "edge": 10,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 27,
+        "name": "Esquina trasera dcha.",
+        "sides": [
+          {
+            "piece": 6,
+            "edge": 8
+          },
+          {
+            "piece": 11,
+            "edge": 15,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 28,
+        "name": "Esquina trasera izda.",
+        "sides": [
+          {
+            "piece": 11,
+            "edge": 13
+          },
+          {
+            "piece": 16,
+            "edge": 20,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 29,
+        "name": "Esquina delantera izda.",
+        "sides": [
+          {
+            "piece": 16,
+            "edge": 18
+          },
+          {
+            "piece": 1,
+            "edge": 5,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 30,
+        "name": "Base delantera",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 4
+          },
+          {
+            "piece": 21,
+            "edge": 22,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 31,
+        "name": "Base dcha.",
+        "sides": [
+          {
+            "piece": 6,
+            "edge": 9
+          },
+          {
+            "piece": 21,
+            "edge": 23,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 32,
+        "name": "Base trasera",
+        "sides": [
+          {
+            "piece": 11,
+            "edge": 14
+          },
+          {
+            "piece": 21,
+            "edge": 24,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 33,
+        "name": "Base izda.",
+        "sides": [
+          {
+            "piece": 16,
+            "edge": 19
+          },
+          {
+            "piece": 21,
+            "edge": 25,
+            "reversed": true
+          }
+        ]
+      }
+    ],
+    "next_id": 34
+  }
+}
