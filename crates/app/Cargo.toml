@@ -1,0 +1,19 @@
+[package]
+name = "app"
+description = "Aplicación de escritorio: editor 2D de patrones (y, más adelante, vista 3D)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "clothing-maker"
+path = "src/main.rs"
+
+[dependencies]
+pattern.workspace = true
+mesher.workspace = true
+eframe.workspace = true
+rfd.workspace = true
+kurbo.workspace = true
+serde.workspace = true

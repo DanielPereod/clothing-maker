@@ -1,0 +1,268 @@
+{
+  "format": "clothing-maker/pattern",
+  "version": 1,
+  "pattern": {
+    "name": "Camiseta básica",
+    "pieces": [
+      {
+        "id": 1,
+        "name": "Delantero",
+        "vertices": [
+          {
+            "x": 180.0,
+            "y": 0.0
+          },
+          {
+            "x": 320.0,
+            "y": 0.0
+          },
+          {
+            "x": 470.0,
+            "y": 40.0
+          },
+          {
+            "x": 500.0,
+            "y": 230.0
+          },
+          {
+            "x": 500.0,
+            "y": 700.0
+          },
+          {
+            "x": 0.0,
+            "y": 700.0
+          },
+          {
+            "x": 0.0,
+            "y": 230.0
+          },
+          {
+            "x": 30.0,
+            "y": 40.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 2,
+            "type": "cubic",
+            "h1": {
+              "x": 5.0,
+              "y": 95.0
+            },
+            "h2": {
+              "x": -5.0,
+              "y": 95.0
+            }
+          },
+          {
+            "id": 3,
+            "type": "line"
+          },
+          {
+            "id": 4,
+            "type": "cubic",
+            "h1": {
+              "x": -20.0,
+              "y": 80.0
+            },
+            "h2": {
+              "x": -40.0,
+              "y": -10.0
+            }
+          },
+          {
+            "id": 5,
+            "type": "line"
+          },
+          {
+            "id": 6,
+            "type": "line"
+          },
+          {
+            "id": 7,
+            "type": "line"
+          },
+          {
+            "id": 8,
+            "type": "cubic",
+            "h1": {
+              "x": 40.0,
+              "y": -10.0
+            },
+            "h2": {
+              "x": 20.0,
+              "y": 80.0
+            }
+          },
+          {
+            "id": 9,
+            "type": "line"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "name": "Espalda",
+        "vertices": [
+          {
+            "x": 780.0,
+            "y": 0.0
+          },
+          {
+            "x": 920.0,
+            "y": 0.0
+          },
+          {
+            "x": 1070.0,
+            "y": 40.0
+          },
+          {
+            "x": 1100.0,
+            "y": 230.0
+          },
+          {
+            "x": 1100.0,
+            "y": 700.0
+          },
+          {
+            "x": 600.0,
+            "y": 700.0
+          },
+          {
+            "x": 600.0,
+            "y": 230.0
+          },
+          {
+            "x": 630.0,
+            "y": 40.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 11,
+            "type": "cubic",
+            "h1": {
+              "x": 5.0,
+              "y": 25.0
+            },
+            "h2": {
+              "x": -5.0,
+              "y": 25.0
+            }
+          },
+          {
+            "id": 12,
+            "type": "line"
+          },
+          {
+            "id": 13,
+            "type": "cubic",
+            "h1": {
+              "x": -20.0,
+              "y": 80.0
+            },
+            "h2": {
+              "x": -40.0,
+              "y": -10.0
+            }
+          },
+          {
+            "id": 14,
+            "type": "line"
+          },
+          {
+            "id": 15,
+            "type": "line"
+          },
+          {
+            "id": 16,
+            "type": "line"
+          },
+          {
+            "id": 17,
+            "type": "cubic",
+            "h1": {
+              "x": 40.0,
+              "y": -10.0
+            },
+            "h2": {
+              "x": 20.0,
+              "y": 80.0
+            }
+          },
+          {
+            "id": 18,
+            "type": "line"
+          }
+        ]
+      }
+    ],
+    "seams": [
+      {
+        "id": 19,
+        "name": "Hombro dcho.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 3,
+            "reversed": false
+          },
+          {
+            "piece": 10,
+            "edge": 12,
+            "reversed": false
+          }
+        ]
+      },
+      {
+        "id": 20,
+        "name": "Costado dcho.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 5,
+            "reversed": false
+          },
+          {
+            "piece": 10,
+            "edge": 14,
+            "reversed": false
+          }
+        ]
+      },
+      {
+        "id": 21,
+        "name": "Costado izdo.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 7,
+            "reversed": false
+          },
+          {
+            "piece": 10,
+            "edge": 16,
+            "reversed": false
+          }
+        ]
+      },
+      {
+        "id": 22,
+        "name": "Hombro izdo.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 9,
+            "reversed": false
+          },
+          {
+            "piece": 10,
+            "edge": 18,
+            "reversed": false
+          }
+        ]
+      }
+    ],
+    "next_id": 23
+  }
+}
