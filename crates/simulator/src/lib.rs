@@ -225,6 +225,8 @@ pub struct Cloth {
     rest: Vec<(Vec3, u32)>,
     self_collision: self_collision::SelfCollision,
     pressure: pressure::Pressure,
+    /// Partículas que se fijarán cuando se cierren las costuras.
+    pins_after_sewing: Vec<usize>,
 }
 
 impl Cloth {
@@ -331,6 +333,13 @@ impl Cloth {
         self.velocities[i] = Vec3::ZERO;
     }
 
+    /// Fija una partícula donde esté cuando se terminen de cerrar las
+    /// costuras (o en el primer paso, si no hay). Sirve para colgar una
+    /// prenda: mientras se cose, los puntos fijos no la deforman.
+    pub fn pin_after_sewing(&mut self, i: usize) {
+        self.pins_after_sewing.push(i);
+    }
+
     pub fn constraint_count(&self) -> usize {
         self.constraints.len() + self.pending.len() + self.bends.len()
     }
@@ -395,6 +404,11 @@ impl Cloth {
                 self.gather_self_contacts(span, params.gravity.length());
             }
             let sewing = self.is_sewing();
+            if !sewing && !self.pins_after_sewing.is_empty() {
+                for i in std::mem::take(&mut self.pins_after_sewing) {
+                    self.pin(i);
+                }
+            }
             let gravity = if sewing { Vec3::ZERO } else { params.gravity };
             // Mientras se cose la prenda aún no está cerrada.
             if !sewing && (params.pressure != 0.0 || self.pressure.current != 0.0) {
@@ -787,6 +801,51 @@ mod tests {
         // La tela cae pero no se estira de forma absurda (< 10 %).
         let lowest = cloth.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
         assert!(lowest < -0.15 && lowest > -0.31, "punto más bajo: {lowest}");
+    }
+
+    /// Dos tiras cosidas por un extremo, con el otro extremo de cada una
+    /// para fijar al terminar: mientras se cose, esos puntos se mueven
+    /// (la costura los acerca) y después se quedan quietos.
+    #[test]
+    fn pins_after_sewing_wait_for_the_seams() {
+        let mesh = square_mesh(100.0);
+        let mut cloth = Cloth::new();
+        for x in [0.0, 0.3] {
+            cloth.add_piece(
+                &mesh,
+                &Fabric::COTTON,
+                |p| Vec3::new(x + p[0] as f32 * 1e-3, 1.0 - p[1] as f32 * 1e-3, 0.0),
+                Vec3::Z,
+            );
+        }
+        let n = mesh.positions.len() as u32;
+        let corner = |x: f64, y: f64| mesh.positions.iter().position(|p| p[0] == x && p[1] == y).unwrap() as u32;
+        // Lado derecho de la primera con el izquierdo de la segunda.
+        for y in [0.0, 100.0] {
+            cloth.add_seam(corner(100.0, y), n + corner(0.0, y));
+        }
+        let top = [corner(0.0, 0.0), corner(100.0, 0.0), n + corner(0.0, 0.0), n + corner(100.0, 0.0)];
+        for &i in &top {
+            cloth.pin_after_sewing(i as usize);
+        }
+        let params = SimParams { self_collision: false, ..Default::default() };
+        let start = cloth.positions.clone();
+        while cloth.is_sewing() {
+            cloth.step(1.0 / 60.0, &params, &[]);
+        }
+        let moved = top.iter().map(|&i| cloth.positions[i as usize].distance(start[i as usize])).fold(0.0, f32::max);
+        assert!(moved > 0.05, "los puntos no se han movido al coser: {moved}");
+        let sewn: Vec<Vec3> = top.iter().map(|&i| cloth.positions[i as usize]).collect();
+        for _ in 0..120 {
+            cloth.step(1.0 / 60.0, &params, &[]);
+        }
+        assert!(cloth.max_seam_gap() < 1e-3, "costura abierta: {}", cloth.max_seam_gap());
+        for (&i, p) in top.iter().zip(&sewn) {
+            assert!(cloth.inv_mass[i as usize] == 0.0);
+            assert!(cloth.positions[i as usize].distance(*p) < 0.01, "punto fijo movido");
+        }
+        let lowest = cloth.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+        assert!(lowest > 0.7, "se ha caído: {lowest}");
     }
 
     /// Un patrón sin piezas da una tela vacía: simularla no hace nada.

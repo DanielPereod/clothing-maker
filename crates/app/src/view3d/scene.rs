@@ -22,9 +22,12 @@ pub enum Placement {
     /// la prenda u objeto. Con el maniquí, el eje es el de la zona del
     /// cuerpo de cada pieza (torso, brazos o piernas).
     Around,
-    /// Tumbadas en horizontal, a medio metro sobre el obstáculo, y caen.
+    /// Tumbadas en horizontal sobre el obstáculo, y caen. Si se cosen, van
+    /// una encima de otra, como una prenda doblada (sobre el maniquí, como
+    /// «alrededor» pero algo más arriba).
     Drop,
-    /// En vertical, colgadas de su borde superior.
+    /// Colgadas de su parte más alta: cosidas en el aire, delante del
+    /// obstáculo, o cada pieza de su borde superior si no se cosen.
     Hang,
 }
 
@@ -45,8 +48,11 @@ impl Placement {
                 "Cada pieza en su lado (Colocación 3D en sus propiedades), curvada alrededor de un eje \
                  o, con el maniquí, alrededor de su zona del cuerpo"
             }
-            Placement::Drop => "Las piezas caen en horizontal sobre el obstáculo",
-            Placement::Hang => "Las piezas cuelgan de su borde superior",
+            Placement::Drop => {
+                "Las piezas caen en horizontal sobre el obstáculo, las de delante encima de las de detrás \
+                 (sobre el maniquí, la prenda cae sobre los hombros)"
+            }
+            Placement::Hang => "La pieza se cose en el aire y luego queda colgada de su parte más alta",
         }
     }
 }
@@ -150,6 +156,15 @@ const BODY_CLEARANCE: f32 = 0.03;
 const TABLE_HALF: Vec3 = Vec3::new(0.4, 0.375, 0.3);
 /// Altura (m) del borde superior de las piezas colgadas.
 const HANG_HEIGHT: f32 = 1.6;
+/// Por debajo del punto más alto, hasta dónde se fija la tela al colgarla (m).
+const HANG_MARGIN: f32 = 0.02;
+/// Al soltar piezas cosidas, separación (m) entre las dos capas y entre las
+/// piezas de una misma capa.
+const LAYER_GAP: f32 = 0.03;
+const FLAT_GAP: f64 = 20.0;
+/// Al soltar una prenda sobre el maniquí, cuánto más alta (m) que al
+/// colocarla alrededor.
+const BODY_DROP: f32 = 0.08;
 
 impl Obstacle {
     pub const ALL: [Obstacle; 4] = [Obstacle::Mannequin, Obstacle::None, Obstacle::Sphere, Obstacle::Table];
@@ -217,15 +232,38 @@ pub fn build(
         }
     }
 
-    // Se respeta la disposición de las piezas en el editor, centrada.
+    // Sin costuras, las piezas se colocan sueltas, con la disposición del
+    // editor centrada. Con costuras, ya colocadas para que cierren sin
+    // cruzarse: al soltarlas, tumbadas una encima de otra (sobre el
+    // maniquí, como «alrededor» pero algo más arriba); al colgarlas, como
+    // «alrededor» pero en el aire, delante del obstáculo.
+    let sewn = settings.sew && !meshed.seams.is_empty();
+    let on_body = settings.obstacle == Obstacle::Mannequin;
     let all: Vec<&Mesh2D> = meshes.iter().map(|m| m.2).collect();
     let (min, max) = bounds(&all);
     let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let drop_height = settings.obstacle.top() + 0.1;
-    let around = settings.placement == Placement::Around;
     let avatar = settings.obstacle.avatar();
-    let layout = around.then(|| AroundLayout::new(&meshes, settings.obstacle.top(), avatar.as_deref()));
+    let around = match settings.placement {
+        Placement::Around => true,
+        Placement::Hang => sewn,
+        Placement::Drop => sewn && on_body,
+    }
+    .then(|| AroundLayout::new(&meshes, settings.obstacle.top(), avatar.as_deref()));
+    let flat = (settings.placement == Placement::Drop && sewn && !on_body).then(|| FlatLayout::new(&meshes));
     let hang_z = settings.obstacle.front() + if settings.obstacle == Obstacle::None { 0.0 } else { 0.1 };
+    // Al colgar la pieza montada, se sube hasta `HANG_HEIGHT` y se aparta
+    // hasta quedar delante del obstáculo.
+    let lift = match &around {
+        Some(layout) if settings.placement == Placement::Hang => {
+            let placed =
+                meshes.iter().flat_map(|&(_, piece, mesh)| mesh.positions.iter().map(|&p| layout.place(piece, p)));
+            let (top, back) = placed.fold((f32::NEG_INFINITY, f32::INFINITY), |(t, b), p| (t.max(p.y), b.min(p.z)));
+            Vec3::new(0.0, HANG_HEIGHT - top, (hang_z - back).max(0.0))
+        }
+        Some(_) if settings.placement == Placement::Drop => Vec3::Y * BODY_DROP,
+        _ => Vec3::ZERO,
+    };
 
     let mut cloth = Cloth::new();
     let mut colors = Vec::new();
@@ -233,25 +271,26 @@ pub fn build(
     let mut pieces = Vec::new();
     for &(index, piece, mesh) in &meshes {
         let fabric = piece_fabric(pattern, piece);
-        let range = match settings.placement {
-            Placement::Around => {
-                let layout = layout.as_ref().expect("calculada arriba");
-                cloth.add_piece(mesh, &fabric, |p| layout.place(piece, p), layout.front(piece))
-            }
-            Placement::Drop => cloth.add_piece(
-                mesh,
-                &fabric,
-                |p| Vec3::new(((p[0] - center[0]) * 1e-3) as f32, drop_height, ((p[1] - center[1]) * 1e-3) as f32),
-                Vec3::Y,
-            ),
-            Placement::Hang => cloth.add_piece(
+        let range = if let Some(layout) = &around {
+            cloth.add_piece(mesh, &fabric, |p| layout.place(piece, p) + lift, layout.front(piece))
+        } else if let Some(layout) = &flat {
+            cloth.add_piece(mesh, &fabric, |p| layout.place(piece, p, drop_height), layout.front(piece))
+        } else if settings.placement == Placement::Hang {
+            cloth.add_piece(
                 mesh,
                 &fabric,
                 |p| {
                     Vec3::new(((p[0] - center[0]) * 1e-3) as f32, HANG_HEIGHT - ((p[1] - min[1]) * 1e-3) as f32, hang_z)
                 },
                 Vec3::Z,
-            ),
+            )
+        } else {
+            cloth.add_piece(
+                mesh,
+                &fabric,
+                |p| Vec3::new(((p[0] - center[0]) * 1e-3) as f32, drop_height, ((p[1] - center[1]) * 1e-3) as f32),
+                Vec3::Y,
+            )
         };
         first_particle[index] = range.first_particle;
         pieces.push(ScenePiece {
@@ -260,17 +299,33 @@ pub fn build(
             mesh: mesh.clone(),
             first_particle: range.first_particle,
         });
-        if settings.placement == Placement::Hang {
-            // Fija los puntos más altos de cada pieza (con 5 mm de margen).
-            let top = mesh.positions.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
-            for (i, p) in mesh.positions.iter().enumerate() {
-                if p[1] - top < 5.0 {
-                    cloth.pin(range.first_particle as usize + i);
+        let color = egui::Rgba::from(color_of(piece.id));
+        colors.extend(std::iter::repeat_n([color.r(), color.g(), color.b()], mesh.positions.len()));
+    }
+
+    if settings.placement == Placement::Hang {
+        // Cuelga de sus puntos más altos (con 2 cm de margen, para que una
+        // prenda quede cogida por los hombros y no solo por el cuello): los
+        // de toda la pieza montada o, sin coser, los de cada pieza. Se fijan
+        // al terminar de coser: antes, las costuras tienen que poder
+        // moverlos para cerrar.
+        let ranges: Vec<(usize, usize)> = if sewn {
+            vec![(0, cloth.positions.len())]
+        } else {
+            cloth
+                .pieces
+                .iter()
+                .map(|r| (r.first_particle as usize, (r.first_particle + r.particle_count) as usize))
+                .collect()
+        };
+        for (start, end) in ranges {
+            let top = cloth.positions[start..end].iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+            for i in start..end {
+                if top - cloth.positions[i].y < HANG_MARGIN {
+                    cloth.pin_after_sewing(i);
                 }
             }
         }
-        let color = egui::Rgba::from(color_of(piece.id));
-        colors.extend(std::iter::repeat_n([color.r(), color.g(), color.b()], mesh.positions.len()));
     }
 
     let mut seams = 0;
@@ -499,6 +554,71 @@ impl AroundLayout {
             Arrangement::Bottom => layout.frame.axis,
             a => layout.frame.direction(Self::angle(a) as f32),
         }
+    }
+}
+
+/// Colocación para soltar piezas cosidas: como una prenda doblada sobre la
+/// mesa, con las de delante arriba (el derecho hacia arriba) y las de
+/// detrás debajo, en espejo, justo encima. Así cada costura une puntos que
+/// ya están cerca y la tela no tiene que darse la vuelta en el aire para
+/// cerrarse (lo que la dejaba arrugada y temblando).
+///
+/// Las piezas de los lados quedan a izquierda y derecha de las de delante,
+/// y las de arriba y abajo, más allá de su borde superior e inferior, todas
+/// en la capa de arriba: al coserse se doblan hacia abajo.
+struct FlatLayout {
+    /// Centro (mm) de cada grupo de piezas en el patrón.
+    center: HashMap<Arrangement, [f64; 2]>,
+    bounds: HashMap<Arrangement, ([f64; 2], [f64; 2])>,
+    /// Altura media (mm) de las paredes en el patrón: es la de la tela
+    /// tumbada (z = 0).
+    middle: f64,
+    /// Ancho y alto (mm) de las piezas de delante.
+    front_size: [f64; 2],
+}
+
+impl FlatLayout {
+    fn new(meshes: &[(usize, &Piece, &Mesh2D)]) -> Self {
+        let mut groups: HashMap<Arrangement, Vec<&Mesh2D>> = HashMap::new();
+        for (_, piece, mesh) in meshes {
+            groups.entry(piece.arrangement).or_default().push(mesh);
+        }
+        let bounds: HashMap<Arrangement, ([f64; 2], [f64; 2])> =
+            groups.iter().map(|(a, m)| (*a, self::bounds(m))).collect();
+        let center =
+            bounds.iter().map(|(a, (min, max))| (*a, [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0])).collect();
+        let walls: Vec<&Mesh2D> =
+            groups.iter().filter(|(a, _)| is_wall(**a)).flat_map(|(_, m)| m.iter().copied()).collect();
+        let (wall_min, wall_max) = self::bounds(&walls);
+        let middle = if walls.is_empty() { 0.0 } else { (wall_min[1] + wall_max[1]) / 2.0 };
+        let front_size = bounds
+            .get(&Arrangement::Front)
+            .or_else(|| bounds.get(&Arrangement::Back))
+            .map_or([0.0, 0.0], |(min, max)| [max[0] - min[0], max[1] - min[1]]);
+        Self { center, bounds, middle, front_size }
+    }
+
+    /// Posición (m) de un punto del patrón; la capa de abajo está a `floor`.
+    fn place(&self, piece: &Piece, p: [f64; 2], floor: f32) -> Vec3 {
+        let a = piece.arrangement;
+        let c = self.center[&a];
+        let (min, max) = self.bounds[&a];
+        let [w, h] = self.front_size;
+        let (x, z) = match a {
+            Arrangement::Front => (p[0] - c[0], p[1] - self.middle),
+            // Vista desde detrás: la x del dibujo va hacia la izquierda.
+            Arrangement::Back => (c[0] - p[0], p[1] - self.middle),
+            Arrangement::Left => (-w / 2.0 - FLAT_GAP - (max[0] - p[0]), p[1] - self.middle),
+            Arrangement::Right => (w / 2.0 + FLAT_GAP + (p[0] - min[0]), p[1] - self.middle),
+            Arrangement::Top => (p[0] - c[0], -h / 2.0 - FLAT_GAP - (max[1] - p[1])),
+            Arrangement::Bottom => (p[0] - c[0], h / 2.0 + FLAT_GAP + (p[1] - min[1])),
+        };
+        let y = if a == Arrangement::Back { floor } else { floor + LAYER_GAP };
+        Vec3::new((x * 1e-3) as f32, y, (z * 1e-3) as f32)
+    }
+
+    fn front(&self, piece: &Piece) -> Vec3 {
+        if piece.arrangement == Arrangement::Back { -Vec3::Y } else { Vec3::Y }
     }
 }
 
@@ -831,6 +951,98 @@ mod tests {
             assert!(full > 3.0 * empty.max(1e-3) && full > 0.008, "{name}: {empty} → {full}");
             assert!(crossings < 20, "{name}: {crossings} aristas cruzadas");
             assert!(speed < 0.1, "{name}: sigue moviéndose a {speed} m/s");
+        }
+    }
+
+    /// Colgados, los ejemplos se cosen en el aire y luego se quedan
+    /// colgando de su parte de arriba, quietos y sin caerse ni cruzarse.
+    /// (Antes se fijaban los bordes de arriba de cada pieza antes de coser y
+    /// las costuras tiraban de puntos que no se podían mover.)
+    #[test]
+    fn examples_hang_from_their_top() {
+        for (name, _, make) in examples::ALL {
+            let settings =
+                settings_for(make, SceneSettings { placement: Placement::Hang, mesh_size: 30.0, ..Default::default() });
+            let mut scene = build_example(make, &settings);
+            for _ in 0..360 {
+                scene.cloth.step(FRAME, &settings.params(), &scene.colliders);
+            }
+            let cloth = &mut scene.cloth;
+            assert!(cloth.positions.iter().all(|p| p.is_finite()), "{name}");
+            assert!(!cloth.is_sewing(), "{name}: sigue cosiendo");
+            let gap = cloth.max_seam_gap();
+            assert!(gap < 5e-3, "{name}: costura abierta {gap}");
+            let pinned = cloth.inv_mass.iter().filter(|&&w| w == 0.0).count();
+            assert!(pinned >= 4, "{name}: cuelga de {pinned} puntos");
+            let (lowest, highest) = cloth
+                .positions
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
+            assert!((highest - HANG_HEIGHT).abs() < 0.03, "{name}: arriba a {highest} m");
+            assert!(lowest > 0.5, "{name}: llega hasta {lowest} m");
+            let speed = cloth.velocities.iter().map(|v| v.length()).fold(0.0, f32::max);
+            assert!(speed < 0.1, "{name}: sigue moviéndose a {speed} m/s");
+            let crossings = cloth.count_crossings();
+            assert!(crossings < 5, "{name}: {crossings} aristas cruzadas");
+        }
+    }
+
+    /// Sin coser, cada pieza cuelga por separado de su borde de arriba.
+    #[test]
+    fn loose_pieces_hang_each_from_its_top() {
+        let settings = SceneSettings { placement: Placement::Hang, sew: false, mesh_size: 30.0, ..Default::default() };
+        let mut scene = build_example(examples::t_shirt_with_sleeves, &settings);
+        for _ in 0..120 {
+            scene.cloth.step(FRAME, &settings.params(), &scene.colliders);
+        }
+        for range in &scene.cloth.pieces {
+            let piece = range.first_particle as usize..(range.first_particle + range.particle_count) as usize;
+            assert!(scene.cloth.inv_mass[piece.clone()].contains(&0.0), "pieza sin colgar");
+            let lowest = scene.cloth.positions[piece].iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+            assert!(lowest > 0.3, "una pieza se ha caído hasta {lowest} m");
+        }
+    }
+
+    /// Soltados, los objetos caen sobre la mesa ya cosidos y se quedan
+    /// encima, quietos (antes se cosían en plano, dándose la vuelta en el
+    /// aire, y quedaban arrugados y temblando); las prendas caen sobre los
+    /// hombros del maniquí.
+    #[test]
+    fn dropped_examples_settle() {
+        for (name, _, make) in examples::ALL {
+            let settings =
+                settings_for(make, SceneSettings { placement: Placement::Drop, mesh_size: 30.0, ..Default::default() });
+            let pattern = make();
+            let mut scene = build_example(make, &settings);
+            let params = SimParams { pressure: pattern.pressure as f32, ..settings.params() };
+            for _ in 0..480 {
+                scene.cloth.step(FRAME, &params, &scene.colliders);
+            }
+            let cloth = &mut scene.cloth;
+            assert!(cloth.positions.iter().all(|p| p.is_finite()), "{name}");
+            let gap = cloth.max_seam_gap();
+            assert!(gap < 5e-3, "{name}: costura abierta {gap}");
+            let (lowest, highest) = cloth
+                .positions
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
+            if pattern.on_avatar {
+                assert!(highest > 1.35 && lowest > 0.5, "{name}: se ha caído del maniquí ({lowest}..{highest})");
+            } else {
+                assert!(lowest > 2.0 * TABLE_HALF.y - 0.01, "{name}: se ha caído de la mesa ({lowest})");
+            }
+            // Donde la tela se dobla contra la mesa (en las esquinas de la
+            // bolsa con fondo) quedan algunos puntos vibrando un poco.
+            let mut speeds: Vec<f32> = cloth.velocities.iter().map(|v| v.length()).collect();
+            speeds.sort_by(f32::total_cmp);
+            let (most, max) = (speeds[speeds.len() * 99 / 100], speeds[speeds.len() - 1]);
+            assert!(most < 0.1 && max < 0.6, "{name}: sigue moviéndose ({most} m/s, máx. {max})");
+            // El cuero, tan firme, se pliega mal justo al lado de las
+            // costuras y deja unas pocas aristas cruzadas, todas a menos de un
+            // triángulo de una costura.
+            let crossings = cloth.count_crossings();
+            let tolerated = if pattern.name == "Bolso de cuero" { 15 } else { 5 };
+            assert!(crossings < tolerated, "{name}: {crossings} aristas cruzadas");
         }
     }
 
