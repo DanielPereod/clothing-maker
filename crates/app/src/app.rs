@@ -281,6 +281,16 @@ impl ClothingMakerApp {
                 "La vista 3D la viste sobre el maniquí y cada pieza se coloca en su zona del cuerpo. \
                  Quítalo para objetos como bolsas o mochilas.",
             );
+            ui.horizontal(|ui| {
+                ui.label("Relleno");
+                ui.add(egui::Slider::new(&mut self.pattern.pressure, 0.0..=60.0).suffix(" Pa").max_decimals(0))
+                    .on_hover_text(
+                        "Presión interior en la vista 3D: hincha la prenda como si estuviera rellena. \
+                         0 = vacía (una bolsa sin nada dentro queda plana). Con unos 10 Pa una bolsa se llena \
+                         y con 30 un cojín queda firme; mucho más y se pone redonda como un globo. Las bocas \
+                         sin coser se abren.",
+                    );
+            });
             ui.add_space(8.0);
 
             ui.heading("Piezas");

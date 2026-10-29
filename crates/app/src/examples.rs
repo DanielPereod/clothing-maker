@@ -128,6 +128,21 @@ pub fn tote_bag() -> Pattern {
     p
 }
 
+/// Cojín: dos cuadrados cosidos por los cuatro lados y con relleno, para
+/// ver la presión interior.
+pub fn cushion() -> Pattern {
+    let mut p = Pattern::new("Cojín");
+    p.pressure = 30.0;
+    let front = p.add_rect("Delantero", Point::ZERO, 400.0, 400.0);
+    let back = p.add_rect("Trasero", Point::new(450.0, 0.0), 400.0, 400.0);
+    p.piece_mut(back).unwrap().arrangement = Arrangement::Back;
+    sew(&mut p, "Arriba", &[(front, TOP, false), (back, TOP, true)]);
+    sew(&mut p, "Lado dcho.", &[(front, RIGHT, false), (back, LEFT, true)]);
+    sew(&mut p, "Abajo", &[(front, BOTTOM, false), (back, BOTTOM, true)]);
+    sew(&mut p, "Lado izdo.", &[(front, LEFT, false), (back, RIGHT, true)]);
+    p
+}
+
 /// Bolsa con fondo: cuatro paredes y una base, como una caja de tela.
 /// Sirve para probar la colocación a los lados y debajo.
 pub fn box_bag() -> Pattern {
@@ -169,11 +184,12 @@ fn sew(p: &mut Pattern, name: &str, sides: &[(PieceId, usize, bool)]) {
 pub type Example = (&'static str, &'static str, fn() -> Pattern);
 
 /// Todos los ejemplos.
-pub const ALL: [Example; 4] = [
+pub const ALL: [Example; 5] = [
     ("Camiseta básica", "camiseta-basica", t_shirt),
     ("Camiseta con mangas", "camiseta-con-mangas", t_shirt_with_sleeves),
     ("Bolsa tote", "bolsa-tote", tote_bag),
     ("Bolsa con fondo", "bolsa-con-fondo", box_bag),
+    ("Cojín", "cojin", cushion),
 ];
 
 #[cfg(test)]

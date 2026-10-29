@@ -81,9 +81,17 @@ pub struct Pattern {
     /// como una bolsa). La vista 3D pone o quita el maniquí según esto.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub on_avatar: bool,
+    /// Presión interior (Pa) en la vista 3D, para objetos con relleno como
+    /// un cojín. 0 = vacío, como una bolsa sin nada dentro.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pressure: f64,
     /// Siguiente id libre (compartido por piezas, aristas y costuras).
     #[serde(default)]
     next_id: u64,
+}
+
+fn is_zero(x: &f64) -> bool {
+    *x == 0.0
 }
 
 impl Default for Pattern {
@@ -114,7 +122,7 @@ pub const SEAM_LENGTH_TOLERANCE: f64 = 1.0;
 
 impl Pattern {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), pieces: Vec::new(), seams: Vec::new(), on_avatar: false, next_id: 1 }
+        Self { name: name.into(), pieces: Vec::new(), seams: Vec::new(), on_avatar: false, pressure: 0.0, next_id: 1 }
     }
 
     /// Reserva un id nuevo. Sirve para piezas, aristas y costuras.
