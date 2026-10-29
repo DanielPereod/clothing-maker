@@ -6,7 +6,7 @@ como mochilas o bolsas.
 
 ## Estado
 
-**Fase 1 (esta):** editor 2D de patrones.
+**Fase 1:** editor 2D de patrones.
 
 - Piezas con aristas rectas y curvas Bézier cúbicas.
 - Herramientas: seleccionar (V), pluma (P) y rectángulo (R).
@@ -22,9 +22,28 @@ como mochilas o bolsas.
 Navegación: rueda para zoom, arrastrar en vacío / botón central / derecho para
 desplazar, F para encuadrar todo.
 
-**Siguientes fases:** edición de costuras (incluidas las de más de dos piezas y
-por tramos), vista 3D con `wgpu`, simulación XPBD en tiempo real con `rayon`,
-colisiones y avatar opcional.
+**Fase 2 (esta):** malla y tela suelta en 3D.
+
+- Panel «Vista 3D» a la derecha del editor (Ver → Vista 3D para ocultarlo).
+- Cada pieza se triangula y se convierte en tela simulada con XPBD
+  (estiramiento, flexión, gravedad y rozamiento con el aire), en un hilo aparte.
+- ▶ Simular / ⏸ Pausa y ⟲ Reiniciar (vuelve a colocar las piezas con el
+  patrón actual; si editas el patrón, la vista avisa de que hay cambios).
+- Colocación: *Soltar* (las piezas caen en horizontal) o *Colgar* (cuelgan de
+  su borde superior).
+- Obstáculos: solo suelo, esfera o mesa. Son colisionadores genéricos; el
+  avatar será uno más, así que también sirve para objetos sin cuerpo.
+- Tejidos: algodón, seda y vaquero. En ⚙, tamaño de los triángulos y
+  subpasos (más subpasos = tela menos elástica, pero más lenta).
+- Cámara: arrastrar para girar, botón derecho / central (o Mayús + arrastrar)
+  para desplazar, rueda para acercar, doble clic para volver a encuadrar.
+
+Aún no hay costuras en 3D ni colisión de la tela consigo misma: las piezas
+caen sueltas y una pieza puede atravesarse a sí misma al plegarse.
+
+**Siguientes fases:** costuras de 2 o más tramos en el editor y cerradas en 3D,
+avatar con puntos de colocación, remallado en vivo y auto-colisión, y después
+tejidos, GPU y exportación.
 
 ## Cómo ejecutarlo
 
@@ -44,8 +63,8 @@ La primera compilación tarda unos minutos (wgpu es grande); las siguientes son 
 | --- | --- |
 | `crates/pattern` | Modelo de datos: piezas, aristas (rectas / Bézier) y costuras. Formato JSON versionado. Sin dependencias gráficas. |
 | `crates/mesher` | Triangula cada pieza (Delaunay restringida con `spade`) y remuestrea el contorno para que las costuras casen vértice a vértice. |
-| `crates/simulator` | Simulación de tela XPBD (`glam`). De momento, el esqueleto con restricciones de distancia y gravedad. |
-| `crates/app` | Aplicación de escritorio con `eframe`/`egui` sobre `wgpu`. |
+| `crates/simulator` | Simulación de tela XPBD (`glam`, `rayon`): todas las piezas en un sistema de partículas, restricciones coloreadas para resolverlas en paralelo, colisionadores genéricos (plano, esfera, caja). Sin dependencias gráficas. |
+| `crates/app` | Aplicación de escritorio con `eframe`/`egui` sobre `wgpu`; la vista 3D se dibuja con `wgpu` en una textura propia (`src/view3d`). |
 
 Unidades: el patrón se guarda en milímetros (eje Y hacia abajo); la interfaz
 muestra centímetros. El simulador trabaja en metros.

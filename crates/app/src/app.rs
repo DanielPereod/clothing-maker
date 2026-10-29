@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText, Ui};
 use pattern::{EdgeKind, Issue, Pattern, Point};
 
-use crate::canvas::{Editor, Selection, Tool};
+use crate::canvas::{self, Editor, Selection, Tool};
 use crate::examples;
 use crate::history::History;
+use crate::view3d::View3D;
 
 const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 const SAVE_AS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
@@ -33,6 +34,8 @@ pub struct ClothingMakerApp {
     saved: Pattern,
     history: History,
     editor: Editor,
+    view3d: View3D,
+    show_3d: bool,
     status: Option<(String, bool)>,
     pending: Option<Pending>,
     allow_close: bool,
@@ -40,7 +43,7 @@ pub struct ClothingMakerApp {
 }
 
 impl ClothingMakerApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, file: Option<PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, file: Option<PathBuf>) -> Self {
         let pattern = Pattern::new("Sin título");
         let mut app = Self {
             history: History::new(&pattern),
@@ -48,6 +51,8 @@ impl ClothingMakerApp {
             pattern,
             path: None,
             editor: Editor::default(),
+            view3d: View3D::new(cc),
+            show_3d: true,
             status: None,
             pending: None,
             allow_close: false,
@@ -220,6 +225,7 @@ impl ClothingMakerApp {
                     self.editor.fit_view();
                 }
                 ui.checkbox(&mut self.editor.show_mesh, "Mostrar malla de simulación");
+                ui.checkbox(&mut self.show_3d, "Vista 3D");
             });
         });
     }
@@ -511,6 +517,11 @@ impl eframe::App for ClothingMakerApp {
         egui::Panel::right("properties").resizable(true).default_size(280.0).show(ui, |ui| {
             self.properties(ui);
         });
+        if self.show_3d {
+            egui::Panel::right("view3d").resizable(true).default_size(560.0).show(ui, |ui| {
+                self.view3d.ui(ui, &self.pattern, canvas::piece_color);
+            });
+        }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             self.editor.ui(ui, &mut self.pattern);
         });
