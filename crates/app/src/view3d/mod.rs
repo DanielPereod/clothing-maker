@@ -4,6 +4,7 @@
 
 mod render;
 mod scene;
+mod seams;
 mod viewcube;
 
 use std::time::{Duration, Instant};
@@ -15,7 +16,7 @@ use pattern::{Pattern, PieceId};
 
 use render::{Renderer, Vertex};
 pub use scene::piece_fabric;
-use scene::{Obstacle, Placement, Runner, ScenePiece, SceneSettings};
+use scene::{Obstacle, Placement, Runner, ScenePiece, SceneSettings, SeamDraw};
 
 use crate::icons::Icon;
 use crate::{gpu, theme, widgets};
@@ -102,6 +103,8 @@ struct Loaded {
     triangles: Vec<[u32; 3]>,
     indices: Vec<u32>,
     colors: Vec<[f32; 3]>,
+    back_colors: Vec<[f32; 3]>,
+    seam_draws: Vec<SeamDraw>,
     failed: Vec<String>,
     seams: usize,
     pieces: Vec<ScenePiece>,
@@ -134,6 +137,10 @@ pub struct View3D {
     /// Último patrón que no se ha podido pasar en vivo (alguna pieza no se
     /// puede mallar), para no reintentarlo en cada fotograma.
     rejected: Option<Pattern>,
+    /// Resaltar las costuras con un cordón de su color.
+    pub highlight_seams: bool,
+    /// Si las costuras dibujadas ahora llevan el cordón.
+    drawn_highlight: bool,
 }
 
 impl View3D {
@@ -158,6 +165,8 @@ impl View3D {
             last_live: Instant::now(),
             fly: None,
             rejected: None,
+            highlight_seams: false,
+            drawn_highlight: false,
         }
     }
 
@@ -212,6 +221,8 @@ impl View3D {
             triangles: scene.cloth.triangles.clone(),
             indices,
             colors: scene.colors,
+            back_colors: scene.back_colors,
+            seam_draws: scene.seam_draws,
             failed: scene.failed,
             seams: scene.seams,
             pieces: scene.pieces,
@@ -267,6 +278,14 @@ impl View3D {
             self.reload(pattern, &color_of);
         }
         self.runner.set_running(!running);
+    }
+
+    /// Coser las costuras de una en una (en el orden del patrón) o todas a
+    /// la vez. Vuelve a empezar, para ver el montaje desde el principio.
+    pub fn set_sew_in_order(&mut self, on: bool, pattern: &Pattern, color_of: impl Fn(PieceId) -> Color32) {
+        self.settings.sew_in_order = on;
+        self.reload(pattern, &color_of);
+        self.runner.set_running(true);
     }
 
     /// Vuelve a la cámara inicial.
@@ -466,11 +485,9 @@ impl View3D {
                 let (mut vertices, mut indices) = (Vec::new(), Vec::new());
                 if let Some(avatar) = loaded.settings.obstacle.avatar() {
                     let normals = simulator::vertex_normals(&avatar.positions, &avatar.triangles);
-                    vertices.extend(avatar.positions.iter().zip(&normals).map(|(p, n)| Vertex {
-                        position: p.to_array(),
-                        normal: n.to_array(),
-                        color: MANNEQUIN_COLOR,
-                    }));
+                    vertices.extend(
+                        avatar.positions.iter().zip(&normals).map(|(p, n)| Vertex::plain(*p, *n, MANNEQUIN_COLOR)),
+                    );
                     indices.extend(avatar.triangles.iter().flatten());
                 }
                 match loaded.settings.obstacle.collider() {
@@ -486,17 +503,34 @@ impl View3D {
                 self.obstacle = Some(loaded.settings.obstacle);
             }
             let version = self.runner.read(self.version, &mut self.positions);
-            if version != self.version && self.positions.len() == loaded.colors.len() {
+            let changed = version != self.version || self.drawn_highlight != self.highlight_seams;
+            if changed && self.positions.len() == loaded.colors.len() {
                 let normals = simulator::vertex_normals(&self.positions, &loaded.triangles);
-                let vertices: Vec<Vertex> = self
-                    .positions
-                    .iter()
-                    .zip(&normals)
-                    .zip(&loaded.colors)
-                    .map(|((p, n), c)| Vertex { position: p.to_array(), normal: n.to_array(), color: *c })
+                let vertices: Vec<Vertex> = (0..self.positions.len())
+                    .map(|i| Vertex {
+                        position: self.positions[i].to_array(),
+                        normal: normals[i].to_array(),
+                        color: loaded.colors[i],
+                        back: loaded.back_colors[i],
+                    })
                     .collect();
                 renderer.set_cloth(&vertices, &loaded.indices);
+                let mut mesh = seams::SeamMesh::default();
+                let seam_color = |i: usize| {
+                    let c = egui::Rgba::from(crate::canvas::seam_color(i));
+                    [c.r(), c.g(), c.b()]
+                };
+                seams::build(
+                    &loaded.seam_draws,
+                    &self.positions,
+                    &normals,
+                    self.highlight_seams,
+                    seam_color,
+                    &mut mesh,
+                );
+                renderer.set_seams(&mesh.vertices, &mesh.indices);
                 self.version = version;
+                self.drawn_highlight = self.highlight_seams;
             }
         }
 

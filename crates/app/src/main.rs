@@ -8,6 +8,7 @@ mod examples;
 mod gpu;
 mod history;
 mod icons;
+mod section;
 mod theme;
 mod view3d;
 mod widgets;

@@ -7,7 +7,7 @@ mod textiles;
 use std::path::PathBuf;
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Ui};
-use pattern::{Pattern, Point};
+use pattern::{Pattern, Point, SeamKind};
 
 use crate::canvas::{self, Editor, Selection, Tool};
 use crate::examples;
@@ -44,6 +44,8 @@ pub struct ClothingMakerApp {
     view3d: View3D,
     tab: Tab,
     layout: ViewLayout,
+    /// Resaltar las costuras en 3D en la pestaña Costuras.
+    highlight_seams: bool,
     status: Option<(String, bool)>,
     pending: Option<Pending>,
     allow_close: bool,
@@ -65,6 +67,7 @@ impl ClothingMakerApp {
             view3d: View3D::new(cc),
             tab: Tab::Pattern,
             layout: ViewLayout::Split,
+            highlight_seams: true,
             status: None,
             pending: None,
             allow_close: false,
@@ -328,10 +331,14 @@ impl ClothingMakerApp {
     fn ribbon(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for (tab, label) in [(Tab::Pattern, "Patrón"), (Tab::Simulation, "Simulación")] {
+            for (tab, label) in [(Tab::Pattern, "Patrón"), (Tab::Seams, "Costuras"), (Tab::Simulation, "Simulación")]
+            {
                 if widgets::tab(ui, label, self.tab == tab).clicked() {
                     self.tab = tab;
                     if tab == Tab::Simulation && !self.layout.shows_3d() {
+                        self.layout = ViewLayout::Split;
+                    }
+                    if tab == Tab::Seams && self.layout == ViewLayout::Garment {
                         self.layout = ViewLayout::Split;
                     }
                 }
@@ -345,6 +352,7 @@ impl ClothingMakerApp {
             ui.set_min_height(80.0);
             match self.tab {
                 Tab::Pattern => self.pattern_ribbon(ui),
+                Tab::Seams => self.seams_ribbon(ui),
                 Tab::Simulation => {
                     self.view3d.ribbon(ui, &self.pattern, canvas::piece_color);
                     self.fill_group(ui);
@@ -463,6 +471,163 @@ impl ClothingMakerApp {
             }
         });
         widgets::ribbon_group(ui, "VISTA", false, |ui, _| {
+            if widgets::ribbon_button(ui, Icon::Fit, "Encuadrar", false, true)
+                .on_hover_text("Encuadrar el patrón (F)")
+                .clicked()
+            {
+                self.editor.fit_view();
+            }
+        });
+    }
+
+    /// Cinta de la pestaña Costuras: crear costuras, su tipo, el margen, el
+    /// orden de montaje y dar la vuelta a la prenda.
+    fn seams_ribbon(&mut self, ui: &mut Ui) {
+        widgets::ribbon_group(ui, "CREAR", false, |ui, _| {
+            self.tool_button(ui, Tool::Select, Icon::Select, "Seleccionar", "V");
+            self.tool_button(ui, Tool::Seam, Icon::Seam, "Costura", "S");
+        });
+        let selected = match self.editor.selection {
+            Selection::Seam(id) => self.pattern.seams.iter().position(|s| s.id == id),
+            _ => None,
+        };
+        widgets::ribbon_group(ui, "TIPO", true, |ui, part| match part {
+            Part::Buttons => {
+                ui.vertical(|ui| {
+                    ui.add_space(8.0);
+                    let Some(k) = selected else {
+                        ui.add_enabled(false, egui::Button::new("Selecciona una costura"));
+                        return;
+                    };
+                    let seam = &mut self.pattern.seams[k];
+                    let mut kind = seam.kind;
+                    egui::ComboBox::from_id_salt("ribbon_seam_kind").width(130.0).selected_text(kind.label()).show_ui(
+                        ui,
+                        |ui| {
+                            for option in SeamKind::ALL {
+                                ui.selectable_value(&mut kind, option, option.label()).on_hover_text(option.hint());
+                            }
+                        },
+                    );
+                    if kind != seam.kind {
+                        seam.set_kind(kind);
+                    }
+                });
+            }
+            Part::Menu => {
+                let kind = selected.map(|k| self.pattern.seams[k].kind);
+                let label = kind.map_or("Aplica un tipo a todas las costuras".to_owned(), |k| {
+                    format!("Hacer todas las costuras de tipo «{}»", k.label())
+                });
+                if ui.add_enabled(kind.is_some(), egui::Button::new(label)).clicked()
+                    && let Some(kind) = kind
+                {
+                    for seam in &mut self.pattern.seams {
+                        seam.set_kind(kind);
+                    }
+                    ui.close();
+                }
+            }
+        });
+        widgets::ribbon_group(ui, "MARGEN", true, |ui, part| match part {
+            Part::Buttons => {
+                if widgets::ribbon_button(ui, Icon::Allowance, "Línea de corte", self.editor.show_allowance, true)
+                    .on_hover_text("Dibujar el margen de costura alrededor de las piezas")
+                    .clicked()
+                {
+                    self.editor.show_allowance = !self.editor.show_allowance;
+                }
+                ui.vertical(|ui| {
+                    ui.add_space(8.0);
+                    widgets::prop_label(ui, "Por defecto");
+                    ui.add(
+                        egui::DragValue::new(&mut self.pattern.seam_allowance)
+                            .range(0.0..=50.0)
+                            .speed(0.5)
+                            .suffix(" mm"),
+                    )
+                    .on_hover_text(
+                        "Margen de los bordes que no tienen uno propio (selecciona una arista para darle otro)",
+                    );
+                });
+            }
+            Part::Menu => {
+                if ui.button("Quitar los márgenes propios de todos los bordes").clicked() {
+                    for piece in &mut self.pattern.pieces {
+                        for i in 0..piece.len() {
+                            piece.set_edge_allowance(i, None);
+                        }
+                    }
+                    ui.close();
+                }
+                if ui.button("Usar en cada costura el margen típico de su tipo").clicked() {
+                    let typical: Vec<_> = self
+                        .pattern
+                        .seams
+                        .iter()
+                        .flat_map(|s| {
+                            s.sides.iter().map(move |side| (side.piece, side.edge, s.kind.typical_allowance()))
+                        })
+                        .collect();
+                    for (piece, edge, allowance) in typical {
+                        if let Some(piece) = self.pattern.piece_mut(piece)
+                            && let Some(i) = piece.edge_index(edge)
+                        {
+                            piece.set_edge_allowance(i, Some(allowance));
+                        }
+                    }
+                    ui.close();
+                }
+            }
+        });
+        widgets::ribbon_group(ui, "ORDEN", false, |ui, _| {
+            let up = selected.is_some_and(|k| k > 0);
+            let down = selected.is_some_and(|k| k + 1 < self.pattern.seams.len());
+            ui.vertical(|ui| {
+                ui.add_space(4.0);
+                if ui.add_enabled(up, egui::Button::new("▲ Antes")).on_hover_text("Coser antes esta costura").clicked()
+                    && let Selection::Seam(id) = self.editor.selection
+                {
+                    self.pattern.move_seam(id, -1);
+                }
+                if ui
+                    .add_enabled(down, egui::Button::new("▼ Después"))
+                    .on_hover_text("Coser después esta costura")
+                    .clicked()
+                    && let Selection::Seam(id) = self.editor.selection
+                {
+                    self.pattern.move_seam(id, 1);
+                }
+            });
+            let in_order = self.view3d.settings.sew_in_order;
+            if widgets::ribbon_button(ui, Icon::Order, "Coser por orden", in_order, true)
+                .on_hover_text(
+                    "En la vista 3D, cerrar las costuras de una en una en el orden de la lista \
+                     (si no, se cierran todas a la vez)",
+                )
+                .clicked()
+            {
+                self.view3d.set_sew_in_order(!in_order, &self.pattern, canvas::piece_color);
+            }
+        });
+        widgets::ribbon_group(ui, "PRENDA", false, |ui, _| {
+            if widgets::ribbon_button(ui, Icon::Flip, "Voltear", self.pattern.inside_out, true)
+                .on_hover_text(
+                    "Dar la vuelta a la prenda: el derecho de la tela queda dentro y los márgenes de las \
+                     costuras, fuera (como al coserla)",
+                )
+                .clicked()
+            {
+                self.pattern.inside_out = !self.pattern.inside_out;
+            }
+        });
+        widgets::ribbon_group(ui, "VISTA", false, |ui, _| {
+            if widgets::ribbon_button(ui, Icon::Highlight, "Resaltar", self.highlight_seams, true)
+                .on_hover_text("Marcar en 3D cada costura con su color")
+                .clicked()
+            {
+                self.highlight_seams = !self.highlight_seams;
+            }
             if widgets::ribbon_button(ui, Icon::Fit, "Encuadrar", false, true)
                 .on_hover_text("Encuadrar el patrón (F)")
                 .clicked()
@@ -645,6 +810,8 @@ impl eframe::App for ClothingMakerApp {
             .frame(side)
             .show(ui, |ui| self.inspector(ui));
 
+        self.editor.focus_seams = self.tab == Tab::Seams;
+        self.view3d.highlight_seams = self.tab == Tab::Seams && self.highlight_seams;
         if self.layout.shows_3d() {
             self.view3d.sync(&ctx, &self.pattern, canvas::piece_color);
         }
@@ -677,6 +844,7 @@ impl eframe::App for ClothingMakerApp {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Pattern,
+    Seams,
     Simulation,
 }
 
