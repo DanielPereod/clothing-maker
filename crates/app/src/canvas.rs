@@ -885,8 +885,12 @@ impl Editor {
                 (false, true) => 2.8,
                 (false, false) => 2.0,
             };
-            let label =
-                if self.focus_seams { format!("{} · {}", k + 1, seam.kind.label()) } else { format!("{}", k + 1) };
+            // En el modo costuras, la seleccionada dice también su tipo.
+            let label = if self.focus_seams && selected {
+                format!("{} · {}", k + 1, seam.kind.label())
+            } else {
+                format!("{}", k + 1)
+            };
             for side in &seam.sides {
                 self.draw_seam_side(painter, pattern, side, color, width, &label);
             }
