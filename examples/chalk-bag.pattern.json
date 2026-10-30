@@ -6,80 +6,6 @@
     "pieces": [
       {
         "id": 1,
-        "name": "Cuerpo (1)",
-        "vertices": [
-          {
-            "x": 0.0,
-            "y": 86.75
-          },
-          {
-            "x": 381.0,
-            "y": 86.75
-          },
-          {
-            "x": 381.0,
-            "y": 220.25
-          },
-          {
-            "x": 0.0,
-            "y": 220.25
-          }
-        ],
-        "edges": [
-          {
-            "id": 2,
-            "type": "line"
-          },
-          {
-            "id": 3,
-            "type": "line"
-          },
-          {
-            "id": 4,
-            "type": "line"
-          },
-          {
-            "id": 5,
-            "type": "line"
-          }
-        ],
-        "layers": [
-          6,
-          11
-        ],
-        "notches": [
-          {
-            "edge": 4,
-            "t": 0.125
-          },
-          {
-            "edge": 4,
-            "t": 0.375
-          },
-          {
-            "edge": 4,
-            "t": 0.625
-          },
-          {
-            "edge": 4,
-            "t": 0.875
-          },
-          {
-            "edge": 2,
-            "t": 0.25
-          },
-          {
-            "edge": 2,
-            "t": 0.5
-          },
-          {
-            "edge": 2,
-            "t": 0.75
-          }
-        ]
-      },
-      {
-        "id": 6,
         "name": "Puño (5)",
         "vertices": [
           {
@@ -95,8 +21,109 @@
             "y": 66.75
           },
           {
+            "x": 361.0,
+            "y": 133.5
+          },
+          {
+            "x": 20.0,
+            "y": 133.5
+          },
+          {
             "x": 20.0,
             "y": 66.75
+          }
+        ],
+        "edges": [
+          {
+            "id": 2,
+            "type": "line"
+          },
+          {
+            "id": 3,
+            "type": "line"
+          },
+          {
+            "id": 36,
+            "type": "line"
+          },
+          {
+            "id": 4,
+            "type": "line"
+          },
+          {
+            "id": 5,
+            "type": "line"
+          },
+          {
+            "id": 35,
+            "type": "line"
+          }
+        ],
+        "fabric": 4,
+        "lines": [
+          {
+            "id": 37,
+            "from": {
+              "x": 20.0,
+              "y": 66.75
+            },
+            "to": {
+              "x": 361.0,
+              "y": 66.75
+            },
+            "type": "line",
+            "fold": {
+              "angle": 180.0,
+              "pressed": true
+            }
+          }
+        ],
+        "notches": [
+          {
+            "edge": 2,
+            "t": 0.25
+          },
+          {
+            "edge": 2,
+            "t": 0.5
+          },
+          {
+            "edge": 2,
+            "t": 0.75
+          },
+          {
+            "edge": 4,
+            "t": 0.25
+          },
+          {
+            "edge": 4,
+            "t": 0.5
+          },
+          {
+            "edge": 4,
+            "t": 0.75
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "name": "Cuerpo (1)",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 153.5
+          },
+          {
+            "x": 381.0,
+            "y": 153.5
+          },
+          {
+            "x": 381.0,
+            "y": 287.0
+          },
+          {
+            "x": 0.0,
+            "y": 287.0
           }
         ],
         "edges": [
@@ -117,21 +144,36 @@
             "type": "line"
           }
         ],
-        "fabric": 4,
         "layers": [
-          4
+          6
         ],
         "notches": [
           {
             "edge": 9,
+            "t": 0.125
+          },
+          {
+            "edge": 9,
+            "t": 0.375
+          },
+          {
+            "edge": 9,
+            "t": 0.625
+          },
+          {
+            "edge": 9,
+            "t": 0.875
+          },
+          {
+            "edge": 7,
             "t": 0.25
           },
           {
-            "edge": 9,
+            "edge": 7,
             "t": 0.5
           },
           {
-            "edge": 9,
+            "edge": 7,
             "t": 0.75
           }
         ]
@@ -142,19 +184,19 @@
         "vertices": [
           {
             "x": 190.5,
-            "y": 240.25
+            "y": 307.0
           },
           {
             "x": 251.0,
-            "y": 300.75
+            "y": 367.5
           },
           {
             "x": 190.5,
-            "y": 361.25
+            "y": 428.0
           },
           {
             "x": 130.0,
-            "y": 300.75
+            "y": 367.5
           }
         ],
         "edges": [
@@ -209,8 +251,7 @@
         ],
         "arrangement": "bottom",
         "layers": [
-          6,
-          11
+          6
         ],
         "notches": [
           {
@@ -230,28 +271,179 @@
             "t": 0.5
           }
         ]
+      },
+      {
+        "id": 16,
+        "name": "Forro (4)",
+        "vertices": [
+          {
+            "x": 441.0,
+            "y": 153.5
+          },
+          {
+            "x": 782.0,
+            "y": 153.5
+          },
+          {
+            "x": 782.0,
+            "y": 249.0
+          },
+          {
+            "x": 441.0,
+            "y": 249.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 17,
+            "type": "line"
+          },
+          {
+            "id": 18,
+            "type": "line"
+          },
+          {
+            "id": 19,
+            "type": "line"
+          },
+          {
+            "id": 20,
+            "type": "line"
+          }
+        ],
+        "fabric": 11,
+        "right_side_in": true,
+        "layer": 1,
+        "notches": [
+          {
+            "edge": 19,
+            "t": 0.125
+          },
+          {
+            "edge": 19,
+            "t": 0.375
+          },
+          {
+            "edge": 19,
+            "t": 0.625
+          },
+          {
+            "edge": 19,
+            "t": 0.875
+          },
+          {
+            "edge": 17,
+            "t": 0.25
+          },
+          {
+            "edge": 17,
+            "t": 0.5
+          },
+          {
+            "edge": 17,
+            "t": 0.75
+          }
+        ]
+      },
+      {
+        "id": 21,
+        "name": "Base del forro (3)",
+        "vertices": [
+          {
+            "x": 611.5,
+            "y": 269.0
+          },
+          {
+            "x": 665.5,
+            "y": 323.0
+          },
+          {
+            "x": 611.5,
+            "y": 377.0
+          },
+          {
+            "x": 557.5,
+            "y": 323.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 22,
+            "type": "cubic",
+            "h1": {
+              "x": 29.8233765,
+              "y": -0.0
+            },
+            "h2": {
+              "x": -0.0,
+              "y": -29.8233765
+            }
+          },
+          {
+            "id": 23,
+            "type": "cubic",
+            "h1": {
+              "x": 0.0,
+              "y": 29.8233765
+            },
+            "h2": {
+              "x": 29.8233765,
+              "y": 0.0
+            }
+          },
+          {
+            "id": 24,
+            "type": "cubic",
+            "h1": {
+              "x": -29.8233765,
+              "y": -0.0
+            },
+            "h2": {
+              "x": -0.0,
+              "y": 29.8233765
+            }
+          },
+          {
+            "id": 25,
+            "type": "cubic",
+            "h1": {
+              "x": 0.0,
+              "y": -29.8233765
+            },
+            "h2": {
+              "x": -29.8233765,
+              "y": 0.0
+            }
+          }
+        ],
+        "arrangement": "bottom",
+        "fabric": 11,
+        "right_side_in": true,
+        "layer": 1,
+        "notches": [
+          {
+            "edge": 22,
+            "t": 0.5
+          },
+          {
+            "edge": 23,
+            "t": 0.5
+          },
+          {
+            "edge": 24,
+            "t": 0.5
+          },
+          {
+            "edge": 25,
+            "t": 0.5
+          }
+        ]
       }
     ],
     "seams": [
       {
-        "id": 19,
+        "id": 29,
         "name": "Costado",
-        "sides": [
-          {
-            "piece": 1,
-            "edge": 3
-          },
-          {
-            "piece": 1,
-            "edge": 5,
-            "reversed": true
-          }
-        ],
-        "step": 16
-      },
-      {
-        "id": 20,
-        "name": "Costado del puño",
         "sides": [
           {
             "piece": 6,
@@ -263,17 +455,51 @@
             "reversed": true
           }
         ],
-        "kind": "overlocked",
-        "pressed_to": 0,
-        "step": 16
+        "step": 26
       },
       {
-        "id": 21,
-        "name": "Base",
+        "id": 30,
+        "name": "Costado del forro",
+        "sides": [
+          {
+            "piece": 16,
+            "edge": 18
+          },
+          {
+            "piece": 16,
+            "edge": 20,
+            "reversed": true
+          }
+        ],
+        "step": 26
+      },
+      {
+        "id": 31,
+        "name": "Costado del puño",
         "sides": [
           {
             "piece": 1,
-            "edge": 4
+            "edge": 3,
+            "end": 36
+          },
+          {
+            "piece": 1,
+            "edge": 5,
+            "end": 35,
+            "reversed": true
+          }
+        ],
+        "kind": "overlocked",
+        "pressed_to": 0,
+        "step": 26
+      },
+      {
+        "id": 32,
+        "name": "Base",
+        "sides": [
+          {
+            "piece": 6,
+            "edge": 9
           },
           {
             "piece": 11,
@@ -282,40 +508,68 @@
             "reversed": true
           }
         ],
-        "step": 17
+        "step": 28
       },
       {
-        "id": 22,
-        "name": "Puño",
+        "id": 33,
+        "name": "Base del forro",
         "sides": [
           {
+            "piece": 16,
+            "edge": 19
+          },
+          {
+            "piece": 21,
+            "edge": 24,
+            "end": 23,
+            "reversed": true
+          }
+        ],
+        "fit": "eased",
+        "step": 26
+      },
+      {
+        "id": 34,
+        "name": "Boca",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 4
+          },
+          {
             "piece": 6,
-            "edge": 9
+            "edge": 7,
+            "reversed": true
           },
           {
             "piece": 1,
             "edge": 2,
+            "reversed": true
+          },
+          {
+            "piece": 16,
+            "edge": 17,
             "reversed": true
           }
         ],
         "kind": "overlocked",
         "pressed_to": 0,
         "fit": "stretched",
-        "step": 18
+        "step": 27
       }
     ],
     "steps": [
       {
-        "id": 16,
-        "name": "Costados"
+        "id": 26,
+        "name": "Costados y forro"
       },
       {
-        "id": 17,
+        "id": 27,
+        "name": "Boca"
+      },
+      {
+        "id": 28,
         "name": "Base"
-      },
-      {
-        "id": 18,
-        "name": "Puño"
       }
     ],
     "textiles": [
@@ -414,12 +668,12 @@
         "name": "Pelo sintético",
         "firmness": 30.0,
         "weight": 300.0,
-        "stretch": 40.0,
+        "stretch": 65.0,
         "friction": 0.6,
-        "thickness": 6.0
+        "thickness": 4.0
       }
     ],
     "seam_allowance": 9.5,
-    "next_id": 23
+    "next_id": 38
   }
 }

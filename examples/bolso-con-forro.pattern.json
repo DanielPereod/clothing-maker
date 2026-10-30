@@ -1,0 +1,1080 @@
+{
+  "format": "clothing-maker/pattern",
+  "version": 1,
+  "pattern": {
+    "name": "Bolso con forro, bolsillo y cremallera",
+    "pieces": [
+      {
+        "id": 1,
+        "name": "Delantero",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 0.0
+          },
+          {
+            "x": 360.0,
+            "y": 0.0
+          },
+          {
+            "x": 360.0,
+            "y": 280.0
+          },
+          {
+            "x": 0.0,
+            "y": 280.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 2,
+            "type": "line"
+          },
+          {
+            "id": 3,
+            "type": "line"
+          },
+          {
+            "id": 4,
+            "type": "line"
+          },
+          {
+            "id": 5,
+            "type": "line"
+          }
+        ],
+        "fabric": 6,
+        "lines": [
+          {
+            "id": 77,
+            "from": {
+              "x": 80.0,
+              "y": 30.0
+            },
+            "to": {
+              "x": 80.0,
+              "y": 55.0
+            },
+            "type": "line"
+          },
+          {
+            "id": 78,
+            "from": {
+              "x": 280.0,
+              "y": 30.0
+            },
+            "to": {
+              "x": 280.0,
+              "y": 55.0
+            },
+            "type": "line"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "name": "Trasero",
+        "vertices": [
+          {
+            "x": 430.0,
+            "y": 0.0
+          },
+          {
+            "x": 790.0,
+            "y": 0.0
+          },
+          {
+            "x": 790.0,
+            "y": 280.0
+          },
+          {
+            "x": 430.0,
+            "y": 280.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 7,
+            "type": "line"
+          },
+          {
+            "id": 8,
+            "type": "line"
+          },
+          {
+            "id": 9,
+            "type": "line"
+          },
+          {
+            "id": 10,
+            "type": "line"
+          }
+        ],
+        "arrangement": "back",
+        "fabric": 6,
+        "lines": [
+          {
+            "id": 86,
+            "from": {
+              "x": 510.0,
+              "y": 30.0
+            },
+            "to": {
+              "x": 510.0,
+              "y": 55.0
+            },
+            "type": "line"
+          },
+          {
+            "id": 87,
+            "from": {
+              "x": 710.0,
+              "y": 30.0
+            },
+            "to": {
+              "x": 710.0,
+              "y": 55.0
+            },
+            "type": "line"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "name": "Base",
+        "vertices": [
+          {
+            "x": 860.0,
+            "y": 0.0
+          },
+          {
+            "x": 1120.0,
+            "y": 0.0
+          },
+          {
+            "x": 1120.0,
+            "y": 50.0
+          },
+          {
+            "x": 1120.0,
+            "y": 100.0
+          },
+          {
+            "x": 860.0,
+            "y": 100.0
+          },
+          {
+            "x": 860.0,
+            "y": 50.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 12,
+            "type": "line"
+          },
+          {
+            "id": 13,
+            "type": "line"
+          },
+          {
+            "id": 14,
+            "type": "line"
+          },
+          {
+            "id": 15,
+            "type": "line"
+          },
+          {
+            "id": 16,
+            "type": "line"
+          },
+          {
+            "id": 17,
+            "type": "line"
+          }
+        ],
+        "arrangement": "bottom",
+        "fabric": 6
+      },
+      {
+        "id": 18,
+        "name": "Forro delantero",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 360.0
+          },
+          {
+            "x": 360.0,
+            "y": 360.0
+          },
+          {
+            "x": 354.0,
+            "y": 385.0
+          },
+          {
+            "x": 348.0,
+            "y": 630.0
+          },
+          {
+            "x": 12.0,
+            "y": 630.0
+          },
+          {
+            "x": 6.0,
+            "y": 385.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 19,
+            "type": "line"
+          },
+          {
+            "id": 20,
+            "type": "line"
+          },
+          {
+            "id": 21,
+            "type": "line"
+          },
+          {
+            "id": 22,
+            "type": "line"
+          },
+          {
+            "id": 23,
+            "type": "line"
+          },
+          {
+            "id": 24,
+            "type": "line"
+          }
+        ],
+        "right_side_in": true,
+        "lines": [
+          {
+            "id": 66,
+            "from": {
+              "x": 110.0,
+              "y": 430.0
+            },
+            "to": {
+              "x": 110.0,
+              "y": 550.0
+            },
+            "type": "line"
+          },
+          {
+            "id": 67,
+            "from": {
+              "x": 110.0,
+              "y": 550.0
+            },
+            "to": {
+              "x": 250.0,
+              "y": 550.0
+            },
+            "type": "line"
+          },
+          {
+            "id": 68,
+            "from": {
+              "x": 250.0,
+              "y": 550.0
+            },
+            "to": {
+              "x": 250.0,
+              "y": 430.0
+            },
+            "type": "line"
+          }
+        ],
+        "layer": 1
+      },
+      {
+        "id": 25,
+        "name": "Forro trasero",
+        "vertices": [
+          {
+            "x": 430.0,
+            "y": 360.0
+          },
+          {
+            "x": 790.0,
+            "y": 360.0
+          },
+          {
+            "x": 784.0,
+            "y": 385.0
+          },
+          {
+            "x": 778.0,
+            "y": 630.0
+          },
+          {
+            "x": 442.0,
+            "y": 630.0
+          },
+          {
+            "x": 436.0,
+            "y": 385.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 26,
+            "type": "line"
+          },
+          {
+            "id": 27,
+            "type": "line"
+          },
+          {
+            "id": 28,
+            "type": "line"
+          },
+          {
+            "id": 29,
+            "type": "line"
+          },
+          {
+            "id": 30,
+            "type": "line"
+          },
+          {
+            "id": 31,
+            "type": "line"
+          }
+        ],
+        "arrangement": "back",
+        "right_side_in": true,
+        "layer": 1
+      },
+      {
+        "id": 32,
+        "name": "Base del forro",
+        "vertices": [
+          {
+            "x": 860.0,
+            "y": 360.0
+          },
+          {
+            "x": 1104.0,
+            "y": 360.0
+          },
+          {
+            "x": 1104.0,
+            "y": 406.0
+          },
+          {
+            "x": 1104.0,
+            "y": 452.0
+          },
+          {
+            "x": 860.0,
+            "y": 452.0
+          },
+          {
+            "x": 860.0,
+            "y": 406.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 33,
+            "type": "line"
+          },
+          {
+            "id": 34,
+            "type": "line"
+          },
+          {
+            "id": 35,
+            "type": "line"
+          },
+          {
+            "id": 36,
+            "type": "line"
+          },
+          {
+            "id": 37,
+            "type": "line"
+          },
+          {
+            "id": 38,
+            "type": "line"
+          }
+        ],
+        "arrangement": "bottom",
+        "right_side_in": true,
+        "layer": 1
+      },
+      {
+        "id": 53,
+        "name": "Boca (cinta 1)",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": -10.0
+          },
+          {
+            "x": 360.0,
+            "y": -10.0
+          },
+          {
+            "x": 360.0,
+            "y": -25.0
+          },
+          {
+            "x": 0.0,
+            "y": -25.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 54,
+            "type": "line"
+          },
+          {
+            "id": 55,
+            "type": "line"
+          },
+          {
+            "id": 56,
+            "type": "line",
+            "allowance": 0.0
+          },
+          {
+            "id": 57,
+            "type": "line"
+          }
+        ],
+        "fabric": 11
+      },
+      {
+        "id": 59,
+        "name": "Boca (cinta 2)",
+        "vertices": [
+          {
+            "x": 790.0,
+            "y": -10.0
+          },
+          {
+            "x": 430.0,
+            "y": -10.0
+          },
+          {
+            "x": 430.0,
+            "y": -25.0
+          },
+          {
+            "x": 790.0,
+            "y": -25.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 60,
+            "type": "line"
+          },
+          {
+            "id": 61,
+            "type": "line"
+          },
+          {
+            "id": 62,
+            "type": "line",
+            "allowance": 0.0
+          },
+          {
+            "id": 63,
+            "type": "line"
+          }
+        ],
+        "arrangement": "back",
+        "fabric": 11
+      },
+      {
+        "id": 69,
+        "name": "Bolsillo",
+        "vertices": [
+          {
+            "x": 860.0,
+            "y": 500.0
+          },
+          {
+            "x": 1000.0,
+            "y": 500.0
+          },
+          {
+            "x": 1000.0,
+            "y": 620.0
+          },
+          {
+            "x": 860.0,
+            "y": 620.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 70,
+            "type": "line"
+          },
+          {
+            "id": 71,
+            "type": "line"
+          },
+          {
+            "id": 72,
+            "type": "line"
+          },
+          {
+            "id": 73,
+            "type": "line"
+          }
+        ],
+        "right_side_in": true,
+        "layer": 1
+      },
+      {
+        "id": 79,
+        "name": "Asa delantera",
+        "vertices": [
+          {
+            "x": 860.0,
+            "y": 140.0
+          },
+          {
+            "x": 1160.0,
+            "y": 140.0
+          },
+          {
+            "x": 1160.0,
+            "y": 165.0
+          },
+          {
+            "x": 860.0,
+            "y": 165.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 80,
+            "type": "line"
+          },
+          {
+            "id": 81,
+            "type": "line"
+          },
+          {
+            "id": 82,
+            "type": "line"
+          },
+          {
+            "id": 83,
+            "type": "line"
+          }
+        ],
+        "fabric": 12
+      },
+      {
+        "id": 88,
+        "name": "Asa trasera",
+        "vertices": [
+          {
+            "x": 1200.0,
+            "y": 140.0
+          },
+          {
+            "x": 1500.0,
+            "y": 140.0
+          },
+          {
+            "x": 1500.0,
+            "y": 165.0
+          },
+          {
+            "x": 1200.0,
+            "y": 165.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 89,
+            "type": "line"
+          },
+          {
+            "id": 90,
+            "type": "line"
+          },
+          {
+            "id": 91,
+            "type": "line"
+          },
+          {
+            "id": 92,
+            "type": "line"
+          }
+        ],
+        "fabric": 12
+      }
+    ],
+    "seams": [
+      {
+        "id": 44,
+        "name": "Lado dcho.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 3
+          },
+          {
+            "piece": 6,
+            "edge": 10,
+            "reversed": true
+          }
+        ],
+        "step": 43
+      },
+      {
+        "id": 45,
+        "name": "Lado izdo.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 5
+          },
+          {
+            "piece": 6,
+            "edge": 8,
+            "reversed": true
+          }
+        ],
+        "step": 43
+      },
+      {
+        "id": 46,
+        "name": "Base delantera",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 4
+          },
+          {
+            "piece": 11,
+            "edge": 17,
+            "end": 13,
+            "reversed": true
+          }
+        ],
+        "step": 43
+      },
+      {
+        "id": 47,
+        "name": "Base trasera",
+        "sides": [
+          {
+            "piece": 6,
+            "edge": 9
+          },
+          {
+            "piece": 11,
+            "edge": 14,
+            "end": 16,
+            "reversed": true
+          }
+        ],
+        "step": 43
+      },
+      {
+        "id": 48,
+        "name": "Lado dcho. del forro",
+        "sides": [
+          {
+            "piece": 18,
+            "edge": 20,
+            "end": 21
+          },
+          {
+            "piece": 25,
+            "edge": 30,
+            "end": 31,
+            "reversed": true
+          }
+        ],
+        "step": 42
+      },
+      {
+        "id": 49,
+        "name": "Lado izdo. del forro",
+        "sides": [
+          {
+            "piece": 18,
+            "edge": 23,
+            "end": 24
+          },
+          {
+            "piece": 25,
+            "edge": 27,
+            "end": 28,
+            "reversed": true
+          }
+        ],
+        "step": 42
+      },
+      {
+        "id": 50,
+        "name": "Base delantera del forro",
+        "sides": [
+          {
+            "piece": 18,
+            "edge": 22
+          },
+          {
+            "piece": 32,
+            "edge": 38,
+            "end": 34,
+            "reversed": true
+          }
+        ],
+        "step": 42
+      },
+      {
+        "id": 51,
+        "name": "Base trasera del forro",
+        "sides": [
+          {
+            "piece": 25,
+            "edge": 29
+          },
+          {
+            "piece": 32,
+            "edge": 35,
+            "end": 37,
+            "reversed": true
+          }
+        ],
+        "step": 42
+      },
+      {
+        "id": 58,
+        "name": "Boca · Delantero",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 2
+          },
+          {
+            "piece": 53,
+            "edge": 54
+          },
+          {
+            "piece": 18,
+            "edge": 19
+          }
+        ],
+        "pressed_to": 0,
+        "topstitch": "single",
+        "step": 41
+      },
+      {
+        "id": 64,
+        "name": "Boca · Trasero",
+        "sides": [
+          {
+            "piece": 6,
+            "edge": 7,
+            "reversed": true
+          },
+          {
+            "piece": 59,
+            "edge": 60
+          },
+          {
+            "piece": 25,
+            "edge": 26,
+            "reversed": true
+          }
+        ],
+        "pressed_to": 0,
+        "topstitch": "single",
+        "step": 41
+      },
+      {
+        "id": 65,
+        "name": "Boca",
+        "sides": [
+          {
+            "piece": 53,
+            "edge": 56,
+            "reversed": true
+          },
+          {
+            "piece": 59,
+            "edge": 62,
+            "reversed": true
+          }
+        ],
+        "kind": "zipper",
+        "step": 41
+      },
+      {
+        "id": 74,
+        "name": "Bolsillo izdo.",
+        "sides": [
+          {
+            "piece": 69,
+            "edge": 73,
+            "reversed": true
+          },
+          {
+            "piece": 18,
+            "edge": 66
+          }
+        ],
+        "step": 40
+      },
+      {
+        "id": 75,
+        "name": "Bolsillo fondo",
+        "sides": [
+          {
+            "piece": 69,
+            "edge": 72,
+            "reversed": true
+          },
+          {
+            "piece": 18,
+            "edge": 67
+          }
+        ],
+        "step": 40
+      },
+      {
+        "id": 76,
+        "name": "Bolsillo dcho.",
+        "sides": [
+          {
+            "piece": 69,
+            "edge": 71,
+            "reversed": true
+          },
+          {
+            "piece": 18,
+            "edge": 68
+          }
+        ],
+        "step": 40
+      },
+      {
+        "id": 84,
+        "name": "Asa delantera (izdo.)",
+        "sides": [
+          {
+            "piece": 79,
+            "edge": 83,
+            "reversed": true
+          },
+          {
+            "piece": 1,
+            "edge": 77
+          }
+        ],
+        "kind": "lapped",
+        "pressed_to": 0,
+        "topstitch": "single",
+        "step": 39
+      },
+      {
+        "id": 85,
+        "name": "Asa delantera (dcho.)",
+        "sides": [
+          {
+            "piece": 79,
+            "edge": 81
+          },
+          {
+            "piece": 1,
+            "edge": 78
+          }
+        ],
+        "kind": "lapped",
+        "pressed_to": 0,
+        "topstitch": "single",
+        "step": 39
+      },
+      {
+        "id": 93,
+        "name": "Asa trasera (izdo.)",
+        "sides": [
+          {
+            "piece": 88,
+            "edge": 92,
+            "reversed": true
+          },
+          {
+            "piece": 6,
+            "edge": 86
+          }
+        ],
+        "kind": "lapped",
+        "pressed_to": 0,
+        "topstitch": "single",
+        "step": 39
+      },
+      {
+        "id": 94,
+        "name": "Asa trasera (dcho.)",
+        "sides": [
+          {
+            "piece": 88,
+            "edge": 90
+          },
+          {
+            "piece": 6,
+            "edge": 87
+          }
+        ],
+        "kind": "lapped",
+        "pressed_to": 0,
+        "topstitch": "single",
+        "step": 39
+      }
+    ],
+    "steps": [
+      {
+        "id": 39,
+        "name": "Asas"
+      },
+      {
+        "id": 40,
+        "name": "Bolsillo"
+      },
+      {
+        "id": 41,
+        "name": "Cremallera"
+      },
+      {
+        "id": 42,
+        "name": "Forro"
+      },
+      {
+        "id": 43,
+        "name": "Exterior"
+      }
+    ],
+    "textiles": [
+      {
+        "id": 1,
+        "name": "Algodón",
+        "firmness": 42.0,
+        "weight": 150.0,
+        "stretch": 50.0,
+        "friction": 0.5,
+        "thickness": 3.0
+      },
+      {
+        "id": 2,
+        "name": "Lino",
+        "firmness": 48.0,
+        "weight": 180.0,
+        "stretch": 40.0,
+        "friction": 0.5,
+        "thickness": 3.0
+      },
+      {
+        "id": 3,
+        "name": "Seda",
+        "firmness": 22.0,
+        "weight": 60.0,
+        "stretch": 57.0,
+        "friction": 0.2,
+        "thickness": 2.0
+      },
+      {
+        "id": 4,
+        "name": "Punto",
+        "firmness": 35.0,
+        "weight": 180.0,
+        "stretch": 75.0,
+        "friction": 0.5,
+        "thickness": 3.0
+      },
+      {
+        "id": 5,
+        "name": "Vaquero",
+        "firmness": 67.0,
+        "weight": 400.0,
+        "stretch": 32.0,
+        "friction": 0.6,
+        "thickness": 4.0
+      },
+      {
+        "id": 6,
+        "name": "Lona",
+        "firmness": 75.0,
+        "weight": 350.0,
+        "stretch": 30.0,
+        "friction": 0.6,
+        "thickness": 4.0
+      },
+      {
+        "id": 7,
+        "name": "Fieltro",
+        "firmness": 70.0,
+        "weight": 300.0,
+        "stretch": 45.0,
+        "friction": 0.7,
+        "thickness": 4.0
+      },
+      {
+        "id": 8,
+        "name": "Cuero",
+        "firmness": 95.0,
+        "weight": 900.0,
+        "stretch": 25.0,
+        "friction": 0.7,
+        "thickness": 2.0
+      },
+      {
+        "id": 9,
+        "name": "Entretela",
+        "firmness": 70.0,
+        "weight": 50.0,
+        "stretch": 35.0,
+        "friction": 0.4,
+        "thickness": 1.0
+      },
+      {
+        "id": 10,
+        "name": "Forro",
+        "firmness": 20.0,
+        "weight": 70.0,
+        "stretch": 55.0,
+        "friction": 0.2,
+        "thickness": 1.0
+      },
+      {
+        "id": 11,
+        "name": "Cinta de cremallera",
+        "firmness": 62.0,
+        "weight": 500.0,
+        "stretch": 5.0,
+        "friction": 0.4,
+        "thickness": 2.0
+      },
+      {
+        "id": 12,
+        "name": "Cincha",
+        "firmness": 78.0,
+        "weight": 650.0,
+        "stretch": 8.0,
+        "friction": 0.6,
+        "thickness": 2.0
+      }
+    ],
+    "next_id": 95
+  }
+}

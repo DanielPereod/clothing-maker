@@ -319,6 +319,53 @@ elásticos, broches y presillas.
 - Clic en una pieza en la vista 3D la selecciona, también en el patrón, y
   se resalta en 3D.
 
+**Ejemplos completos:** dos bolsos de verdad, de principio a fin, que
+prueban todo junto.
+
+- *Bolso con forro, bolsillo y cremallera* (`bolso-con-forro`): exterior de
+  lona (delantero, trasero y una base que le da fondo), forro de algodón
+  aparte con las mismas piezas, un bolsillo de parche cosido por tres lados
+  a una U de líneas del forro, una cremallera con cada cinta cosida entre
+  la boca del exterior y la del forro, y dos asas de cincha. El forro es
+  tan ancho como la cremallera arriba y algo más estrecho justo debajo,
+  como al coserlo con más margen, para que quepa dentro. Cosido no se
+  cruza, el forro sigue dentro, las costuras cierran y, con la cremallera
+  abierta, la boca se abre.
+- *Chalk bag de escalada*, ya sin simplificar, con las piezas del patrón de
+  Christian Halling: cuerpo de algodón con lona como entretela, base
+  redonda, forro de pelo como bolsa aparte dentro del cuerpo y puño de
+  punto doblado por la mitad, con sus dos bordes cosidos a la boca junto
+  con el cuerpo y el forro, en una costura de cuatro lados. El puño y el
+  forro se estiran de 341 a 381 mm sin encoger el cuerpo, nada se cruza y
+  la bolsa se queda de pie al soltarla y derecha al colgarla, con mallas
+  de 15 a 30 mm. Sus tres tubos (cuerpo, puño y forro) se cierran a la vez,
+  luego la boca y por último la base: con el forro cerrado antes, tiraba
+  de las bocas que esperaban abiertas, y con la base antes que la boca, el
+  puño tiraba de lado del cuerpo ya cerrado por abajo y lo volcaba.
+- Para que salgan bien, la colocación *alrededor* ahora:
+  - pone cada forro a la altura de la costura que lo une a la capa de
+    fuera (antes se alineaba con lo más alto, y el puño del chalk bag lo
+    subía 13 cm por encima de la boca);
+  - coloca los tubos (bolsas redondas) a su medida, sin el radio mínimo
+    que los dejaba abiertos por detrás y los tumbaba al cerrarse, y varios
+    tubos de la misma capa (el puño encima del cuerpo), cada uno en su
+    cilindro, dando la misma vuelta: así encogen a la vez al cerrarse;
+  - mete la base del forro dentro del exterior, para que este no la
+    atrape debajo al cerrarse;
+  - coloca la solapa de un doblez a la par de la tela de la que sale, en
+    su propio cilindro, y la embebe lo que toca: alrededor de un tubo, la
+    capa de dentro de un puño es algo más corta. Con las dos capas igual de
+    largas, al cerrarse el tubo la de dentro no cabía, se arrugaba de golpe
+    y volcaba la bolsa entera (el chalk bag colgado acababa boca abajo).
+- El refuerzo a lo largo de una costura (la remallada, por ejemplo) ya no
+  une puntos de un lado y otro de un doblez: a su largo en el patrón,
+  desdoblaba el puño.
+- Los cambios de forma en reposo de una pieza (fruncir o estirar junto a
+  una costura, embeber una solapa) se suman en vez de pisarse.
+- En el bolso con forro, el forro se cose antes que el exterior (su etapa
+  va antes): si el exterior se cierra primero, sus costados se meten por
+  los del forro, aún abiertos.
+
 **Interfaz:** inspirada en los programas de CAD como Fusion 360, con tema
 oscuro.
 

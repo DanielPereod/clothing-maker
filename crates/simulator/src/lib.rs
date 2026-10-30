@@ -465,35 +465,34 @@ impl Cloth {
         }
     }
 
-    /// Cambia la forma en reposo de una pieza: `rest` recibe la posición en
+    /// Cambia la forma en reposo de una pieza: `scale` recibe la posición en
     /// el patrón (m) de los dos extremos de cada restricción de distancia
-    /// de la pieza y devuelve su nueva longitud en reposo (m), o `None`
-    /// para dejarla. Sirve, por ejemplo, para fruncir la tela junto a una
-    /// costura.
-    pub fn reshape(&mut self, piece: &PieceRange, rest: impl Fn(Vec3, Vec3) -> Option<f32>) {
+    /// de la pieza y devuelve por cuánto se multiplica su longitud en
+    /// reposo, o `None` para dejarla. Sirve, por ejemplo, para fruncir la
+    /// tela junto a una costura; varios cambios se suman.
+    pub fn reshape(&mut self, piece: &PieceRange, scale: impl Fn(Vec3, Vec3) -> Option<f32>) {
         let range = piece.first_particle..piece.first_particle + piece.particle_count;
         let at = |i: u32| self.rest[i as usize].0;
-        let new_length = |a: u32, b: u32| {
-            if range.contains(&a) && range.contains(&b) { rest(at(a), at(b)) } else { None }
+        let factor = |a: u32, b: u32| {
+            if range.contains(&a) && range.contains(&b) { scale(at(a), at(b)) } else { None }
         };
         for c in self.pending.iter_mut().chain(&mut self.constraints) {
-            if let Some(length) = new_length(c.a, c.b) {
-                c.rest_length = length;
+            if let Some(f) = factor(c.a, c.b) {
+                c.rest_length *= f;
             }
         }
         for (&[a, b], length) in self.mesh_edges.iter().zip(&mut self.rest_edges) {
-            if let Some(new) = new_length(a, b) {
-                *length = new;
+            if let Some(f) = factor(a, b) {
+                *length *= f;
             }
         }
         // Si la tela queda estirada en reposo (un puño cosido estirado), su
         // límite de estiramiento se alarga con ella.
         for t in &mut self.tethers {
-            let flat = at(t.a).distance(at(t.b));
-            if let Some(new) = new_length(t.a, t.b)
-                && new > flat
+            if let Some(f) = factor(t.a, t.b)
+                && f > 1.0
             {
-                t.max_length *= new / flat;
+                t.max_length *= f;
             }
         }
     }

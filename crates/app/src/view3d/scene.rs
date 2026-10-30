@@ -265,15 +265,43 @@ fn folded(pattern: &Pattern, piece: &Piece, p: [f64; 2]) -> ([f64; 2], f32) {
     ([q.x, q.y], offset)
 }
 
+/// La solapa de un doblez que da la vuelta a un cilindro de `radius` mm
+/// (un puño vuelto hacia dentro) va en otro cilindro, más dentro o más
+/// fuera: a lo ancho, la tela de la solapa pasa a medir lo que ese cilindro
+/// respecto al de la pieza. Si no, al cerrarse el tubo las dos capas
+/// tendrían el mismo largo y, como no pueden pasar una a través de otra, la
+/// de dentro se arrugaría de golpe y volcaría el tubo entero. Es lo que hace
+/// la tela de verdad: la capa de dentro se embebe un poco.
+fn fold_flaps_around(
+    cloth: &mut Cloth,
+    range: &simulator::PieceRange,
+    fold: impl Fn([f64; 2]) -> ([f64; 2], f32),
+    radius: f64,
+) {
+    let at = |p: Vec3| [f64::from(p.x) * 1e3, f64::from(p.y) * 1e3];
+    cloth.reshape(range, |a, b| {
+        let (_, extra) = fold(at((a + b) / 2.0));
+        if extra == 0.0 {
+            return None;
+        }
+        // A lo ancho del cilindro: la x del patrón, ya doblado.
+        let ((qa, _), (qb, _)) = (fold(at(a)), fold(at(b)));
+        let d = glam::DVec2::new(qb[0] - qa[0], qb[1] - qa[1]);
+        let scale = (radius + f64::from(extra) * 1e3) / radius;
+        (d.length() > 1e-9).then(|| (glam::DVec2::new(d.x * scale, d.y).length() / d.length()) as f32)
+    });
+}
+
 /// Hasta dónde (mm) se nota el frunce de una costura dentro de la tela.
 const GATHER_DEPTH: f64 = 40.0;
 
-/// Longitud en reposo (m) de un tramo `a`–`b` (posiciones en el patrón, m)
-/// de una tela fruncida (o estirada) a lo largo de la polilínea `line`: el
-/// tramo `line[k]`–`line[k + 1]` pasa a medir `ratio[k]` de su largo, y lo
-/// que va en su misma dirección cerca de él cambia menos cuanto más lejos;
-/// a `depth` ya no se nota. `None` si el tramo no cambia.
-fn gathered_length(line: &[Vec3], ratio: &[f32], depth: f32, a: Vec3, b: Vec3) -> Option<f32> {
+/// Por cuánto se multiplica la longitud en reposo de un tramo `a`–`b`
+/// (posiciones en el patrón, m) de una tela fruncida (o estirada) a lo largo
+/// de la polilínea `line`: el tramo `line[k]`–`line[k + 1]` pasa a medir
+/// `ratio[k]` de su largo, y lo que va en su misma dirección cerca de él
+/// cambia menos cuanto más lejos; a `depth` ya no se nota. `None` si el
+/// tramo no cambia.
+fn gathered_scale(line: &[Vec3], ratio: &[f32], depth: f32, a: Vec3, b: Vec3) -> Option<f32> {
     let mid = (a + b) / 2.0;
     let (distance, k) = line
         .windows(2)
@@ -292,7 +320,7 @@ fn gathered_length(line: &[Vec3], ratio: &[f32], depth: f32, a: Vec3, b: Vec3) -
     let tangent = (line[k + 1] - line[k]).normalize_or_zero();
     let e = b - a;
     let along = tangent * e.dot(tangent);
-    Some((along * (1.0 - shrink) + (e - along)).length())
+    (e.length() > 1e-9).then(|| (along * (1.0 - shrink) + (e - along)).length() / e.length())
 }
 
 /// Color del revés de una tela del color `c` (lineal): más claro y apagado.
@@ -405,20 +433,24 @@ pub fn build(
     // grupos.
     let mounts = mount_places(pattern, &meshed, &meshes);
     let free: Vec<(usize, &Piece, &Mesh2D)> = meshes.iter().copied().filter(|m| !mounts.contains_key(&m.0)).collect();
+    // Una bolsa redonda (todas sus paredes, tubos de una pieza) no se puede
+    // tumbar doblada: al soltarla también se coloca alrededor, de pie.
+    let round = is_round(pattern, &free);
     let around = match settings.placement {
         Placement::Around => true,
         Placement::Hang => sewn,
-        Placement::Drop => sewn && on_body,
+        Placement::Drop => sewn && (on_body || round),
     }
     .then(|| AroundLayout::new(&free, &pattern.seams, settings.obstacle.top(), avatar.as_deref()));
-    let flat = (settings.placement == Placement::Drop && sewn && !on_body).then(|| FlatLayout::new(&free));
+    let flat = (settings.placement == Placement::Drop && sewn && around.is_none())
+        .then(|| FlatLayout::new(&free, &pattern.seams));
     // Los dobleces que empiezan doblados: la solapa va reflejada sobre el
     // resto de la pieza, una capa por delante o por detrás.
     let fold = |index: usize, p: [f64; 2]| folded(pattern, &pattern.pieces[index], p);
     let place_around = |layout: &AroundLayout, index: usize, p: [f64; 2]| {
         let (p, extra) = fold(index, p);
         let (root, p, offset) = resolve_mount(&mounts, index, p);
-        layout.place(&pattern.pieces[root], p, offset + extra)
+        layout.place(&pattern.pieces[root], p, offset, extra)
     };
     let root = |index: usize| &pattern.pieces[resolve_mount(&mounts, index, [0.0, 0.0]).0];
     let hang_z = settings.obstacle.front() + if settings.obstacle == Obstacle::None { 0.0 } else { 0.1 };
@@ -456,6 +488,29 @@ pub fn build(
         None => Vec3::ZERO,
     };
 
+    // Dónde empieza un punto (mm) de una pieza, y hacia dónde mira su
+    // derecho. Con `unfolded`, sin doblar los dobleces planchados.
+    let place = |index: usize, p: [f64; 2], unfolded: bool| -> Vec3 {
+        let (p, extra) = if unfolded { (p, 0.0) } else { fold(index, p) };
+        if let Some(layout) = &around {
+            let (root, p, offset) = resolve_mount(&mounts, index, p);
+            layout.place(&pattern.pieces[root], p, offset, extra) + lift
+        } else if let Some(layout) = &flat {
+            let (root, p, offset) = resolve_mount(&mounts, index, p);
+            layout.place(&pattern.pieces[root], p, drop_height, offset + extra) + flat_lift
+        } else if settings.placement == Placement::Hang {
+            Vec3::new(((p[0] - center[0]) * 1e-3) as f32, HANG_HEIGHT - ((p[1] - min[1]) * 1e-3) as f32, hang_z + extra)
+        } else {
+            Vec3::new(((p[0] - center[0]) * 1e-3) as f32, drop_height + extra, ((p[1] - center[1]) * 1e-3) as f32)
+        }
+    };
+    let facing = |index: usize| match (&around, &flat) {
+        (Some(layout), _) => layout.front(root(index)),
+        (_, Some(layout)) => layout.front(root(index)),
+        _ if settings.placement == Placement::Hang => Vec3::Z,
+        _ => Vec3::Y,
+    };
+
     let mut cloth = Cloth::new();
     let mut colors = Vec::new();
     let mut back_colors = Vec::new();
@@ -463,44 +518,7 @@ pub fn build(
     let mut pieces = Vec::new();
     for &(index, piece, mesh) in &meshes {
         let fabric = piece_fabric(pattern, piece);
-        let range = if let Some(layout) = &around {
-            cloth.add_piece(mesh, &fabric, |p| place_around(layout, index, p) + lift, layout.front(root(index)))
-        } else if let Some(layout) = &flat {
-            let place = |p| {
-                let (p, extra) = fold(index, p);
-                let (root, p, offset) = resolve_mount(&mounts, index, p);
-                layout.place(&pattern.pieces[root], p, drop_height, offset + extra) + flat_lift
-            };
-            cloth.add_piece(mesh, &fabric, place, layout.front(root(index)))
-        } else if settings.placement == Placement::Hang {
-            cloth.add_piece(
-                mesh,
-                &fabric,
-                |p| {
-                    let (p, extra) = fold(index, p);
-                    Vec3::new(
-                        ((p[0] - center[0]) * 1e-3) as f32,
-                        HANG_HEIGHT - ((p[1] - min[1]) * 1e-3) as f32,
-                        hang_z + extra,
-                    )
-                },
-                Vec3::Z,
-            )
-        } else {
-            cloth.add_piece(
-                mesh,
-                &fabric,
-                |p| {
-                    let (p, extra) = fold(index, p);
-                    Vec3::new(
-                        ((p[0] - center[0]) * 1e-3) as f32,
-                        drop_height + extra,
-                        ((p[1] - center[1]) * 1e-3) as f32,
-                    )
-                },
-                Vec3::Y,
-            )
-        };
+        let range = cloth.add_piece(mesh, &fabric, |p| place(index, p, false), facing(index));
         cloth.set_layer(&range, root(index).layer);
         // El relleno empuja hacia fuera de la prenda: hacia el derecho de las
         // piezas que lo tienen fuera y hacia el revés de los forros. Lo que va
@@ -588,13 +606,17 @@ pub fn build(
             };
             seams += 1;
             let turn = turns.get(index).copied().unwrap_or(0);
-            let side_points = |side: &mesher::SeamSideMesh| -> Vec<Vec3> {
-                let base = first_particle[side.piece];
-                side.vertices.iter().map(|&v| cloth.positions[(base + v) as usize]).collect()
+            // El sentido de cada lado, sin doblar: un lado que se dobla por
+            // la mitad (el costado de un puño) vuelve a donde empezó y, así
+            // doblado, no se ve si va al revés.
+            let unfolded_points = |side: &mesher::SeamSideMesh| -> Vec<Vec3> {
+                let mesh = meshes.iter().find(|m| m.0 == side.piece).map(|m| m.2);
+                let at = |v: u32| mesh.map_or(Vec3::ZERO, |mesh| place(side.piece, mesh.positions[v as usize], true));
+                side.vertices.iter().map(|&v| at(v)).collect()
             };
             if let Some((first, rest)) = seam_mesh.sides.split_first() {
-                let a = side_points(first);
-                if rest.iter().any(|b| runs_backwards(&a, &side_points(b))) {
+                let a = unfolded_points(first);
+                if rest.iter().any(|b| runs_backwards(&a, &unfolded_points(b))) {
                     crossed.push(seam.id);
                 }
             }
@@ -698,14 +720,24 @@ pub fn build(
                         (0..v.len()).map(|k| Vec3::new(at(k).x as f32, at(k).y as f32, 0.0) * 1e-3).collect();
                     let ratio: Vec<f32> = gap.iter().zip(own).map(|(g, o)| (g / o.max(1e-9)) as f32).collect();
                     let depth = (GATHER_DEPTH.max(2.0 * settings.mesh_size) * 1e-3) as f32;
-                    cloth.reshape(&range, |a, b| gathered_length(&line, &ratio, depth, a, b));
+                    cloth.reshape(&range, |a, b| gathered_scale(&line, &ratio, depth, a, b));
                 }
 
                 // La costura es más rígida a lo largo que la tela sola (la
                 // simple es la referencia y se queda como la tela).
                 let firm = fabric.bend_stiffness > FIRM_FABRIC;
                 let stiffer = if kind.stiffness() > 1.0 { v.len() } else { 0 };
-                for k in 2..stiffer {
+                // Salvo de un lado a otro de un doblez (el costado de un
+                // puño): a su largo en el patrón, lo desdoblaría.
+                let point = |k: usize| pattern::Point::new(at(k).x, at(k).y);
+                let side = |a: pattern::Point, b: pattern::Point, c: pattern::Point| (b - a).cross(c - a);
+                let across_fold = |p: pattern::Point, q: pattern::Point| {
+                    piece.lines.iter().filter(|l| l.fold.is_some()).any(|l| {
+                        side(l.from, l.to, p) * side(l.from, l.to, q) <= 0.0
+                            && side(p, q, l.from) * side(p, q, l.to) <= 0.0
+                    })
+                };
+                for k in (2..stiffer).filter(|&k| !across_fold(point(k - 2), point(k))) {
                     let shrink = (gap[k - 2] + gap[k - 1]) / (own[k - 2] + own[k - 1]).max(1e-9);
                     let rest = (at(k).distance(at(k - 2)) * shrink * 1e-3) as f32;
                     cloth.add_constraint(base + v[k - 2], base + v[k], rest, compliance);
@@ -784,6 +816,16 @@ pub fn build(
                 sides,
                 slider,
             });
+        }
+    }
+    // Al final, para que la solapa embeba también lo que añaden las
+    // costuras (el refuerzo a lo largo de una remallada).
+    if let Some(layout) = &around {
+        for &(index, piece, _) in meshes.iter().filter(|m| !mounts.contains_key(&m.0)) {
+            let range = cloth.pieces.iter().find(|r| r.first_particle == first_particle[index]).copied();
+            if let (Some(range), Some(radius)) = (range, layout.radius_of(piece)) {
+                fold_flaps_around(&mut cloth, &range, |p| fold(index, p), radius);
+            }
         }
     }
     // Broches y presillas: unen su par de puntos con la última etapa, como
@@ -1153,11 +1195,14 @@ type Group = (BodyZone, u8, Arrangement);
 /// y un radio que deja algo de holgura sobre el cuerpo.
 ///
 /// Cada capa ([`Piece::layer`]) va en su propio cilindro, uno dentro de otro
-/// y con el borde de arriba de sus paredes a la misma altura: el forro
-/// queda dentro del exterior, con la boca a la par.
+/// y a la altura de la costura que la une a la de fuera: el forro queda
+/// dentro del exterior, con su boca a la par de la del exterior.
 struct AroundLayout {
     /// Centro (mm) de cada grupo de piezas en el patrón.
     group_center: HashMap<Group, [f64; 2]>,
+    /// Los tubos de un grupo de tubos: lo que mide cada uno respecto al más
+    /// ancho y su centro (mm) en el patrón.
+    tubes: HashMap<pattern::PieceId, (f64, f64)>,
     zones: HashMap<BodyZone, ZoneLayout>,
     /// Con maniquí, cada pieza va en su zona; sin él, todas en una.
     by_zone: bool,
@@ -1169,8 +1214,9 @@ struct ZoneLayout {
     radius: f64,
     /// La capa de más dentro.
     inner: u8,
-    /// Borde superior (mm, Y hacia abajo) de las piezas laterales de cada
-    /// capa, que va en `frame.top`, y su alto (m).
+    /// Alto (mm, Y hacia abajo) del patrón de cada capa que va en
+    /// `frame.top` (el borde de arriba de sus piezas laterales, o lo que
+    /// pida la costura con la capa de fuera), y su alto (m) desde ahí.
     layers: HashMap<u8, (f64, f32)>,
     /// Alto (m) de las piezas laterales más altas.
     height: f32,
@@ -1181,6 +1227,24 @@ impl ZoneLayout {
     fn radius(&self, layer: u8) -> f64 {
         self.radius + f64::from(self.inner.saturating_sub(layer)) * f64::from(LAYER_SEP) * 1e3
     }
+
+    /// Profundidad (m) bajo `frame.top` de las tapas de abajo de una capa:
+    /// `CAP_GAP` por debajo de sus paredes, las de dentro algo menos, y
+    /// siempre por encima del borde de abajo de las capas de fuera. Si no,
+    /// al cerrarse el exterior por debajo atraparía la base del forro.
+    fn bottom_depth(&self, layer: u8, height: f32) -> f32 {
+        let below = height + CAP_GAP - f32::from(layer) * LAYER_SEP;
+        let outer = self.layers.iter().filter(|&(&l, &(_, h))| l < layer && h > 0.0).map(|(_, &(_, h))| h);
+        outer.fold(below, |depth, h| depth.min(h - LAYER_SEP))
+    }
+
+    /// Radio (mm) más pequeño de una pared de la capa: a medio camino de la
+    /// capa de dentro y, con maniquí, fuera de él.
+    fn min_radius(&self, layer: u8) -> f64 {
+        let inside = if layer < self.inner { self.radius(layer + 1) + f64::from(LAYER_SEP) * 1e3 / 2.0 } else { 0.0 };
+        let body = if self.frame.radius > 0.0 { f64::from(self.frame.radius + BODY_CLEARANCE) * 1e3 } else { 0.0 };
+        inside.max(body)
+    }
 }
 
 /// Separación (m) entre las tapas y las piezas laterales.
@@ -1188,6 +1252,79 @@ const CAP_GAP: f32 = 0.05;
 
 fn is_wall(a: Arrangement) -> bool {
     !matches!(a, Arrangement::Top | Arrangement::Bottom)
+}
+
+/// Si todas las paredes (las piezas que no son tapas) son tubos de una sola
+/// pieza, cosida a sí misma: una bolsa redonda.
+fn is_round(pattern: &Pattern, free: &[(usize, &Piece, &Mesh2D)]) -> bool {
+    let rolled = |id: pattern::PieceId| pattern.seams.iter().any(|s| s.sides.iter().all(|side| side.piece == id));
+    let mut walls = free.iter().filter(|(_, p, _)| is_wall(p.arrangement)).peekable();
+    walls.peek().is_some() && walls.all(|(_, p, _)| rolled(p.id))
+}
+
+/// Alto (mm, Y hacia abajo) de un lado de costura en el patrón: el de la
+/// mitad de su arista o línea.
+fn side_y(piece: &Piece, side: &pattern::SeamSide) -> Option<f64> {
+    if let Some(i) = piece.edge_index(side.edge) {
+        let (a, b) = piece.edge_endpoints(i);
+        return Some((piece.vertices()[a].y + piece.vertices()[b].y) / 2.0);
+    }
+    let line = &piece.lines[piece.line_index(side.edge)?];
+    Some((line.from.y + line.to.y) / 2.0)
+}
+
+/// Alinea cada capa de dentro con la costura que la une a una de fuera, en
+/// vez de con el borde de arriba de sus paredes: el forro cosido a la boca
+/// del exterior empieza en la boca, aunque un puño sobresalga por encima.
+///
+/// Si en la costura hay varios lados de capas ya alineadas, manda el de la
+/// pieza más grande (el cuerpo, no el puño ni la cinta de una cremallera).
+/// Las capas sin costura con otra se quedan como estaban.
+fn align_layers(
+    zone: BodyZone,
+    layers: &mut HashMap<u8, (f64, f32)>,
+    by_id: &HashMap<pattern::PieceId, (&Piece, &Mesh2D)>,
+    seams: &[pattern::Seam],
+    zone_of: &dyn Fn(&Piece) -> BodyZone,
+) {
+    let Some(&outer) = layers.keys().min() else { return };
+    let mut aligned = std::collections::HashSet::from([outer]);
+    loop {
+        let mut changed = false;
+        for seam in seams {
+            // Lados en paredes de esta zona: capa, alto y área de su pieza.
+            let walls: Vec<(u8, f64, f64)> = seam
+                .sides
+                .iter()
+                .filter_map(|side| {
+                    let &(piece, mesh) = by_id.get(&side.piece)?;
+                    if zone_of(piece) != zone || !is_wall(piece.arrangement) {
+                        return None;
+                    }
+                    let (min, max) = bounds(&[mesh]);
+                    Some((piece.layer, side_y(piece, side)?, (max[0] - min[0]) * (max[1] - min[1])))
+                })
+                .collect();
+            let anchor = walls.iter().filter(|w| aligned.contains(&w.0)).max_by(|a, b| a.2.total_cmp(&b.2));
+            let Some(&(anchor_layer, anchor_y, _)) = anchor else { continue };
+            // Lo que baja la costura desde el borde de arriba de las paredes.
+            let depth = anchor_y - layers[&anchor_layer].0;
+            for &(layer, y, _) in &walls {
+                if aligned.contains(&layer) {
+                    continue;
+                }
+                let (top, height) = layers[&layer];
+                let bottom = top + f64::from(height) * 1e3;
+                let top = y - depth;
+                layers.insert(layer, (top, ((bottom - top) * 1e-3) as f32));
+                aligned.insert(layer);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 impl AroundLayout {
@@ -1210,12 +1347,48 @@ impl AroundLayout {
                 sides.all(|g| g == Some(first)).then_some(first)
             })
             .collect();
+        // Y de esos, los que tienen una pieza cosida a sí misma: una bolsa
+        // redonda (dos piezas del mismo lado cosidas entre sí no lo son).
+        let rolled: std::collections::HashSet<Group> = seams
+            .iter()
+            .filter_map(|seam| {
+                let first = seam.sides.first()?.piece;
+                seam.sides.iter().all(|s| s.piece == first).then(|| group_of.get(&first).copied())?
+            })
+            .collect();
         let group_bounds: HashMap<Group, ([f64; 2], [f64; 2])> = groups.iter().map(|(k, m)| (*k, bounds(m))).collect();
         let group_center = group_bounds
             .iter()
             .map(|(k, (min, max))| (*k, [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0]))
             .collect();
+        // En un grupo de tubos (el puño encima del cuerpo de una bolsa
+        // redonda), cada uno da la misma vuelta que el más ancho, en un
+        // cilindro a su medida: cada punto queda sobre el que se le cose y,
+        // al cerrarse, todos encogen a la vez. En el mismo cilindro, el más
+        // estrecho tendría que encoger mucho más que el resto y se doblaría,
+        // arrastrando a los demás.
+        let self_sewn = |id: pattern::PieceId| seams.iter().any(|s| s.sides.iter().all(|side| side.piece == id));
+        let mut tubes = HashMap::new();
+        for &group in groups.keys().filter(|g| is_wall(g.2)) {
+            let members: Vec<(pattern::PieceId, [f64; 2], [f64; 2])> = meshes
+                .iter()
+                .filter(|(_, p, _)| group_of[&p.id] == group)
+                .map(|&(_, p, m)| {
+                    let (min, max) = bounds(&[m]);
+                    (p.id, min, max)
+                })
+                .collect();
+            if members.len() < 2 || !members.iter().all(|&(id, ..)| self_sewn(id)) {
+                continue;
+            }
+            let widest = members.iter().map(|(_, min, max)| max[0] - min[0]).fold(0.0, f64::max);
+            for (id, min, max) in members {
+                tubes.insert(id, ((max[0] - min[0]) / widest, (min[0] + max[0]) / 2.0));
+            }
+        }
 
+        let by_id: HashMap<pattern::PieceId, (&Piece, &Mesh2D)> =
+            meshes.iter().map(|&(_, p, m)| (p.id, (p, m))).collect();
         let mut zones = HashMap::new();
         for zone in BodyZone::ALL {
             let in_zone: Vec<(u8, Arrangement)> =
@@ -1235,6 +1408,7 @@ impl AroundLayout {
                 let entry = if walls.is_empty() { (0.0, 0.0) } else { (min[1], ((max[1] - min[1]) * 1e-3) as f32) };
                 layers.insert(layer, entry);
             }
+            align_layers(zone, &mut layers, &by_id, seams, &zone_of);
             let height = layers.values().map(|&(_, h)| h).fold(0.0, f32::max);
             // Cada grupo ocupa como mucho este ángulo del cilindro, para que
             // quede un hueco entre grupos vecinos. Sobre el cuerpo, una pieza
@@ -1251,12 +1425,16 @@ impl AroundLayout {
             } else {
                 0.85
             } * std::f64::consts::PI;
-            let widest = group_bounds
+            // El radio de la capa de más dentro con el que el grupo más ancho
+            // de cada capa cabe en ese ángulo, en su cilindro.
+            let fit = group_bounds
                 .iter()
                 .filter(|((z, _, a), _)| *z == zone && is_wall(*a))
-                .map(|(_, (min, max))| max[0] - min[0])
+                .map(|((_, layer, _), (min, max))| {
+                    let sep = f64::from(inner.saturating_sub(*layer)) * f64::from(LAYER_SEP) * 1e3;
+                    (max[0] - min[0]) / max_angle - sep
+                })
                 .fold(0.0, f64::max);
-            let fit = widest / max_angle;
             let (frame, radius) = match avatar {
                 Some(avatar) => {
                     let frame = *avatar.zone(zone);
@@ -1273,12 +1451,17 @@ impl AroundLayout {
                         length: height,
                         radius: 0.0,
                     };
-                    (frame, fit.max(100.0))
+                    // Un tubo (una bolsa redonda) va a su medida: en un
+                    // cilindro más ancho quedaría abierto por detrás, y al
+                    // cerrarse se iría hacia atrás, lejos de su base.
+                    let round =
+                        in_zone.iter().filter(|&&(_, a)| is_wall(a)).all(|&(l, a)| rolled.contains(&(zone, l, a)));
+                    (frame, if lone_walls && round { fit } else { fit.max(100.0) })
                 }
             };
             zones.insert(zone, ZoneLayout { frame, radius, inner, layers, height });
         }
-        Self { group_center, zones, by_zone }
+        Self { group_center, tubes, zones, by_zone }
     }
 
     fn zone(&self, piece: &Piece) -> (BodyZone, &ZoneLayout) {
@@ -1298,8 +1481,9 @@ impl AroundLayout {
     }
 
     /// Posición (m) de un punto del patrón de la pieza, `offset` metros
-    /// hacia fuera de donde iría.
-    fn place(&self, piece: &Piece, p: [f64; 2], offset: f32) -> Vec3 {
+    /// hacia fuera de donde iría por ir encima de otra pieza y `flap` por ir
+    /// en la solapa de un doblez.
+    fn place(&self, piece: &Piece, p: [f64; 2], offset: f32, flap: f32) -> Vec3 {
         let (zone, layout) = self.zone(piece);
         let a = piece.arrangement;
         let f = &layout.frame;
@@ -1309,16 +1493,41 @@ impl AroundLayout {
         // Las tapas de las capas de dentro, también algo más dentro.
         let inset = f32::from(piece.layer) * LAYER_SEP;
         match a {
-            Arrangement::Top => f.top - f.axis * (CAP_GAP - inset + offset) + f.right * dx + f.front * dy,
-            Arrangement::Bottom => f.top + f.axis * (height + CAP_GAP - inset + offset) + f.right * dx - f.front * dy,
+            Arrangement::Top => f.top - f.axis * (CAP_GAP - inset + offset + flap) + f.right * dx + f.front * dy,
+            Arrangement::Bottom => {
+                let depth = layout.bottom_depth(piece.layer, height) + offset + flap;
+                f.top + f.axis * depth + f.right * dx - f.front * dy
+            }
             _ => {
                 // La x del dibujo avanza hacia la derecha de quien mira la pieza.
-                let radius = layout.radius(piece.layer);
-                let theta = Self::angle(a) + (p[0] - c[0]) / radius;
+                // La solapa de un doblez, en su propio cilindro, más dentro o
+                // más fuera, pero a la par de la tela de la que sale (ya es
+                // así de corta o de larga: ver `fold_flaps_around`). Lo que va
+                // encima de otra pieza (`offset`), justo encima de su punto.
+                let (radius, center) = self.wall_radius(piece, layout).unwrap_or((layout.radius(piece.layer), c[0]));
+                let theta = Self::angle(a) + (p[0] - center) / radius;
                 let along = ((p[1] - top) * 1e-3) as f32;
+                let radius = radius + f64::from(flap) * 1e3;
                 f.top + f.axis * along + f.direction(theta as f32) * ((radius * 1e-3) as f32 + offset)
             }
         }
+    }
+
+    /// Radio (mm) del cilindro de una pared y x (mm) del patrón que va en
+    /// su ángulo, o `None` si no es un tubo de un grupo de tubos (va en el
+    /// cilindro de su capa, centrada con su grupo).
+    fn wall_radius(&self, piece: &Piece, layout: &ZoneLayout) -> Option<(f64, f64)> {
+        let &(scale, center) = self.tubes.get(&piece.id)?;
+        Some(((layout.radius(piece.layer) * scale).max(layout.min_radius(piece.layer)), center))
+    }
+
+    /// Radio (mm) del cilindro de una pared, o `None` si es una tapa.
+    fn radius_of(&self, piece: &Piece) -> Option<f64> {
+        if !is_wall(piece.arrangement) {
+            return None;
+        }
+        let (_, layout) = self.zone(piece);
+        Some(self.wall_radius(piece, layout).map_or(layout.radius(piece.layer), |(radius, _)| radius))
     }
 
     fn front(&self, piece: &Piece) -> Vec3 {
@@ -1347,7 +1556,8 @@ struct FlatLayout {
     /// Centro (mm) de cada grupo de piezas en el patrón.
     center: HashMap<(u8, Arrangement), [f64; 2]>,
     bounds: HashMap<(u8, Arrangement), ([f64; 2], [f64; 2])>,
-    /// Borde superior (mm) de las paredes de cada capa en el patrón.
+    /// Alto (mm) del patrón de cada capa que va arriba: el borde de arriba
+    /// de sus paredes o lo que pida la costura con la capa de fuera.
     top: HashMap<u8, f64>,
     /// Alto (mm) de las paredes más altas: su mitad queda en z = 0.
     height: f64,
@@ -1358,7 +1568,7 @@ struct FlatLayout {
 }
 
 impl FlatLayout {
-    fn new(meshes: &[(usize, &Piece, &Mesh2D)]) -> Self {
+    fn new(meshes: &[(usize, &Piece, &Mesh2D)], seams: &[pattern::Seam]) -> Self {
         let mut groups: HashMap<(u8, Arrangement), Vec<&Mesh2D>> = HashMap::new();
         for (_, piece, mesh) in meshes {
             groups.entry((piece.layer, piece.arrangement)).or_default().push(mesh);
@@ -1368,7 +1578,7 @@ impl FlatLayout {
         let center =
             bounds.iter().map(|(k, (min, max))| (*k, [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0])).collect();
         let layers: Vec<u8> = groups.keys().map(|&(l, _)| l).collect();
-        let (mut top, mut front_size, mut height) = (HashMap::new(), HashMap::new(), 0.0f64);
+        let (mut tops, mut front_size, mut height) = (HashMap::new(), HashMap::new(), 0.0f64);
         for &layer in &layers {
             let walls: Vec<&Mesh2D> = groups
                 .iter()
@@ -1377,7 +1587,7 @@ impl FlatLayout {
                 .collect();
             let (min, max) = self::bounds(&walls);
             if !walls.is_empty() {
-                top.insert(layer, min[1]);
+                tops.insert(layer, (min[1], ((max[1] - min[1]) * 1e-3) as f32));
                 height = height.max(max[1] - min[1]);
             }
             let size = bounds
@@ -1386,6 +1596,11 @@ impl FlatLayout {
                 .map_or([0.0, 0.0], |(min, max)| [max[0] - min[0], max[1] - min[1]]);
             front_size.insert(layer, size);
         }
+        // Como alrededor: cada forro, a la altura de su costura con la capa
+        // de fuera.
+        let by_id = meshes.iter().map(|&(_, p, m)| (p.id, (p, m))).collect();
+        align_layers(BodyZone::Torso, &mut tops, &by_id, seams, &|_| BodyZone::Torso);
+        let top = tops.into_iter().map(|(layer, (top, _))| (layer, top)).collect();
         let inner = layers.iter().copied().max().unwrap_or(0);
         Self { center, bounds, top, height, front_size, inner }
     }
@@ -1774,15 +1989,8 @@ mod tests {
     fn lining_starts_and_stays_inside() {
         let lined = examples::lined_tote_bag();
         let settings = SceneSettings { mesh_size: 30.0, ..Default::default() };
-        let radius = |scene: &Scene, name: &str| {
-            let index = lined.pieces.iter().position(|p| p.name == name).unwrap();
-            let range = &scene.cloth.pieces[index];
-            let start = range.first_particle as usize;
-            scene.cloth.positions[start..start + range.particle_count as usize]
-                .iter()
-                .map(|p| p.x.hypot(p.z))
-                .fold((f32::INFINITY, 0.0f32), |(lo, hi), r| (lo.min(r), hi.max(r)))
-        };
+        let radius =
+            |scene: &Scene, name: &str| radius_range(scene, lined.pieces.iter().position(|p| p.name == name).unwrap());
         let scene = build(&lined, &settings, |_| egui::Color32::WHITE);
         assert!(scene.failed.is_empty() && scene.crossed.is_empty(), "{:?} {:?}", scene.failed, scene.crossed);
         let (outer, lining, pocket) =
@@ -2051,7 +2259,12 @@ mod tests {
                 .positions
                 .iter()
                 .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
-            assert!((highest - HANG_HEIGHT).abs() < 0.03, "{name}: arriba a {highest} m");
+            // Cuelga de lo más alto. Puede haber bajado algo al coser: el
+            // puño del chalk bag baja al estirarse hasta la boca.
+            let held = cloth.positions.iter().zip(&cloth.inv_mass).filter(|&(_, &w)| w == 0.0);
+            let held = held.map(|(p, _)| p.y).fold(f32::NEG_INFINITY, f32::max);
+            assert!(highest - held < 0.03, "{name}: cuelga a {held} m y llega a {highest} m");
+            assert!((held - HANG_HEIGHT).abs() < 0.1, "{name}: cuelga a {held} m");
             assert!(lowest > 0.5, "{name}: llega hasta {lowest} m");
             // Como al soltarlos: donde un asa firme se apoya en el panel junto
             // a su costura quedan unos pocos puntos vibrando en cada subpaso,
@@ -2255,31 +2468,70 @@ mod tests {
         open + x(row[0].1).distance(x(row[row.len() - 1].1))
     }
 
-    /// El puño de punto del chalk bag (341 mm) se cose estirado a la boca
-    /// del cuerpo de lona (381 mm): el punto cede hasta el largo de la boca
-    /// y la lona no se frunce para salirle al encuentro.
+    /// Distancia (m) mínima y máxima al eje vertical de las partículas de
+    /// una pieza: con la colocación «alrededor», cuánto más dentro va.
+    fn radius_range(scene: &Scene, piece: usize) -> (f32, f32) {
+        let sp = &scene.pieces[piece];
+        let start = sp.first_particle as usize;
+        scene.cloth.positions[start..start + sp.mesh.positions.len()]
+            .iter()
+            .map(|p| p.x.hypot(p.z))
+            .fold((f32::INFINITY, 0.0f32), |(lo, hi), r| (lo.min(r), hi.max(r)))
+    }
+
+    /// El chalk bag completo: el puño de punto doblado y el forro de pelo
+    /// (341 mm los dos) se cosen estirados a la boca del cuerpo de lona
+    /// (381 mm). El punto y el forro ceden hasta el largo de la boca (un
+    /// 11 % más), la lona no se frunce para salirles al encuentro, el forro
+    /// empieza dentro y, como nada se cruza, sigue dentro. Y la bolsa se
+    /// queda de pie.
     #[test]
-    fn knit_cuff_stretches_onto_the_mouth() {
+    fn chalk_bag_cuff_and_lining_stretch_onto_the_mouth() {
         let pattern = examples::chalk_bag();
         let settings = SceneSettings { mesh_size: 20.0, ..Default::default() };
         let mut scene = build(&pattern, &settings, |_| egui::Color32::WHITE);
-        for _ in 0..360 {
+        assert!(scene.failed.is_empty() && scene.crossed.is_empty(), "{:?} {:?}", scene.failed, scene.crossed);
+        let index = |name: &str| pattern.pieces.iter().position(|p| p.name.starts_with(name)).unwrap();
+        let (cuff, body, lining) = (index("Puño"), index("Cuerpo"), index("Forro"));
+        let (outer, inner) = (radius_range(&scene, body), radius_range(&scene, lining));
+        assert!(inner.1 < outer.0, "forro {inner:?}, cuerpo {outer:?}");
+        for _ in 0..300 {
             scene.cloth.step(FRAME, &settings.params(), &scene.colliders);
         }
         assert!(!scene.cloth.is_sewing(), "sigue cosiendo");
-        let rows = |i: usize| {
+        let gap = scene.cloth.max_seam_gap();
+        assert!(gap < 5e-3, "costura abierta {gap}");
+        let crossings = scene.cloth.count_crossings();
+        assert_eq!(crossings, 0, "aristas cruzadas");
+        // Y de pie, con la base plana en la mesa.
+        let base = &scene.pieces[index("Base (2)")];
+        let at = |i: u32| scene.cloth.positions[(base.first_particle + i) as usize];
+        let normal: Vec3 = base.mesh.triangles.iter().map(|t| (at(t[1]) - at(t[0])).cross(at(t[2]) - at(t[0]))).sum();
+        let tilt = normal.normalize().y.abs().acos().to_degrees();
+        assert!(tilt < 15.0, "se ha tumbado: la base, a {tilt:.0}°");
+
+        // Los bordes de arriba y de abajo de cada pieza, medidos en 3D.
+        let edges = |i: usize| {
             let ys = scene.pieces[i].mesh.positions.iter().map(|p| p[1]);
-            ys.clone().fold(f64::INFINITY, f64::min)..=ys.fold(f64::NEG_INFINITY, f64::max)
+            let (top, bottom) = (ys.clone().fold(f64::INFINITY, f64::min), ys.fold(f64::NEG_INFINITY, f64::max));
+            (ring_length(&scene, i, top) * 1e3, ring_length(&scene, i, bottom) * 1e3)
         };
-        let (body, cuff) = (rows(0), rows(1));
-        let mouth = ring_length(&scene, 0, *body.start()) * 1e3;
-        let sewn = ring_length(&scene, 1, *cuff.end()) * 1e3;
-        // El fondo va cosido a la base redonda (π × 121 mm, unos 380).
-        let bottom = ring_length(&scene, 0, *body.end()) * 1e3;
-        assert!(mouth > 370.0, "la boca se encoge hasta {mouth} mm");
-        assert!(sewn > 370.0, "el puño se queda en {sewn} mm (341 sin estirar)");
-        assert!((mouth - bottom).abs() < 15.0, "boca {mouth} mm y fondo {bottom} mm");
-        assert_eq!(scene.cloth.count_crossings(), 0);
+        let mouth = pattern.pieces[body].bounding_box().width() as f32;
+        let ((body_top, body_bottom), (cuff_top, cuff_bottom), (lining_top, _)) =
+            (edges(body), edges(cuff), edges(lining));
+        eprintln!(
+            "chalk bag: boca {body_top:.0} mm (fondo {body_bottom:.0}), puño {cuff_top:.0} / {cuff_bottom:.0}, \
+             forro {lining_top:.0}, de {mouth:.0}"
+        );
+        for (name, length) in [
+            ("boca", body_top),
+            ("fondo", body_bottom),
+            ("puño (un borde)", cuff_top),
+            ("puño (el otro)", cuff_bottom),
+            ("forro", lining_top),
+        ] {
+            assert!((length / mouth - 1.0).abs() < 0.03, "{name}: {length} mm, la boca mide {mouth}");
+        }
     }
 
     /// Una fijación sujeta su punto donde quede al terminar de coser, y la
@@ -2305,5 +2557,51 @@ mod tests {
         assert_eq!(scene.cloth.inv_mass.iter().filter(|&&w| w == 0.0).count(), 1);
         let lowest = scene.cloth.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
         assert!(at.y - lowest > 0.3, "la bolsa no cuelga: {} m por debajo", at.y - lowest);
+    }
+
+    /// El bolso con forro, bolsillo y cremallera: el forro empieza dentro
+    /// del exterior y el bolsillo dentro del forro. Cosido y asentado, nada
+    /// se cruza (así el forro sigue dentro) y todas las costuras cierran.
+    /// Con la cremallera abierta y algo de relleno, la boca se abre.
+    #[test]
+    fn lined_zipper_bag_sews_and_opens() {
+        for open in [0.0, 1.0] {
+            let mut pattern = examples::lined_zipper_bag();
+            let teeth = pattern.seams.iter().position(|s| s.kind == SeamKind::Zipper).unwrap();
+            pattern.seams[teeth].open = open;
+            let settings = SceneSettings { mesh_size: 25.0, ..Default::default() };
+            let mut scene = build(&pattern, &settings, |_| egui::Color32::GRAY);
+            assert!(scene.failed.is_empty() && scene.crossed.is_empty(), "{:?} {:?}", scene.failed, scene.crossed);
+            let range = |names: &[&str]| {
+                let pieces = pattern.pieces.iter().enumerate().filter(|(_, p)| names.contains(&p.name.as_str()));
+                pieces
+                    .map(|(i, _)| radius_range(&scene, i))
+                    .fold((f32::INFINITY, 0.0f32), |a, b| (a.0.min(b.0), a.1.max(b.1)))
+            };
+            let (outer, lining, pocket) =
+                (range(&["Delantero", "Trasero"]), range(&["Forro delantero", "Forro trasero"]), range(&["Bolsillo"]));
+            assert!(lining.1 < outer.0, "forro {lining:?}, exterior {outer:?}");
+            assert!(pocket.1 < lining.0, "bolsillo {pocket:?}, forro {lining:?}");
+
+            let params = SimParams { pressure: if open > 0.0 { 10.0 } else { 0.0 }, ..settings.params() };
+            for _ in 0..300 {
+                scene.cloth.step(FRAME, &params, &scene.colliders);
+            }
+            assert!(!scene.cloth.is_sewing(), "abierta {open}: sigue cosiendo");
+            let gap = scene.cloth.max_seam_gap();
+            assert!(gap < 5e-3, "abierta {open}: costura abierta {gap}");
+            let crossings = scene.cloth.count_crossings();
+            assert_eq!(crossings, 0, "abierta {open}: aristas cruzadas");
+            let draw = scene.seam_draws.iter().find(|d| d.index == teeth).unwrap();
+            let at = |v: u32| scene.cloth.positions[v as usize];
+            let (a, b) = (&draw.sides[0].particles, &draw.sides[1].particles);
+            let mouth = a.iter().zip(b).map(|(&p, &q)| at(p).distance(at(q))).fold(0.0, f32::max);
+            eprintln!("bolso con forro, abierta {open}: boca {:.0} mm", mouth * 1e3);
+            if open > 0.0 {
+                assert!(mouth > 0.03, "la boca no se abre ({mouth} m)");
+            } else {
+                assert!(mouth < 5e-3, "la cremallera cerrada se abre ({mouth} m)");
+            }
+        }
     }
 }
