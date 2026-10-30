@@ -378,6 +378,29 @@ impl Cloth {
         }
     }
 
+    /// Cambia la forma en reposo de una pieza: `rest` recibe la posición en
+    /// el patrón (m) de los dos extremos de cada restricción de distancia
+    /// de la pieza y devuelve su nueva longitud en reposo (m), o `None`
+    /// para dejarla. Sirve, por ejemplo, para fruncir la tela junto a una
+    /// costura.
+    pub fn reshape(&mut self, piece: &PieceRange, rest: impl Fn(Vec3, Vec3) -> Option<f32>) {
+        let range = piece.first_particle..piece.first_particle + piece.particle_count;
+        let at = |i: u32| self.rest[i as usize].0;
+        let new_length = |a: u32, b: u32| {
+            if range.contains(&a) && range.contains(&b) { rest(at(a), at(b)) } else { None }
+        };
+        for c in self.pending.iter_mut().chain(&mut self.constraints) {
+            if let Some(length) = new_length(c.a, c.b) {
+                c.rest_length = length;
+            }
+        }
+        for (&[a, b], length) in self.mesh_edges.iter().zip(&mut self.rest_edges) {
+            if let Some(new) = new_length(a, b) {
+                *length = new;
+            }
+        }
+    }
+
     /// Suma masa (kg) a una partícula, como el margen de una costura. Las
     /// partículas fijas siguen fijas.
     pub fn add_mass(&mut self, i: usize, mass: f32) {
@@ -423,6 +446,12 @@ impl Cloth {
     /// `true` mientras quede alguna costura por cerrar.
     pub fn is_sewing(&self) -> bool {
         self.seams.iter().any(|c| c.rest_length > 0.0)
+    }
+
+    /// El turno de montaje que se está cosiendo ahora (el más bajo que
+    /// queda abierto), o `None` si ya está todo cerrado.
+    pub fn sewing_turn(&self) -> Option<u32> {
+        self.seams.iter().zip(&self.seam_order).filter(|(c, _)| c.rest_length > 0.0).map(|(_, &t)| t).min()
     }
 
     /// Separación máxima (m) que queda entre dos puntos cosidos.
@@ -476,8 +505,7 @@ impl Cloth {
                 );
             }
             let shrink = params.sew_speed.max(0.0) * h;
-            let turn =
-                self.seams.iter().zip(&self.seam_order).filter(|(c, _)| c.rest_length > 0.0).map(|(_, &t)| t).min();
+            let turn = self.sewing_turn();
             for (c, &t) in self.seams.iter_mut().zip(&self.seam_order) {
                 if Some(t) == turn {
                     c.rest_length = (c.rest_length - shrink).max(0.0);

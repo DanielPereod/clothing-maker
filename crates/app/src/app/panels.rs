@@ -4,7 +4,9 @@
 //! activa.
 
 use eframe::egui::{self, Color32, RichText, Ui};
-use pattern::{Arrangement, BodyZone, EdgeKind, Point, SeamId, SeamKind, Topstitch};
+use pattern::{
+    Arrangement, BodyZone, EdgeKind, Pattern, Point, SeamFit, SeamId, SeamKind, SeamSide, StepId, Topstitch,
+};
 
 use super::ClothingMakerApp;
 use crate::canvas::{self, Selection};
@@ -482,7 +484,7 @@ impl ClothingMakerApp {
                     .seams
                     .iter()
                     .enumerate()
-                    .filter(|(_, s)| s.sides.iter().any(|side| side.piece == id && side.edge == edge))
+                    .filter(|(_, s)| s.sides.iter().any(|side| self.pattern.side_covers(side, id, edge)))
                     .map(|(k, s)| (k, s.id, s.name.clone()))
                     .collect();
                 if !seams.is_empty() && !shape {
@@ -590,9 +592,16 @@ impl ClothingMakerApp {
         let sides = self.pattern.seams[k].sides.clone();
         let names: Vec<String> =
             sides.iter().map(|s| self.pattern.piece(s.piece).map_or("?".to_owned(), |p| p.name.clone())).collect();
+        let lengths: Vec<f64> = sides.iter().map(|s| self.pattern.side_length(s).unwrap_or(0.0)).collect();
+        let whole: Vec<f64> =
+            sides.iter().map(|s| self.pattern.side_length(&SeamSide { range: None, ..*s }).unwrap_or(0.0)).collect();
+        let edge_labels: Vec<String> = sides.iter().map(|s| side_label(&self.pattern, s)).collect();
+        let steps: Vec<(StepId, String)> = self.pattern.steps.iter().map(|s| (s.id, s.name.clone())).collect();
         let count = self.pattern.seams.len();
         let mut flip = None;
         let mut remove = None;
+        let mut chain: Option<(usize, bool)> = None;
+        let mut new_step = false;
         let mut delete = false;
         let mut move_by = 0;
         widgets::section(ui, &format!("Costura {}", k + 1), None, |ui| {
@@ -615,6 +624,42 @@ impl ClothingMakerApp {
                 if kind != seam.kind {
                     seam.set_kind(kind);
                 }
+                ui.end_row();
+                widgets::prop_label(ui, "Ajuste");
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("seam_fit")
+                        .selected_text(seam.fit.label())
+                        .show_ui(ui, |ui| {
+                            for option in SeamFit::ALL {
+                                ui.selectable_value(&mut seam.fit, option, option.label()).on_hover_text(option.hint());
+                            }
+                        })
+                        .response
+                        .on_hover_text(seam.fit.hint());
+                    let short = lengths.iter().copied().fold(f64::INFINITY, f64::min);
+                    let long = lengths.iter().copied().fold(0.0, f64::max);
+                    if short > 0.0 && long - short > pattern::SEAM_LENGTH_TOLERANCE {
+                        ui.label(RichText::new(format!("{:.2} : 1", long / short)).color(theme::TEXT_WEAK))
+                            .on_hover_text("Lo que mide el lado más largo por cada medida del más corto");
+                    }
+                });
+                ui.end_row();
+                widgets::prop_label(ui, "Etapa");
+                let current = seam
+                    .step
+                    .and_then(|s| steps.iter().position(|(id, _)| *id == s))
+                    .map_or("Sin etapa".to_owned(), |i| format!("{}. {}", i + 1, steps[i].1));
+                egui::ComboBox::from_id_salt("seam_step")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut seam.step, None, "Sin etapa");
+                        for (i, (step, name)) in steps.iter().enumerate() {
+                            ui.selectable_value(&mut seam.step, Some(*step), format!("{}. {name}", i + 1));
+                        }
+                        new_step = ui.selectable_label(false, "+ Nueva etapa").clicked();
+                    })
+                    .response
+                    .on_hover_text("En qué etapa de la línea de montaje se cose (las de antes se cierran primero)");
                 ui.end_row();
                 widgets::prop_label(ui, "Margen hacia");
                 let pressed_label = |p: Option<usize>| match p {
@@ -673,11 +718,10 @@ impl ClothingMakerApp {
             let default_allowance = self.pattern.seam_allowance;
             egui::Grid::new("seam_sides").num_columns(4).striped(true).show(ui, |ui| {
                 for (j, side) in sides.iter().enumerate() {
-                    let length = self.pattern.edge_length(side.piece, side.edge).unwrap_or(0.0);
                     let Some(piece) = self.pattern.piece_mut(side.piece) else { continue };
                     let edge = piece.edge_index(side.edge);
-                    ui.label(format!("{} · arista {}", names[j], edge.map_or(0, |i| i + 1)));
-                    ui.label(RichText::new(format!("{:.1} cm", length / 10.0)).color(theme::TEXT_WEAK));
+                    ui.label(format!("{} · {}", names[j], edge_labels[j]));
+                    ui.label(RichText::new(format!("{:.1} cm", lengths[j] / 10.0)).color(theme::TEXT_WEAK));
                     match edge {
                         Some(i) => allowance_editor(ui, piece, i, default_allowance),
                         None => {
@@ -688,10 +732,57 @@ impl ClothingMakerApp {
                         if ui.small_button("⇄").on_hover_text("Invertir el sentido de este lado").clicked() {
                             flip = Some(j);
                         }
+                        if edge.is_some() {
+                            if ui
+                                .small_button("+")
+                                .on_hover_text("Seguir por la arista siguiente del contorno (Ctrl+clic con Coser)")
+                                .clicked()
+                            {
+                                chain = Some((j, true));
+                            }
+                            if side.end.is_some()
+                                && ui.small_button("−").on_hover_text("Quitar la última arista del lado").clicked()
+                            {
+                                chain = Some((j, false));
+                            }
+                        }
                         if sides.len() > 2 && ui.small_button("✕").on_hover_text("Quitar este lado").clicked() {
                             remove = Some(j);
                         }
                     });
+                    ui.end_row();
+
+                    // Tramo: coser solo una parte del lado (un bolsillo a
+                    // media altura, una abertura que se deja sin coser).
+                    let seam_side = &mut self.pattern.seams[k].sides[j];
+                    let mut partial = seam_side.range.is_some();
+                    ui.label("");
+                    if ui
+                        .checkbox(&mut partial, "Solo un tramo")
+                        .on_hover_text("Coser solo una parte del lado")
+                        .changed()
+                    {
+                        seam_side.range = partial.then_some([0.0, 1.0]);
+                    }
+                    if let Some([from, to]) = seam_side.range.as_mut()
+                        && whole[j] > 0.0
+                    {
+                        let mut mm = [*from * whole[j] / 10.0, *to * whole[j] / 10.0];
+                        let changed = ui
+                            .horizontal(|ui| {
+                                let max = whole[j] / 10.0;
+                                let a =
+                                    ui.add(cm_drag(&mut mm[0], max)).on_hover_text("Desde (en el sentido de la pieza)");
+                                ui.label("–");
+                                let b = ui.add(cm_drag(&mut mm[1], max)).on_hover_text("Hasta");
+                                a.changed() || b.changed()
+                            })
+                            .inner;
+                        if changed {
+                            *from = mm[0] * 10.0 / whole[j];
+                            *to = mm[1] * 10.0 / whole[j];
+                        }
+                    }
                     ui.end_row();
                 }
             });
@@ -707,6 +798,16 @@ impl ClothingMakerApp {
         if move_by != 0 {
             self.pattern.move_seam(id, move_by);
             return;
+        }
+        if new_step {
+            let step = self.pattern.add_step(format!("Etapa {}", steps.len() + 1));
+            self.pattern.seams[k].step = Some(step);
+        }
+        if let Some((j, longer)) = chain {
+            let side = self.pattern.seams[k].sides[j];
+            if let Some(changed) = rechain(&self.pattern, &side, longer) {
+                self.pattern.seams[k].sides[j] = changed;
+            }
         }
         let seam = &mut self.pattern.seams[k];
         if let Some(j) = flip {
@@ -794,6 +895,41 @@ fn allowance_editor(ui: &mut Ui, piece: &mut pattern::Piece, i: usize, default: 
             piece.set_edge_allowance(i, None);
         }
     });
+}
+
+/// Qué recorre un lado de costura: «arista 2», «aristas 1–4» o «línea 1».
+pub fn side_label(pattern: &Pattern, side: &SeamSide) -> String {
+    let Some(piece) = pattern.piece(side.piece) else { return "?".to_owned() };
+    if let Some(i) = piece.line_index(side.edge) {
+        return format!("línea {}", i + 1);
+    }
+    let first = piece.edge_index(side.edge).map_or(0, |i| i + 1);
+    match side.end.and_then(|e| piece.edge_index(e)) {
+        Some(last) => format!("aristas {first}–{}", last + 1),
+        None => format!("arista {first}"),
+    }
+}
+
+/// El mismo lado de costura con una arista más del contorno al final
+/// (`longer`) o una menos. `None` si no puede: ya da toda la vuelta, o ya
+/// es una sola arista.
+pub fn rechain(pattern: &Pattern, side: &SeamSide, longer: bool) -> Option<SeamSide> {
+    let piece = pattern.piece(side.piece)?;
+    let n = piece.len();
+    let last = piece.edge_index(side.end.unwrap_or(side.edge))?;
+    let next = piece.edges()[(last + if longer { 1 } else { n - 1 }) % n].id;
+    if longer && next == side.edge {
+        return None;
+    }
+    if !longer && side.end.is_none() {
+        return None;
+    }
+    Some(side.through(next))
+}
+
+/// Casilla para una medida en cm entre 0 y `max`.
+fn cm_drag(value: &mut f64, max: f64) -> egui::DragValue<'_> {
+    egui::DragValue::new(value).range(0.0..=max).speed(0.1).fixed_decimals(1).suffix(" cm")
 }
 
 /// Editor de un punto en cm. Devuelve `true` si ha cambiado.

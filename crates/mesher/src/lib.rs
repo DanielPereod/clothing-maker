@@ -67,6 +67,8 @@ pub struct Mesh2D {
 pub struct LineVertices {
     pub line: EdgeId,
     pub vertices: Vec<u32>,
+    /// Dónde cae cada vértice, en fracciones (0..1) del largo de la línea.
+    pub s: Vec<f64>,
 }
 
 impl Mesh2D {
@@ -87,16 +89,24 @@ impl Mesh2D {
     /// agujero) o de una línea interior, del principio al final, con los dos
     /// extremos.
     pub fn edge_vertices(&self, edge: EdgeId) -> Option<Vec<u32>> {
+        Some(self.edge_samples(edge)?.into_iter().map(|(v, _)| v).collect())
+    }
+
+    /// Como [`Self::edge_vertices`], con dónde cae cada vértice en la
+    /// arista (fracciones 0..1 de su largo).
+    pub fn edge_samples(&self, edge: EdgeId) -> Option<Vec<(u32, f64)>> {
         let in_loop = |contour: &[BoundaryVertex]| {
             let first = contour.iter().position(|b| b.edge == edge)?;
-            let mut out: Vec<u32> = contour[first..].iter().take_while(|b| b.edge == edge).map(|b| b.vertex).collect();
+            let mut out: Vec<(u32, f64)> =
+                contour[first..].iter().take_while(|b| b.edge == edge).map(|b| (b.vertex, b.s)).collect();
             let end = (first + out.len()) % contour.len();
-            out.push(contour[end].vertex);
+            out.push((contour[end].vertex, 1.0));
             Some(out)
         };
-        in_loop(&self.boundary)
-            .or_else(|| self.holes.iter().find_map(|h| in_loop(h)))
-            .or_else(|| self.lines.iter().find(|l| l.line == edge).map(|l| l.vertices.clone()))
+        in_loop(&self.boundary).or_else(|| self.holes.iter().find_map(|h| in_loop(h))).or_else(|| {
+            let line = self.lines.iter().find(|l| l.line == edge)?;
+            Some(line.vertices.iter().copied().zip(line.s.iter().copied()).collect())
+        })
     }
 
     /// Si un vértice está en el borde de la tela (el contorno o un agujero).
@@ -175,34 +185,174 @@ pub struct PatternMesh {
     pub seams: Vec<SeamMesh>,
 }
 
-/// Malla todas las piezas de un patrón. Los lados de cada costura (y de las
-/// costuras que comparten aristas con ella) reciben el mismo número de
-/// divisiones: el mayor de los que les tocarían por separado.
+/// Cómo se reparten los puntos de la malla a lo largo de una arista o una
+/// línea: cortes (fracciones 0..1 de su largo, del 0 al 1) y en cuántos
+/// tramos iguales se divide cada trozo entre dos cortes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgePlan {
+    pub breaks: Vec<f64>,
+    pub counts: Vec<usize>,
+}
+
+impl EdgePlan {
+    /// `n` tramos iguales.
+    pub fn uniform(n: usize) -> Self {
+        Self { breaks: vec![0.0, 1.0], counts: vec![n.max(1)] }
+    }
+
+    /// Dónde cae cada punto, del 0 al 1 incluidos.
+    pub fn samples(&self) -> Vec<f64> {
+        let mut out = Vec::new();
+        for (k, &n) in self.counts.iter().enumerate() {
+            let (a, b) = (self.breaks[k], self.breaks[k + 1]);
+            out.extend((0..n.max(1)).map(|m| a + (b - a) * m as f64 / n.max(1) as f64));
+        }
+        out.push(1.0);
+        out
+    }
+}
+
+/// Fracciones de una arista que cuentan como el mismo punto.
+const BREAK_EPS: f64 = 1e-7;
+
+/// Un lado de costura ya repartido en trozos de arista (arista, trozo en su
+/// [`EdgePlan`]), agrupados por los piquetes y en el sentido de la costura.
+struct SideUnits {
+    piece: usize,
+    side: usize,
+    spans: Vec<pattern::SideSpan>,
+    reversed: bool,
+    segments: Vec<Vec<(EdgeId, usize)>>,
+}
+
+/// Malla todas las piezas de un patrón. Los lados de cada costura reciben
+/// el mismo número de puntos y se unen punto a punto. Entre cada dos
+/// piquetes (si todos los lados tienen los mismos) cada lado pone el mismo
+/// número de puntos, así que los piquetes caen uno sobre otro. Si un lado es
+/// un tramo o una cadena de aristas, sus extremos y las esquinas entre
+/// aristas son puntos de la malla.
 pub fn mesh_pattern(pattern: &Pattern, options: &MeshOptions) -> PatternMesh {
     let target = options.target_edge_length.max(0.1);
     // Las aristas de un agujero se mallan con la pieza en la que está.
     let owner = |id: PieceId| pattern.piece(id).and_then(|p| p.hole_in).unwrap_or(id);
-    // Divisiones que pediría cada arista cosida por su cuenta.
-    let mut divisions: HashMap<(PieceId, EdgeId), usize> = HashMap::new();
+    let index: HashMap<PieceId, usize> = pattern.pieces.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
+    let segment_of = |id: PieceId, edge: EdgeId| pattern.piece(id).and_then(|p| p.edge_segment(edge));
+
+    // 1. Cortes de cada arista cosida: el principio y el final, los
+    // extremos de los tramos y los piquetes que se usan.
+    let mut breaks: HashMap<EdgeId, Vec<f64>> = HashMap::new();
+    let mut sides: Vec<Vec<(SideUnits, Vec<f64>)>> = Vec::new();
     for seam in &pattern.seams {
-        for side in &seam.sides {
-            let Some(seg) = pattern.piece(side.piece).and_then(|p| p.edge_segment(side.edge)) else { continue };
-            divisions.insert((owner(side.piece), side.edge), edge_divisions(&seg, target, options));
+        let notches: Vec<Vec<f64>> = seam.sides.iter().map(|s| pattern.side_notches(s)).collect();
+        let use_notches = notches.iter().all(|n| n.len() == notches[0].len());
+        let mut seam_sides = Vec::new();
+        for (k, side) in seam.sides.iter().enumerate() {
+            let (Some(&piece), Some(spans)) = (index.get(&owner(side.piece)), pattern.side_spans(side)) else {
+                continue;
+            };
+            // Los piquetes, en el orden de la pieza.
+            let mut anchors: Vec<f64> = if use_notches { notches[k].clone() } else { Vec::new() };
+            if side.reversed {
+                anchors = anchors.iter().rev().map(|f| 1.0 - f).collect();
+            }
+            let total: f64 = spans.iter().map(|s| s.length).sum();
+            for span in &spans {
+                let cuts = breaks.entry(span.edge).or_insert_with(|| vec![0.0, 1.0]);
+                cuts.extend([span.from, span.to]);
+            }
+            let mut start = 0.0;
+            for span in &spans {
+                for &f in &anchors {
+                    let at = (f * total - start) / span.length;
+                    if at > 0.0 && at < 1.0 {
+                        breaks.entry(span.edge).or_default().push(span.from + at * (span.to - span.from));
+                    }
+                }
+                start += span.length;
+            }
+            let units = SideUnits { piece, side: k, spans, reversed: side.reversed, segments: Vec::new() };
+            seam_sides.push((units, anchors));
+        }
+        sides.push(seam_sides);
+    }
+    for cuts in breaks.values_mut() {
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup_by(|a, b| (*a - *b).abs() < BREAK_EPS);
+    }
+
+    // 2. Trozos de arista de cada lado, agrupados entre piquetes.
+    for (units, anchors) in sides.iter_mut().flatten() {
+        let total: f64 = units.spans.iter().map(|s| s.length).sum();
+        let mut segments = vec![Vec::new(); anchors.len() + 1];
+        let mut start = 0.0;
+        for span in &units.spans {
+            let cuts = &breaks[&span.edge];
+            for k in 0..cuts.len() - 1 {
+                let (a, b) = (cuts[k], cuts[k + 1]);
+                if a < span.from - BREAK_EPS || b > span.to + BREAK_EPS {
+                    continue;
+                }
+                let mid = (start + ((a + b) / 2.0 - span.from) / (span.to - span.from) * span.length) / total;
+                let j = anchors.iter().filter(|&&f| f < mid).count();
+                segments[j].push((span.edge, k));
+            }
+            start += span.length;
+        }
+        if units.reversed {
+            segments.reverse();
+            for segment in &mut segments {
+                segment.reverse();
+            }
+        }
+        units.segments = segments;
+    }
+
+    // 3. Tramos de cada trozo: los que pide su largo, y luego más en los
+    // lados que se quedan cortos, hasta que todos los lados de cada costura
+    // tienen los mismos entre cada dos piquetes.
+    let mut counts: HashMap<(EdgeId, usize), usize> = HashMap::new();
+    let mut lengths: HashMap<(EdgeId, usize), f64> = HashMap::new();
+    for (units, _) in sides.iter().flatten() {
+        let piece = &pattern.pieces[units.piece];
+        for span in &units.spans {
+            // La arista puede ser de un agujero de la pieza.
+            let seg = segment_of(piece.id, span.edge)
+                .or_else(|| pattern.holes_of(piece.id).find_map(|h| h.edge_segment(span.edge)));
+            let Some(seg) = seg else { continue };
+            let (len, curve) = (seg.arclen(1e-3), curve_min_divisions(&seg, options.curve_tolerance) as f64);
+            let cuts = &breaks[&span.edge];
+            for k in 0..cuts.len() - 1 {
+                let part = cuts[k + 1] - cuts[k];
+                let n = ((part * len / target).ceil() as usize).max((part * curve).ceil() as usize).max(1);
+                counts.insert((span.edge, k), n);
+                lengths.insert((span.edge, k), part * len);
+            }
         }
     }
-    // Aristas unidas por costuras, directa o indirectamente, comparten el
-    // número de divisiones. Se propaga el máximo hasta que no cambia nada.
-    loop {
+    for _ in 0..100 {
         let mut changed = false;
-        for seam in &pattern.seams {
-            let keys = seam.sides.iter().map(|s| (owner(s.piece), s.edge));
-            let max = keys.clone().filter_map(|k| divisions.get(&k).copied()).max().unwrap_or(1);
-            for k in keys {
-                if let Some(n) = divisions.get_mut(&k)
-                    && *n < max
-                {
-                    *n = max;
-                    changed = true;
+        for seam_sides in &sides {
+            let parts = seam_sides.first().map_or(0, |(u, _)| u.segments.len());
+            if seam_sides.iter().any(|(u, _)| u.segments.len() != parts) {
+                continue;
+            }
+            for j in 0..parts {
+                let sum = |u: &SideUnits, counts: &HashMap<(EdgeId, usize), usize>| -> usize {
+                    u.segments[j].iter().map(|k| counts.get(k).copied().unwrap_or(1)).sum()
+                };
+                let max = seam_sides.iter().map(|(u, _)| sum(u, &counts)).max().unwrap_or(0);
+                for (units, _) in seam_sides {
+                    for _ in sum(units, &counts)..max {
+                        // Un tramo más donde los tramos son más largos.
+                        let longest = units.segments[j].iter().max_by(|a, b| {
+                            let per = |k: &(EdgeId, usize)| lengths.get(k).copied().unwrap_or(0.0) / counts[k] as f64;
+                            per(a).total_cmp(&per(b))
+                        });
+                        if let Some(k) = longest {
+                            *counts.entry(*k).or_insert(1) += 1;
+                            changed = true;
+                        }
+                    }
                 }
             }
         }
@@ -210,6 +360,13 @@ pub fn mesh_pattern(pattern: &Pattern, options: &MeshOptions) -> PatternMesh {
             break;
         }
     }
+    let plans: HashMap<EdgeId, EdgePlan> = breaks
+        .iter()
+        .map(|(&edge, cuts)| {
+            let counts = (0..cuts.len() - 1).map(|k| counts.get(&(edge, k)).copied().unwrap_or(1)).collect();
+            (edge, EdgePlan { breaks: cuts.clone(), counts })
+        })
+        .collect();
 
     let pieces: Vec<Result<Mesh2D, MeshError>> = pattern
         .pieces
@@ -219,29 +376,39 @@ pub fn mesh_pattern(pattern: &Pattern, options: &MeshOptions) -> PatternMesh {
                 return Err(MeshError::Hole);
             }
             let holes: Vec<&Piece> = pattern.holes_of(piece.id).collect();
-            mesh_piece_with(piece, &holes, options, |edge| divisions.get(&(piece.id, edge)).copied())
+            mesh_piece_with(piece, &holes, options, |edge| plans.get(&edge).cloned())
         })
         .collect();
 
-    let index: HashMap<PieceId, usize> = pattern.pieces.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
+    // 4. Los vértices de cada lado, en el sentido de la costura.
     let mut seams = Vec::new();
-    for seam in &pattern.seams {
-        let mut sides: Vec<SeamSideMesh> = Vec::new();
-        for (k, side) in seam.sides.iter().enumerate() {
-            let Some(&piece) = index.get(&owner(side.piece)) else { continue };
-            let Ok(mesh) = &pieces[piece] else { continue };
-            let Some(mut vertices) = mesh.edge_vertices(side.edge) else { continue };
-            if side.reversed {
+    for (seam, seam_sides) in pattern.seams.iter().zip(&sides) {
+        let mut out: Vec<SeamSideMesh> = Vec::new();
+        for (units, _) in seam_sides {
+            let Ok(mesh) = &pieces[units.piece] else { continue };
+            let mut vertices: Vec<u32> = Vec::new();
+            for span in &units.spans {
+                let Some(samples) = mesh.edge_samples(span.edge) else { continue };
+                let inside = samples.iter().filter(|(_, s)| *s > span.from - 1e-6 && *s < span.to + 1e-6);
+                for &(v, _) in inside {
+                    if vertices.last() != Some(&v) {
+                        vertices.push(v);
+                    }
+                }
+            }
+            if units.reversed {
                 vertices.reverse();
             }
-            sides.push(SeamSideMesh { piece, side: k, vertices });
+            out.push(SeamSideMesh { piece: units.piece, side: units.side, vertices });
         }
         // Por si el remuestreo ha fundido algún punto (aristas casi nulas):
         // solo se cosen los lados con el número de puntos esperado.
-        let expected = seam.sides.first().and_then(|s| divisions.get(&(owner(s.piece), s.edge))).map_or(0, |n| n + 1);
-        sides.retain(|s| s.vertices.len() == expected);
-        if sides.len() >= 2 {
-            seams.push(SeamMesh { seam: seam.id, sides });
+        let expected = seam_sides
+            .first()
+            .map(|(u, _)| u.segments.iter().flatten().map(|k| counts.get(k).copied().unwrap_or(1)).sum::<usize>() + 1);
+        out.retain(|s| Some(s.vertices.len()) == expected);
+        if out.len() >= 2 {
+            seams.push(SeamMesh { seam: seam.id, sides: out });
         }
     }
     PatternMesh { pieces, seams }
@@ -253,8 +420,9 @@ fn edge_divisions(seg: &PathSeg, target: f64, options: &MeshOptions) -> usize {
 }
 
 /// Malla una pieza con sus agujeros (`holes`, piezas con su contorno).
-/// `divisions` puede fijar en cuántos tramos se divide una arista o una
-/// línea interior (si devuelve `None`, se decide por la longitud objetivo).
+/// `plan` puede fijar cómo se reparten los puntos a lo largo de una arista
+/// o una línea interior (si devuelve `None`, en tramos iguales de la
+/// longitud objetivo).
 ///
 /// Un agujero que no cabe en la pieza o una línea que se sale de la tela o
 /// cruza otra se dejan fuera (el patrón avisa al validarlo) en vez de
@@ -263,14 +431,15 @@ pub fn mesh_piece_with(
     piece: &Piece,
     holes: &[&Piece],
     options: &MeshOptions,
-    divisions: impl Fn(EdgeId) -> Option<usize>,
+    plan: impl Fn(EdgeId) -> Option<EdgePlan>,
 ) -> Result<Mesh2D, MeshError> {
     if piece.len() < 3 {
         return Err(MeshError::TooFewVertices);
     }
     let target = options.target_edge_length.max(0.1);
-    let count =
-        |edge: EdgeId, seg: &PathSeg| divisions(edge).unwrap_or_else(|| edge_divisions(seg, target, options)).max(1);
+    let count = |edge: EdgeId, seg: &PathSeg| {
+        plan(edge).unwrap_or_else(|| EdgePlan::uniform(edge_divisions(seg, target, options)))
+    };
 
     // 1. Remuestreo del contorno y de los agujeros.
     let outline = resample(piece, &count);
@@ -303,20 +472,20 @@ pub fn mesh_piece_with(
     let in_fabric = |p: Point| point_in_polygon(p, &polygon) && !rings.iter().any(|r| point_in_polygon(p, r));
 
     // 2. Líneas interiores: puntos a lo largo de cada una, si caben.
-    let mut lines: Vec<(EdgeId, Vec<Point>)> = Vec::new();
+    let mut lines: Vec<(EdgeId, Vec<Point>, Vec<f64>)> = Vec::new();
     for line in &piece.lines {
         let seg = line.segment();
         let len = seg.arclen(1e-3);
         if len < 1e-6 {
             continue;
         }
-        let n = count(line.id, &seg);
-        let points: Vec<Point> = (0..=n).map(|k| seg.eval(seg.inv_arclen(k as f64 / n as f64 * len, 1e-4))).collect();
+        let samples = count(line.id, &seg).samples();
+        let points: Vec<Point> = samples.iter().map(|&f| seg.eval(seg.inv_arclen(f * len, 1e-4))).collect();
         let clear = |p: Point| {
             in_fabric(p) && std::iter::once(&polygon).chain(&rings).all(|ring| ring_distance(p, ring) > LINE_GAP)
         };
-        if points.iter().all(|&p| clear(p)) && !lines.iter().any(|(_, other)| polylines_cross(&points, other)) {
-            lines.push((line.id, points));
+        if points.iter().all(|&p| clear(p)) && !lines.iter().any(|(_, other, _)| polylines_cross(&points, other)) {
+            lines.push((line.id, points, samples));
         }
     }
 
@@ -344,14 +513,14 @@ pub fn mesh_piece_with(
         hole_handles.push(hs);
     }
     let mut line_handles = Vec::new();
-    for (id, points) in &lines {
+    for (id, points, samples) in &lines {
         let hs: Vec<_> = points.iter().map(|&p| insert(&mut cdt, p)).collect::<Result<_, _>>()?;
         let distinct = hs.windows(2).all(|w| w[0] != w[1]);
         if distinct && hs.windows(2).all(|w| cdt.can_add_constraint(w[0], w[1])) {
             for w in hs.windows(2) {
                 cdt.add_constraint(w[0], w[1]);
             }
-            line_handles.push((*id, hs));
+            line_handles.push((*id, hs, samples));
         }
     }
     // Sin líneas interiores, spade sabe qué caras quedan fuera (el exterior
@@ -403,7 +572,11 @@ pub fn mesh_piece_with(
     let holes = hole_loops.iter().zip(&hole_handles).map(|(samples, hs)| contour(samples, hs)).collect();
     let lines = line_handles
         .iter()
-        .map(|(line, hs)| LineVertices { line: *line, vertices: hs.iter().map(|&h| at(h)).collect() })
+        .map(|(line, hs, samples)| LineVertices {
+            line: *line,
+            vertices: hs.iter().map(|&h| at(h)).collect(),
+            s: samples.to_vec(),
+        })
         .collect();
     Ok(Mesh2D { positions, triangles, boundary, holes, lines })
 }
@@ -411,15 +584,14 @@ pub fn mesh_piece_with(
 /// Puntos del contorno de una pieza repartidos por longitud de arco: cada
 /// arista en los tramos que diga `count`. Cada punto lleva su arista y su
 /// posición en ella (0..1).
-fn resample(piece: &Piece, count: &impl Fn(EdgeId, &PathSeg) -> usize) -> Vec<(Point, EdgeId, f64)> {
+fn resample(piece: &Piece, plan: &impl Fn(EdgeId, &PathSeg) -> EdgePlan) -> Vec<(Point, EdgeId, f64)> {
     let mut out: Vec<(Point, EdgeId, f64)> = Vec::new();
     for (i, seg) in piece.segments().enumerate() {
         let edge = piece.edges()[i].id;
         let len = seg.arclen(1e-3);
-        let n = count(edge, &seg);
-        for k in 0..n {
-            let s = k as f64 / n as f64;
-            let t = if k == 0 { 0.0 } else { seg.inv_arclen(s * len, 1e-4) };
+        let samples = plan(edge, &seg).samples();
+        for &s in &samples[..samples.len() - 1] {
+            let t = if s == 0.0 { 0.0 } else { seg.inv_arclen(s * len, 1e-4) };
             out.push((seg.eval(t), edge, s));
         }
     }
@@ -636,6 +808,85 @@ mod tests {
             v.dedup();
             assert_eq!(v.len(), n);
         }
+    }
+
+    /// Posición 2D del vértice `k` de un lado de costura.
+    fn side_pos(mesh: &PatternMesh, side: &SeamSideMesh, k: usize) -> Point {
+        let [x, y] = mesh.pieces[side.piece].as_ref().unwrap().positions[side.vertices[k] as usize];
+        Point::new(x, y)
+    }
+
+    /// Una base redonda de cuatro curvas cosida de una vez al bajo de un
+    /// cuerpo: el lado de la base da la vuelta entera y vuelve al principio.
+    #[test]
+    fn chains_mesh_as_one_side() {
+        use pattern::{EdgeKind, SeamSide, Vec2};
+        let mut p = Pattern::new("t");
+        let r = 60.0;
+        let body = p.add_rect("cuerpo", Point::ZERO, 2.0 * std::f64::consts::PI * r, 130.0);
+        let c = Point::new(200.0, 300.0);
+        let pts = [(0.0, -r), (r, 0.0), (0.0, r), (-r, 0.0)].map(|(x, y)| c + Vec2::new(x, y));
+        let base = p.add_polygon("base", pts.to_vec());
+        for i in 0..4 {
+            let tangent = |q: Point| Vec2::new((c - q).y, -(c - q).x).normalize() * r * 0.552_284_75;
+            let kind = EdgeKind::Cubic { h1: tangent(pts[i]), h2: -tangent(pts[(i + 1) % 4]) };
+            p.piece_mut(base).unwrap().set_edge_kind(i, kind);
+        }
+        let e = |p: &Pattern, id, i: usize| p.piece(id).unwrap().edges()[i].id;
+        let around = SeamSide::new(base, e(&p, base, 0), false).through(e(&p, base, 3));
+        p.add_seam("base", vec![SeamSide::new(body, e(&p, body, 2), true), around]).unwrap();
+        let mesh = mesh_pattern(&p, &MeshOptions::default());
+        let seam = &mesh.seams[0];
+        let (bottom, ring) = (&seam.sides[0].vertices, &seam.sides[1].vertices);
+        assert_eq!(bottom.len(), ring.len());
+        assert!(ring.len() > 19, "{}", ring.len());
+        assert_eq!(ring.first(), ring.last());
+        // Las cuatro esquinas de la base son puntos del lado.
+        for corner in pts {
+            assert!((0..ring.len()).any(|k| side_pos(&mesh, &seam.sides[1], k).distance(corner) < 1e-9));
+        }
+    }
+
+    /// Un tramo empieza y acaba donde dice, y los piquetes de los dos lados
+    /// caen en el mismo punto de la costura: el fruncido se reparte como
+    /// dicen.
+    #[test]
+    fn ranges_and_notches_place_the_points() {
+        use pattern::SeamSide;
+        let mut p = Pattern::new("t");
+        let skirt = p.add_rect("falda", Point::ZERO, 300.0, 200.0);
+        let band = p.add_rect("cinturilla", Point::new(0.0, 300.0), 200.0, 40.0);
+        let (top, bottom) = (p.piece(skirt).unwrap().edges()[0].id, p.piece(band).unwrap().edges()[2].id);
+        // La falda frunce entera en la mitad derecha de la cinturilla (su
+        // arista de abajo va de x = 200 a x = 0)...
+        p.piece_mut(skirt).unwrap().toggle_notch(top, 0.8, 1.0);
+        p.piece_mut(band).unwrap().toggle_notch(bottom, 0.25, 1.0);
+        let half = SeamSide::new(band, bottom, true).span(0.0, 0.5);
+        p.add_seam("cintura", vec![SeamSide::new(skirt, top, false), half]).unwrap();
+        // ... y la otra mitad de la misma arista se cose a otra pieza.
+        let tab = p.add_rect("trabilla", Point::new(400.0, 0.0), 100.0, 30.0);
+        let tab_top = p.piece(tab).unwrap().edges()[0].id;
+        let rest = SeamSide::new(band, bottom, true).span(0.5, 1.0);
+        p.add_seam("trabilla", vec![SeamSide::new(tab, tab_top, false), rest]).unwrap();
+
+        let mesh = mesh_pattern(&p, &MeshOptions::default());
+        assert_eq!(mesh.seams.len(), 2);
+        let seam = &mesh.seams[0];
+        let n = seam.sides[0].vertices.len();
+        assert_eq!(seam.sides[1].vertices.len(), n);
+        // La cinturilla va invertida: del medio, x = 100, al extremo, x = 200.
+        assert!(side_pos(&mesh, &seam.sides[1], 0).distance(Point::new(100.0, 340.0)) < 1e-9);
+        assert!(side_pos(&mesh, &seam.sides[1], n - 1).distance(Point::new(200.0, 340.0)) < 1e-9);
+        // Los piquetes: x = 240 en la falda y x = 150 en la cinturilla, en
+        // el mismo punto de la costura.
+        let k = (0..n).find(|&k| side_pos(&mesh, &seam.sides[0], k).distance(Point::new(240.0, 0.0)) < 1e-9);
+        let k = k.expect("el piquete de la falda es un punto de la costura");
+        assert!(side_pos(&mesh, &seam.sides[1], k).distance(Point::new(150.0, 340.0)) < 1e-9);
+        // El otro tramo acaba en el medio de la cinturilla.
+        let other = &mesh.seams[1];
+        let m = other.sides[1].vertices.len();
+        assert!(side_pos(&mesh, &other.sides[1], 0).distance(Point::new(0.0, 340.0)) < 1e-9);
+        assert!(side_pos(&mesh, &other.sides[1], m - 1).distance(Point::new(100.0, 340.0)) < 1e-9);
     }
 
     #[test]

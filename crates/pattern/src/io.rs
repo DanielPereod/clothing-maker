@@ -74,10 +74,7 @@ mod tests {
         p.piece_mut(a).unwrap().make_curve(0);
         p.piece_mut(a).unwrap().set_control_point(0, 0, Point::new(150.0, 80.0));
         let (ea, eb) = (p.piece(a).unwrap().edges()[1].id, p.piece(b).unwrap().edges()[3].id);
-        p.add_seam(
-            "costado",
-            vec![SeamSide { piece: a, edge: ea, reversed: false }, SeamSide { piece: b, edge: eb, reversed: true }],
-        );
+        p.add_seam("costado", vec![SeamSide::new(a, ea, false), SeamSide::new(b, eb, true)]);
         p
     }
 

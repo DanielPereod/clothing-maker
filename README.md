@@ -217,6 +217,43 @@ falta para piezas de verdad (bolsillos, ventanas, piezas simétricas).
   cortarse un poco más pequeño que el exterior, para que no sobre tela
   dentro.
 
+**Costuras de verdad:** lo que piden las piezas que no miden lo mismo o
+que se cosen dando la vuelta (una base redonda, un puño, un volante).
+
+- *Tramos y cadenas*: un lado de costura puede seguir el contorno por varias
+  aristas seguidas (una base redonda hecha de cuatro curvas se cose en una
+  sola costura) y coser solo un tramo de su largo (*Solo un tramo* en
+  Propiedades, desde y hasta en cm). Con la herramienta *Costura*,
+  Ctrl+clic en otra arista de la misma pieza alarga el lado hasta ella; con
+  una costura seleccionada, alarga su lado. En Propiedades, + y − añaden o
+  quitan la última arista.
+- *Piquetes* (N, en *Montaje*): marcas en el borde para casar los lados.
+  Si todos los lados de una costura tienen los mismos, la malla los hace
+  coincidir: cada tramo entre piquetes se reparte por su cuenta.
+- *Ajuste* de la costura: *igual* (los lados miden lo mismo), *embebida*
+  (el lado largo se embebe, hasta un 10 % más), *fruncida* (el largo se
+  frunce hasta el corto) o *estirada* (el corto, de punto o elástico, se
+  cose estirado). Propiedades muestra la proporción largo : corto. En 3D,
+  la fruncida y la embebida encogen la tela junto a la costura, cada vez
+  menos al alejarse, y la tela se abre en ondas; en la estirada cede la
+  tela más elástica.
+- *Línea de montaje* (abajo, en *Montaje* y *Simulación*): etapas con
+  nombre (Costados, Base, Puño...) que se cosen en orden: cada una empieza
+  cuando están cerradas las anteriores. Se crean, renombran, ordenan y
+  borran ahí, y cada costura se pasa a una etapa desde Propiedades o con
+  *+ la costura elegida*. Al simular se resalta la etapa que se está
+  cosiendo y la barra de estado la nombra. *Coser por orden* cose además
+  las costuras de cada etapa de una en una.
+- Comprobaciones: lados de largo distinto en una costura *igual* (con la
+  pista de marcarla embebida, fruncida o estirada), una embebida que embebe
+  demasiado y lados con piquetes distintos.
+- Un tubo cosido a sí mismo (un cuerpo de una sola pieza con su costado)
+  se coloca casi dando la vuelta entera, para que la costura cierre sin
+  tumbarlo.
+- El *Chalk bag* tiene ahora sus medidas reales: cuerpo de una pieza con su
+  costado, base redonda en una sola costura con piquetes y puño de punto
+  más corto que la boca, cosido estirado, en tres etapas.
+
 **Interfaz:** inspirada en los programas de CAD como Fusion 360, con tema
 oscuro.
 
@@ -226,8 +263,8 @@ oscuro.
 - Cinta de herramientas con las cinco etapas numeradas y *Siguiente* para
   pasar a la próxima. *Patrón*: seleccionar, crear (pluma, rectángulo),
   modificar, inspeccionar (rejilla, malla) y encuadrar. *Telas*: tela de la
-  selección (o de todas), añadir capa y tela nueva. *Montaje*: costura, tipo,
-  margen, orden, voltear y resaltar. *Colocación*: lado, zona y cara de la
+  selección (o de todas), añadir capa y tela nueva. *Montaje*: costura,
+  piquete, tipo, margen, orden, voltear y resaltar. *Colocación*: lado, zona y cara de la
   pieza, su capa y sobre qué pieza va, maniquí, modo de colocación y coser. *Simulación*: simular / pausa,
   reiniciar, en vivo, entorno (obstáculo), precisión, inicio de cámara y
   relleno. Los grupos con ⏷ despliegan más órdenes.
@@ -323,6 +360,15 @@ pieza con `"hole_in": <id de pieza>` es un agujero en esa pieza.
 Capas (opcional): cada pieza puede llevar `"layer"` (0 si falta: el
 exterior; 1, el forro...) y `"on": { "piece": <id de pieza> }` para ir
 encima de otra pieza, con `"wrong_side": true` si va por su revés.
+
+Tramos, piquetes, ajuste y etapas (opcionales): un lado de costura puede
+llevar `"end"` (id de la última arista si sigue el contorno por varias,
+desde `edge` en el orden de la pieza) y `"range": [desde, hasta]` (fracciones
+de su largo, en el orden de la pieza). Cada pieza puede llevar `"notches"`,
+piquetes `{ "edge": 3, "t": 0.5 }` (`t` es el parámetro de la arista, de 0 a
+1). Cada costura, `"fit"` (`exact`, `eased`, `gathered` o `stretched`; si
+falta, `exact`) y `"step"` (id de su etapa). El patrón lleva sus etapas en
+orden en `"steps"`: `[{ "id": 40, "name": "Costados" }, ...]`.
 
 ## Desarrollo
 

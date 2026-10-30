@@ -16,8 +16,10 @@ pub mod textile;
 pub use io::{FORMAT_ID, FORMAT_VERSION, PatternFile, PatternIoError};
 use kurbo::{ParamCurve, ParamCurveArclen};
 pub use kurbo::{Point, Vec2};
-pub use piece::{Arrangement, BodyZone, Edge, EdgeKind, InnerLine, Mount, Piece, layer_label, polygon_self_intersects};
-pub use seam::{AllowanceSide, DEFAULT_SEAM_ALLOWANCE, DEFAULT_STITCH_LENGTH, SeamFold, SeamKind, Topstitch};
+pub use piece::{
+    Arrangement, BodyZone, Edge, EdgeKind, InnerLine, Mount, Notch, Piece, layer_label, polygon_self_intersects,
+};
+pub use seam::{AllowanceSide, DEFAULT_SEAM_ALLOWANCE, DEFAULT_STITCH_LENGTH, SeamFit, SeamFold, SeamKind, Topstitch};
 pub use textile::{Textile, TextileId};
 
 use serde::{Deserialize, Serialize};
@@ -39,11 +41,26 @@ pub struct EdgeId(pub u64);
 #[serde(transparent)]
 pub struct SeamId(pub u64);
 
-/// Un lado de una costura: una arista concreta de una pieza.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Identificador estable de una etapa de montaje.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StepId(pub u64);
+
+/// Un lado de una costura: una arista de una pieza (o una línea interior),
+/// varias seguidas del contorno, o un tramo de ellas.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SeamSide {
     pub piece: PieceId,
     pub edge: EdgeId,
+    /// Última arista si el lado sigue el contorno por varias (una base
+    /// redonda hecha de cuatro curvas): desde `edge` hasta esta, las dos
+    /// incluidas, en el orden de la pieza.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<EdgeId>,
+    /// Tramo que se cose: desde y hasta, en fracciones (0..1) del largo del
+    /// lado y en el orden de la pieza. Sin tramo, se cose entero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<[f64; 2]>,
     /// Si es `true`, la arista se recorre al revés (de su vértice final al
     /// inicial) al emparejarla con los demás lados.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -52,7 +69,25 @@ pub struct SeamSide {
 
 impl SeamSide {
     pub fn new(piece: PieceId, edge: EdgeId, reversed: bool) -> Self {
-        Self { piece, edge, reversed }
+        Self { piece, edge, end: None, range: None, reversed }
+    }
+
+    /// El mismo lado, siguiendo el contorno hasta la arista `end`.
+    pub fn through(self, end: EdgeId) -> Self {
+        Self { end: (end != self.edge).then_some(end), ..self }
+    }
+
+    /// El mismo lado, cosido solo del tramo `from..to` (fracciones de su
+    /// largo, en el orden de la pieza).
+    pub fn span(self, from: f64, to: f64) -> Self {
+        Self { range: Some([from, to]), ..self }
+    }
+
+    /// El tramo que se cose, ordenado y dentro de 0..1.
+    pub fn sewn_range(&self) -> [f64; 2] {
+        let [a, b] = self.range.unwrap_or([0.0, 1.0]);
+        let (a, b) = (a.clamp(0.0, 1.0), b.clamp(0.0, 1.0));
+        [a.min(b), a.max(b)]
     }
 
     /// `true` si es la misma arista (en cualquier sentido).
@@ -85,6 +120,31 @@ pub struct Seam {
     /// Largo de puntada (mm).
     #[serde(default = "default_stitch_length", skip_serializing_if = "is_default_stitch_length")]
     pub stitch_length: f64,
+    /// Cómo casan los lados si no miden lo mismo (fruncida, estirada...).
+    #[serde(default, skip_serializing_if = "SeamFit::is_default")]
+    pub fit: SeamFit,
+    /// Etapa de montaje en la que se cose. Sin etapa, va con las primeras.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<StepId>,
+}
+
+/// Una etapa de montaje: costuras que se cosen a la vez («Exterior»,
+/// «Forro», «Unión en la boca»). Las etapas se cosen en orden.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssemblyStep {
+    pub id: StepId,
+    pub name: String,
+}
+
+/// Un tramo de arista que recorre un lado de costura.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SideSpan {
+    pub edge: EdgeId,
+    /// Desde y hasta, en fracciones (0..1) del largo de la arista.
+    pub from: f64,
+    pub to: f64,
+    /// Largo (mm) del tramo.
+    pub length: f64,
 }
 
 fn default_stitch_length() -> f64 {
@@ -106,6 +166,8 @@ impl Seam {
             pressed_to: None,
             topstitch: Topstitch::default(),
             stitch_length: DEFAULT_STITCH_LENGTH,
+            fit: SeamFit::default(),
+            step: None,
         }
     }
 
@@ -135,6 +197,9 @@ pub struct Pattern {
     pub pieces: Vec<Piece>,
     #[serde(default)]
     pub seams: Vec<Seam>,
+    /// Etapas de montaje, en el orden en que se cosen.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<AssemblyStep>,
     /// Es una prenda que se viste sobre el maniquí (si no, un objeto suelto
     /// como una bolsa). La vista 3D pone o quita el maniquí según esto.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -190,8 +255,14 @@ pub enum Issue {
     DanglingSeam { seam: SeamId },
     /// Una costura tiene menos de dos lados.
     SeamTooFewSides { seam: SeamId },
-    /// Las aristas de la costura tienen longitudes distintas (en mm).
+    /// Las aristas de la costura tienen longitudes distintas (en mm) y no
+    /// está marcada como fruncida, embebida o estirada.
     SeamLengthMismatch { seam: SeamId, min: f64, max: f64 },
+    /// Costura embebida con demasiada diferencia (en mm): no se puede
+    /// embeber sin pliegues.
+    TooMuchEase { seam: SeamId, min: f64, max: f64 },
+    /// Los lados de la costura no tienen los mismos piquetes: no se usan.
+    NotchesMismatch { seam: SeamId },
     /// Una línea interior se sale de la tela (fuera del contorno, dentro de
     /// un agujero o pegada al borde).
     LineOutside { piece: PieceId, line: EdgeId },
@@ -208,12 +279,17 @@ pub const LINE_MARGIN: f64 = 1.0;
 /// Diferencia de longitud (mm) a partir de la cual se avisa en una costura.
 pub const SEAM_LENGTH_TOLERANCE: f64 = 1.0;
 
+/// Lo más que puede medir el lado largo de una costura embebida, respecto
+/// al corto.
+pub const MAX_EASE: f64 = 1.1;
+
 impl Pattern {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             pieces: Vec::new(),
             seams: Vec::new(),
+            steps: Vec::new(),
             on_avatar: false,
             pressure: 0.0,
             textiles: Textile::library(),
@@ -240,7 +316,8 @@ impl Pattern {
             std::iter::once(p.id.0).chain(p.edges().iter().map(|e| e.id.0)).chain(p.lines.iter().map(|l| l.id.0))
         });
         let seams = self.seams.iter().map(|s| s.id.0);
-        pieces.chain(seams).max().unwrap_or(0)
+        let steps = self.steps.iter().map(|s| s.id.0);
+        pieces.chain(seams).chain(steps).max().unwrap_or(0)
     }
 
     /// Añade una pieza poligonal (todas las aristas rectas).
@@ -294,8 +371,12 @@ impl Pattern {
 
     fn copy_one(&mut self, src: &Piece, shape: &impl Fn(&mut Piece), name: impl Fn(&str) -> String) -> Option<PieceId> {
         let new_id = PieceId(self.alloc_id());
-        let edges = src.edges().iter().map(|e| Edge { id: EdgeId(self.alloc_id()), ..*e }).collect();
+        let edges: Vec<Edge> = src.edges().iter().map(|e| Edge { id: EdgeId(self.alloc_id()), ..*e }).collect();
+        let renamed = |id: EdgeId| src.edge_index(id).map(|i| edges[i].id);
+        let notches =
+            src.notches.iter().filter_map(|n| Some(piece::Notch { edge: renamed(n.edge)?, t: n.t })).collect();
         let mut piece = Piece::from_parts(new_id, name(&src.name), src.vertices().to_vec(), edges)?;
+        piece.notches = notches;
         piece.arrangement = src.arrangement;
         piece.zone = src.zone;
         piece.fabric = src.fabric;
@@ -329,7 +410,7 @@ impl Pattern {
             return false;
         }
         for seam in &mut self.seams {
-            seam.sides.retain(|s| !(s.piece == id && s.edge == fold));
+            seam.sides.retain(|s| !(s.piece == id && (s.edge == fold || s.end == Some(fold))));
         }
         self.seams.retain(|s| s.sides.len() >= 2);
         // Cada agujero, reflejado en el mismo doblez, como un agujero más.
@@ -438,7 +519,16 @@ impl Pattern {
     /// insertando un vértice nuevo. Devuelve el índice del vértice nuevo.
     pub fn split_edge(&mut self, piece: PieceId, edge_index: usize, t: f64) -> Option<usize> {
         let new_edge = EdgeId(self.alloc_id());
-        self.piece_mut(piece)?.split_edge(edge_index, t, new_edge)
+        let old_edge = self.piece(piece)?.edges().get(edge_index)?.id;
+        let vertex = self.piece_mut(piece)?.split_edge(edge_index, t, new_edge)?;
+        // Los lados que acababan en la arista partida siguen hasta el final
+        // de la segunda mitad: cosen lo mismo que antes.
+        for side in self.seams.iter_mut().flat_map(|s| &mut s.sides) {
+            if side.piece == piece && side.end.unwrap_or(side.edge) == old_edge {
+                side.end = Some(new_edge);
+            }
+        }
+        Some(vertex)
     }
 
     /// Borra un vértice de una pieza (las dos aristas contiguas se funden).
@@ -447,8 +537,16 @@ impl Pattern {
         let Some(removed) = self.piece_mut(piece).and_then(|p| p.remove_vertex(vertex_index)) else {
             return false;
         };
+        // La arista de antes del vértice se queda con el tramo de la borrada.
+        let merged = self.piece(piece).map(|p| {
+            let n = p.len();
+            p.edges()[(vertex_index + n - 1) % n].id
+        });
         for seam in &mut self.seams {
             seam.sides.retain(|s| !(s.piece == piece && s.edge == removed));
+            for side in seam.sides.iter_mut().filter(|s| s.piece == piece && s.end == Some(removed)) {
+                side.end = merged.filter(|&m| m != side.edge);
+            }
         }
         self.seams.retain(|s| s.sides.len() >= 2);
         true
@@ -457,7 +555,7 @@ impl Pattern {
     /// Crea una costura entre dos o más aristas distintas.
     pub fn add_seam(&mut self, name: impl Into<String>, sides: Vec<SeamSide>) -> Option<SeamId> {
         let repeated = sides.iter().enumerate().any(|(i, a)| sides[..i].iter().any(|b| a.same_edge(b)));
-        if sides.len() < 2 || repeated || !sides.iter().all(|s| self.edge_length(s.piece, s.edge).is_some()) {
+        if sides.len() < 2 || repeated || !sides.iter().all(|s| self.side_length(s).is_some()) {
             return None;
         }
         let id = SeamId(self.alloc_id());
@@ -501,9 +599,136 @@ impl Pattern {
         piece.edges().iter().map(|e| e.allowance.unwrap_or(self.seam_allowance)).collect()
     }
 
-    /// Costuras que usan una arista.
+    /// Costuras que usan una arista (también como parte de una cadena).
     pub fn seams_of_edge(&self, piece: PieceId, edge: EdgeId) -> impl Iterator<Item = &Seam> {
-        self.seams.iter().filter(move |s| s.sides.iter().any(|side| side.piece == piece && side.edge == edge))
+        self.seams.iter().filter(move |s| s.sides.iter().any(|side| self.side_covers(side, piece, edge)))
+    }
+
+    /// Aristas que recorre un lado de costura, en el orden de la pieza, o
+    /// `None` si alguna no existe. Una línea interior va sola.
+    pub fn side_edges(&self, side: &SeamSide) -> Option<Vec<EdgeId>> {
+        let piece = self.piece(side.piece)?;
+        let Some(start) = piece.edge_index(side.edge) else {
+            let line = piece.line_index(side.edge).is_some() && side.end.is_none_or(|e| e == side.edge);
+            return line.then(|| vec![side.edge]);
+        };
+        let n = piece.len();
+        let mut out = Vec::new();
+        for k in 0..n {
+            let id = piece.edges()[(start + k) % n].id;
+            out.push(id);
+            if side.end.is_none_or(|e| e == id) {
+                return Some(out);
+            }
+        }
+        None
+    }
+
+    /// Tramos de arista que se cosen en un lado, en el orden de la pieza, o
+    /// `None` si el lado no existe o no tiene largo.
+    pub fn side_spans(&self, side: &SeamSide) -> Option<Vec<SideSpan>> {
+        let piece = self.piece(side.piece)?;
+        let edges = self.side_edges(side)?;
+        let lengths: Vec<f64> =
+            edges.iter().map(|&e| piece.edge_segment(e).map(|s| s.arclen(1e-3))).collect::<Option<_>>()?;
+        let total: f64 = lengths.iter().sum();
+        let [from, to] = side.sewn_range();
+        let (from, to) = (from * total, to * total);
+        let mut out = Vec::new();
+        let mut start = 0.0;
+        for (&edge, &length) in edges.iter().zip(&lengths) {
+            let (a, b) = (from.max(start), to.min(start + length));
+            if b - a > 1e-9 && length > 0.0 {
+                out.push(SideSpan { edge, from: (a - start) / length, to: (b - start) / length, length: b - a });
+            }
+            start += length;
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// Largo (mm) que se cose de un lado.
+    pub fn side_length(&self, side: &SeamSide) -> Option<f64> {
+        Some(self.side_spans(side)?.iter().map(|s| s.length).sum())
+    }
+
+    /// Si un lado de costura pasa por una arista de una pieza.
+    pub fn side_covers(&self, side: &SeamSide, piece: PieceId, edge: EdgeId) -> bool {
+        side.piece == piece && (side.edge == edge || self.side_edges(side).is_some_and(|e| e.contains(&edge)))
+    }
+
+    /// Dónde caen los piquetes de la pieza en el tramo cosido de un lado:
+    /// fracciones (0..1) de su largo, en el sentido de la costura (al revés
+    /// si el lado va invertido) y de menor a mayor.
+    pub fn side_notches(&self, side: &SeamSide) -> Vec<f64> {
+        let (Some(piece), Some(spans)) = (self.piece(side.piece), self.side_spans(side)) else { return Vec::new() };
+        let total: f64 = spans.iter().map(|s| s.length).sum();
+        let mut out = Vec::new();
+        let mut start = 0.0;
+        for span in &spans {
+            let Some(seg) = piece.edge_segment(span.edge) else { continue };
+            let length = seg.arclen(1e-3);
+            for notch in piece.notches.iter().filter(|n| n.edge == span.edge) {
+                let at = if length > 0.0 { seg.subsegment(0.0..notch.t).arclen(1e-3) / length } else { 0.0 };
+                let pos = (start + (at - span.from) * length) / total;
+                if at > span.from && at < span.to && pos > 1e-6 && pos < 1.0 - 1e-6 {
+                    out.push(if side.reversed { 1.0 - pos } else { pos });
+                }
+            }
+            start += span.length;
+        }
+        out.sort_by(f64::total_cmp);
+        out
+    }
+
+    /// Añade una etapa de montaje al final.
+    pub fn add_step(&mut self, name: impl Into<String>) -> StepId {
+        let id = StepId(self.alloc_id());
+        self.steps.push(AssemblyStep { id, name: name.into() });
+        id
+    }
+
+    pub fn step(&self, id: StepId) -> Option<&AssemblyStep> {
+        self.steps.iter().find(|s| s.id == id)
+    }
+
+    pub fn step_mut(&mut self, id: StepId) -> Option<&mut AssemblyStep> {
+        self.steps.iter_mut().find(|s| s.id == id)
+    }
+
+    /// Borra una etapa: sus costuras se quedan sin etapa.
+    pub fn remove_step(&mut self, id: StepId) -> bool {
+        let before = self.steps.len();
+        self.steps.retain(|s| s.id != id);
+        for seam in self.seams.iter_mut().filter(|s| s.step == Some(id)) {
+            seam.step = None;
+        }
+        self.steps.len() < before
+    }
+
+    /// Mueve una etapa en el orden de montaje (`delta` < 0 = antes).
+    pub fn move_step(&mut self, id: StepId, delta: isize) {
+        let Some(from) = self.steps.iter().position(|s| s.id == id) else { return };
+        let to = (from as isize + delta).clamp(0, self.steps.len() as isize - 1) as usize;
+        let step = self.steps.remove(from);
+        self.steps.insert(to, step);
+    }
+
+    /// Posición en el montaje de la etapa de una costura: 0 sin etapa (o con
+    /// una que ya no existe), 1 la primera etapa, etc.
+    pub fn seam_stage(&self, seam: &Seam) -> usize {
+        seam.step.and_then(|id| self.steps.iter().position(|s| s.id == id)).map_or(0, |i| i + 1)
+    }
+
+    /// Turno en el que se cose cada costura (en el orden de `seams`): las
+    /// etapas, en orden, y, con `one_by_one`, cada costura de una etapa
+    /// detrás de la anterior. Los turnos van seguidos desde 0.
+    pub fn sewing_turns(&self, one_by_one: bool) -> Vec<u32> {
+        let keys: Vec<(usize, usize)> =
+            self.seams.iter().enumerate().map(|(i, s)| (self.seam_stage(s), if one_by_one { i } else { 0 })).collect();
+        let mut distinct = keys.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        keys.iter().map(|k| distinct.binary_search(k).unwrap_or(0) as u32).collect()
     }
 
     /// Longitud real (mm) de una arista o una línea interior.
@@ -582,14 +807,25 @@ impl Pattern {
             if seam.sides.len() < 2 {
                 issues.push(Issue::SeamTooFewSides { seam: seam.id });
             }
-            let lengths: Option<Vec<f64>> = seam.sides.iter().map(|s| self.edge_length(s.piece, s.edge)).collect();
+            let lengths: Option<Vec<f64>> = seam.sides.iter().map(|s| self.side_length(s)).collect();
             match lengths {
                 None => issues.push(Issue::DanglingSeam { seam: seam.id }),
                 Some(lengths) if !lengths.is_empty() => {
                     let min = lengths.iter().copied().fold(f64::INFINITY, f64::min);
                     let max = lengths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                    if max - min > SEAM_LENGTH_TOLERANCE {
-                        issues.push(Issue::SeamLengthMismatch { seam: seam.id, min, max });
+                    let differ = max - min > SEAM_LENGTH_TOLERANCE;
+                    match seam.fit {
+                        SeamFit::Exact if differ => {
+                            issues.push(Issue::SeamLengthMismatch { seam: seam.id, min, max });
+                        }
+                        SeamFit::Eased if max > min * MAX_EASE => {
+                            issues.push(Issue::TooMuchEase { seam: seam.id, min, max });
+                        }
+                        _ => {}
+                    }
+                    let notches: Vec<usize> = seam.sides.iter().map(|s| self.side_notches(s).len()).collect();
+                    if notches.iter().any(|&n| n != notches[0]) {
+                        issues.push(Issue::NotchesMismatch { seam: seam.id });
                     }
                 }
                 Some(_) => {}
@@ -673,10 +909,7 @@ mod tests {
     fn seam_between_three_pieces() {
         let mut p = Pattern::new("mochila");
         let ids: Vec<_> = (0..3).map(|i| p.add_rect(format!("panel {i}"), Point::ZERO, 200.0, 300.0)).collect();
-        let sides = ids
-            .iter()
-            .map(|&id| SeamSide { piece: id, edge: p.piece(id).unwrap().edges()[2].id, reversed: false })
-            .collect();
+        let sides = ids.iter().map(|&id| SeamSide::new(id, p.piece(id).unwrap().edges()[2].id, false)).collect();
         let seam = p.add_seam("fondo", sides).unwrap();
         assert!(p.validate().is_empty());
 
@@ -695,10 +928,7 @@ mod tests {
         let b = p.add_rect("b", Point::ZERO, 120.0, 50.0);
         let ea = p.piece(a).unwrap().edges()[0].id;
         let eb = p.piece(b).unwrap().edges()[0].id;
-        p.add_seam(
-            "",
-            vec![SeamSide { piece: a, edge: ea, reversed: false }, SeamSide { piece: b, edge: eb, reversed: true }],
-        );
+        p.add_seam("", vec![SeamSide::new(a, ea, false), SeamSide::new(b, eb, true)]);
         assert!(matches!(p.validate()[..], [Issue::SeamLengthMismatch { .. }]));
     }
 
@@ -951,5 +1181,123 @@ mod tests {
         // La costura del doblez desaparece; la otra sigue.
         assert_eq!(p.seams.len(), 1);
         assert_eq!(p.seams[0].name, "costado");
+    }
+
+    /// Un círculo de radio `r` hecho con cuatro curvas, alrededor de `c`.
+    fn circle(p: &mut Pattern, c: Point, r: f64) -> PieceId {
+        let pts = [(0.0, -r), (r, 0.0), (0.0, r), (-r, 0.0)].map(|(x, y)| c + Vec2::new(x, y));
+        let id = p.add_polygon("base", pts.to_vec());
+        let k = r * 0.552_284_75;
+        let piece = p.piece_mut(id).unwrap();
+        for i in 0..4 {
+            let (a, b) = (pts[i], pts[(i + 1) % 4]);
+            let tangent = |q: Point| Vec2::new((c - q).y, -(c - q).x).normalize() * k;
+            piece.set_edge_kind(i, EdgeKind::Cubic { h1: tangent(a), h2: -tangent(b) });
+        }
+        id
+    }
+
+    /// Una base redonda cosida de una vez al bajo de un cuerpo: el lado de
+    /// la base es la cadena de sus cuatro curvas y mide lo mismo que el bajo.
+    #[test]
+    fn chains_follow_the_outline() {
+        let mut p = Pattern::new("t");
+        let r = 60.0;
+        let body = p.add_rect("cuerpo", Point::ZERO, 2.0 * std::f64::consts::PI * r, 130.0);
+        let base = circle(&mut p, Point::new(200.0, 300.0), r);
+        let e = |p: &Pattern, id: PieceId, i: usize| p.piece(id).unwrap().edges()[i].id;
+        let around = SeamSide::new(base, e(&p, base, 1), true).through(e(&p, base, 0));
+        assert_eq!(p.side_edges(&around).unwrap(), [1, 2, 3, 0].map(|i| e(&p, base, i)));
+        let seam = p.add_seam("base", vec![SeamSide::new(body, e(&p, body, 2), false), around]).unwrap();
+        assert!(p.validate().is_empty(), "{:?}", p.validate());
+        assert_eq!(p.seams_of_edge(base, e(&p, base, 3)).count(), 1);
+
+        // Partir una curva de la cadena no cambia lo que se cose, tampoco
+        // la última.
+        let before = p.side_length(&p.seam(seam).unwrap().sides[1]).unwrap();
+        p.split_edge(base, 0, 0.5).unwrap();
+        let side = p.seam(seam).unwrap().sides[1];
+        assert_eq!(p.side_edges(&side).unwrap().len(), 5);
+        assert!((p.side_length(&side).unwrap() - before).abs() < 1e-6);
+        // Una cadena que no llega a su arista final no vale.
+        let lost = SeamSide { end: Some(EdgeId(9999)), ..side };
+        assert!(p.side_edges(&lost).is_none());
+    }
+
+    /// Un tramo cose solo parte del lado, y los piquetes dentro de él se
+    /// cuentan en el sentido de la costura.
+    #[test]
+    fn ranges_and_notches() {
+        let mut p = Pattern::new("t");
+        let a = p.add_rect("a", Point::ZERO, 200.0, 100.0);
+        let top = p.piece(a).unwrap().edges()[0].id;
+        let half = SeamSide::new(a, top, false).span(0.25, 0.75);
+        let spans = p.side_spans(&half).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert!((spans[0].length - 100.0).abs() < 1e-6);
+        let piece = p.piece_mut(a).unwrap();
+        assert!(piece.toggle_notch(top, 0.4, 1.0));
+        assert!(piece.toggle_notch(top, 0.9, 1.0));
+        let notches = p.side_notches(&half);
+        assert!(notches.len() == 1 && (notches[0] - 0.3).abs() < 1e-9, "{notches:?}");
+        assert!((p.side_notches(&SeamSide { reversed: true, ..half })[0] - 0.7).abs() < 1e-9);
+        // Otra vez en el mismo sitio, se quita.
+        assert!(!p.piece_mut(a).unwrap().toggle_notch(top, 0.4, 1.0));
+        assert!(p.side_notches(&half).is_empty());
+
+        // Al partir la arista, el piquete se queda donde estaba.
+        let piece = p.piece_mut(a).unwrap();
+        let at = piece.notch_point(&piece.notches[0]).unwrap();
+        p.split_edge(a, 0, 0.5).unwrap();
+        let piece = p.piece(a).unwrap();
+        assert!(piece.notch_point(&piece.notches[0]).unwrap().distance(at) < 1e-6);
+        assert_ne!(piece.notches[0].edge, top);
+    }
+
+    /// Un fruncido o un estirado no avisa de que los lados no miden lo
+    /// mismo; un embebido, solo si es demasiado.
+    #[test]
+    fn fit_allows_different_lengths() {
+        let mut p = Pattern::new("t");
+        let a = p.add_rect("falda", Point::ZERO, 300.0, 200.0);
+        let b = p.add_rect("cinturilla", Point::new(0.0, 300.0), 200.0, 40.0);
+        let side = |p: &Pattern, id: PieceId, i: usize| SeamSide::new(id, p.piece(id).unwrap().edges()[i].id, false);
+        let seam = p.add_seam("cintura", vec![side(&p, a, 0), side(&p, b, 2)]).unwrap();
+        assert!(matches!(p.validate()[..], [Issue::SeamLengthMismatch { .. }]));
+        p.seam_mut(seam).unwrap().fit = SeamFit::Gathered;
+        assert!(p.validate().is_empty());
+        p.seam_mut(seam).unwrap().fit = SeamFit::Eased;
+        assert!(matches!(p.validate()[..], [Issue::TooMuchEase { .. }]));
+        // Un piquete en un lado y no en el otro.
+        p.seam_mut(seam).unwrap().fit = SeamFit::Stretched;
+        let top = p.piece(a).unwrap().edges()[0].id;
+        p.piece_mut(a).unwrap().toggle_notch(top, 0.5, 1.0);
+        assert_eq!(p.validate(), [Issue::NotchesMismatch { seam }]);
+    }
+
+    /// Las etapas se cosen en orden; sin etapa, primero. Coser de una en
+    /// una separa las costuras de cada etapa.
+    #[test]
+    fn steps_set_the_sewing_turns() {
+        let mut p = Pattern::new("t");
+        let ids: Vec<PieceId> = (0..4).map(|i| p.add_rect(format!("{i}"), Point::ZERO, 100.0, 100.0)).collect();
+        let side = |p: &Pattern, id: PieceId| SeamSide::new(id, p.piece(id).unwrap().edges()[0].id, false);
+        let seams: Vec<SeamId> =
+            (0..3).map(|i| p.add_seam(format!("{i}"), vec![side(&p, ids[i]), side(&p, ids[i + 1])]).unwrap()).collect();
+        assert_eq!(p.sewing_turns(false), [0, 0, 0]);
+        assert_eq!(p.sewing_turns(true), [0, 1, 2]);
+        let (outer, lining) = (p.add_step("Exterior"), p.add_step("Forro"));
+        p.seam_mut(seams[0]).unwrap().step = Some(lining);
+        p.seam_mut(seams[1]).unwrap().step = Some(outer);
+        assert_eq!(p.sewing_turns(false), [2, 1, 0]);
+        p.move_step(lining, -1);
+        assert_eq!(p.sewing_turns(false), [1, 2, 0]);
+        p.seam_mut(seams[2]).unwrap().step = Some(lining);
+        assert_eq!(p.sewing_turns(true), [0, 2, 1]);
+        assert!(p.remove_step(lining));
+        assert_eq!(p.sewing_turns(false), [0, 1, 0]);
+        assert!(p.seams.iter().all(|s| s.step != Some(lining)));
+        // Las etapas no repiten ids con lo demás.
+        assert!(p.add_step("Unión").0 > seams[2].0);
     }
 }

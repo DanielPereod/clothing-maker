@@ -11,7 +11,7 @@ use avatar::{Avatar, ZoneFrame};
 use eframe::egui;
 use glam::Vec3;
 use mesher::{Mesh2D, MeshOptions};
-use pattern::{Arrangement, BodyZone, Pattern, Piece, SeamFold, SeamKind, Textile, Topstitch};
+use pattern::{Arrangement, BodyZone, Pattern, Piece, SeamFit, SeamFold, SeamKind, Textile, Topstitch};
 use simulator::{Cloth, Collider, Fabric, SimParams};
 
 /// Cómo se colocan las piezas antes de soltarlas.
@@ -149,6 +149,9 @@ pub struct Scene {
     pub pieces: Vec<ScenePiece>,
     /// Partículas unidas por las costuras y su turno de montaje.
     seam_pairs: Vec<([u32; 2], u32)>,
+    /// Etapa de montaje de cada turno (0 = sin etapa; `k` = la etapa `k`
+    /// de la línea de montaje, contando desde 1).
+    pub turn_stages: Vec<usize>,
 }
 
 /// Una costura tal y como se dibuja en 3D.
@@ -214,6 +217,35 @@ const FIRM_FABRIC: f32 = 2e-5;
 /// El pliegue preferido es una tendencia, no una bisagra rígida: cede
 /// bastante más que la rigidez a lo largo de la costura.
 const FOLD_SOFTNESS: f32 = 4.0;
+
+/// Hasta dónde (mm) se nota el frunce de una costura dentro de la tela.
+const GATHER_DEPTH: f64 = 40.0;
+
+/// Longitud en reposo (m) de un tramo `a`–`b` (posiciones en el patrón, m)
+/// de una tela fruncida a lo largo de la polilínea `line`: el tramo
+/// `line[k]`–`line[k + 1]` se encoge a `ratio[k]` de su largo, y lo que va
+/// en su misma dirección cerca de él, menos cuanto más lejos; a `depth` ya
+/// no se nota. `None` si el tramo no cambia.
+fn gathered_length(line: &[Vec3], ratio: &[f32], depth: f32, a: Vec3, b: Vec3) -> Option<f32> {
+    let mid = (a + b) / 2.0;
+    let (distance, k) = line
+        .windows(2)
+        .enumerate()
+        .map(|(k, w)| {
+            let d = w[1] - w[0];
+            let t = ((mid - w[0]).dot(d) / d.length_squared().max(1e-12)).clamp(0.0, 1.0);
+            (mid.distance(w[0] + d * t), k)
+        })
+        .min_by(|x, y| x.0.total_cmp(&y.0))?;
+    let shrink = (1.0 - ratio[k]) * (1.0 - distance / depth);
+    if shrink <= 0.0 {
+        return None;
+    }
+    let tangent = (line[k + 1] - line[k]).normalize_or_zero();
+    let e = b - a;
+    let along = tangent * e.dot(tangent);
+    Some((along * (1.0 - shrink) + (e - along)).length())
+}
 
 /// Color del revés de una tela del color `c` (lineal): más claro y apagado.
 pub fn wrong_side_color(c: [f32; 3]) -> [f32; 3] {
@@ -330,7 +362,7 @@ pub fn build(
         Placement::Hang => sewn,
         Placement::Drop => sewn && on_body,
     }
-    .then(|| AroundLayout::new(&free, settings.obstacle.top(), avatar.as_deref()));
+    .then(|| AroundLayout::new(&free, &pattern.seams, settings.obstacle.top(), avatar.as_deref()));
     let flat = (settings.placement == Placement::Drop && sewn && !on_body).then(|| FlatLayout::new(&free));
     let place_around = |layout: &AroundLayout, index: usize, p: [f64; 2]| {
         let (root, p, offset) = resolve_mount(&mounts, index, p);
@@ -432,14 +464,23 @@ pub fn build(
     let mut seam_pairs = Vec::new();
     let mut seam_draws = Vec::new();
     let mut crossed = Vec::new();
+    let mut turn_stages = Vec::new();
     if settings.sew {
         let mut topologies: HashMap<usize, Topology> = HashMap::new();
+        let turns = pattern.sewing_turns(settings.sew_in_order);
+        for (seam, &turn) in pattern.seams.iter().zip(&turns) {
+            let turn = turn as usize;
+            if turn_stages.len() <= turn {
+                turn_stages.resize(turn + 1, 0);
+            }
+            turn_stages[turn] = pattern.seam_stage(seam);
+        }
         for seam_mesh in &meshed.seams {
             let Some((index, seam)) = pattern.seams.iter().enumerate().find(|(_, s)| s.id == seam_mesh.seam) else {
                 continue;
             };
             seams += 1;
-            let turn = if settings.sew_in_order { index as u32 } else { 0 };
+            let turn = turns.get(index).copied().unwrap_or(0);
             let side_points = |side: &mesher::SeamSideMesh| -> Vec<Vec3> {
                 let base = first_particle[side.piece];
                 side.vertices.iter().map(|&v| cloth.positions[(base + v) as usize]).collect()
@@ -459,9 +500,31 @@ pub fn build(
                 }
             }
 
+            // Separación en el patrón (mm) entre cada punto de un lado y el
+            // siguiente. En una costura fruncida o embebida, el lado largo
+            // se encoge en la línea de costura hasta lo que mide el corto, y
+            // menos según se aleja de ella: la tela se abre en ondas. En una
+            // estirada, cada tela cede según lo elástica que sea.
+            let gaps: Vec<Vec<f64>> = seam_mesh
+                .sides
+                .iter()
+                .map(|side| {
+                    let Ok(mesh) = &meshed.pieces[side.piece] else { return Vec::new() };
+                    let at = |v: u32| glam::DVec2::from(mesh.positions[v as usize]);
+                    side.vertices.windows(2).map(|w| at(w[0]).distance(at(w[1]))).collect()
+                })
+                .collect();
+            let shortest = match seam.fit {
+                SeamFit::Gathered | SeamFit::Eased => gaps
+                    .iter()
+                    .filter(|g| !g.is_empty())
+                    .min_by(|a, b| a.iter().sum::<f64>().total_cmp(&b.iter().sum::<f64>())),
+                SeamFit::Exact | SeamFit::Stretched => None,
+            };
+
             let kind = seam.kind;
             let mut sides = Vec::new();
-            for side in &seam_mesh.sides {
+            for (side, own) in seam_mesh.sides.iter().zip(&gaps) {
                 let Ok(mesh) = &meshed.pieces[side.piece] else { continue };
                 let piece = &pattern.pieces[side.piece];
                 let fabric = piece_fabric(pattern, piece);
@@ -472,13 +535,27 @@ pub fn build(
                 let at = |k: usize| glam::DVec2::from(mesh.positions[v[k] as usize]);
                 let edge = seam.sides[side.side];
                 let allowance = pattern.allowance(edge.piece, edge.edge) * 1e-3;
+                let gap = match shortest {
+                    Some(short) if short.len() == own.len() => short,
+                    _ => own,
+                };
+                if gap.iter().zip(own).any(|(g, o)| g < &(o - 1e-9))
+                    && let Some(range) = cloth.pieces.iter().find(|r| r.first_particle == base).copied()
+                {
+                    let line: Vec<Vec3> =
+                        (0..v.len()).map(|k| Vec3::new(at(k).x as f32, at(k).y as f32, 0.0) * 1e-3).collect();
+                    let ratio: Vec<f32> = gap.iter().zip(own).map(|(g, o)| (g / o.max(1e-9)) as f32).collect();
+                    let depth = (GATHER_DEPTH.max(2.0 * settings.mesh_size) * 1e-3) as f32;
+                    cloth.reshape(&range, |a, b| gathered_length(&line, &ratio, depth, a, b));
+                }
 
                 // La costura es más rígida a lo largo que la tela sola (la
                 // simple es la referencia y se queda como la tela).
                 let firm = fabric.bend_stiffness > FIRM_FABRIC;
                 let stiffer = if kind.stiffness() > 1.0 && !firm { v.len() } else { 0 };
                 for k in 2..stiffer {
-                    let rest = (at(k).distance(at(k - 2)) * 1e-3) as f32;
+                    let shrink = (gap[k - 2] + gap[k - 1]) / (own[k - 2] + own[k - 1]).max(1e-9);
+                    let rest = (at(k).distance(at(k - 2)) * shrink * 1e-3) as f32;
                     cloth.add_constraint(base + v[k - 2], base + v[k], rest, compliance);
                 }
                 // El margen pesa y abulta: varias capas de tela juntas. La
@@ -555,7 +632,7 @@ pub fn build(
 
     let mut colliders = vec![Collider::ground(0.0)];
     colliders.extend(settings.obstacle.collider());
-    Scene { cloth, colliders, colors, back_colors, seam_draws, failed, crossed, seams, pieces, seam_pairs }
+    Scene { cloth, colliders, colors, back_colors, seam_draws, failed, crossed, seams, pieces, seam_pairs, turn_stages }
 }
 
 /// Si dos lados de una costura, tal como quedan colocados, corren en
@@ -830,13 +907,25 @@ fn is_wall(a: Arrangement) -> bool {
 }
 
 impl AroundLayout {
-    fn new(meshes: &[(usize, &Piece, &Mesh2D)], floor: f32, avatar: Option<&Avatar>) -> Self {
+    fn new(meshes: &[(usize, &Piece, &Mesh2D)], seams: &[pattern::Seam], floor: f32, avatar: Option<&Avatar>) -> Self {
         let by_zone = avatar.is_some();
         let zone_of = |piece: &Piece| if by_zone { piece.zone } else { BodyZone::Torso };
         let mut groups: HashMap<Group, Vec<&Mesh2D>> = HashMap::new();
         for (_, piece, mesh) in meshes {
             groups.entry((zone_of(piece), piece.layer, piece.arrangement)).or_default().push(mesh);
         }
+        // Grupos cosidos a sí mismos: un tubo (un cuerpo de una pieza con
+        // su costado), que se cierra dando la vuelta entera.
+        let group_of: HashMap<pattern::PieceId, Group> =
+            meshes.iter().map(|(_, p, _)| (p.id, (zone_of(p), p.layer, p.arrangement))).collect();
+        let closed: std::collections::HashSet<Group> = seams
+            .iter()
+            .filter_map(|seam| {
+                let mut sides = seam.sides.iter().map(|s| group_of.get(&s.piece).copied());
+                let first = sides.next()??;
+                sides.all(|g| g == Some(first)).then_some(first)
+            })
+            .collect();
         let group_bounds: HashMap<Group, ([f64; 2], [f64; 2])> = groups.iter().map(|(k, m)| (*k, bounds(m))).collect();
         let group_center = group_bounds
             .iter()
@@ -865,11 +954,13 @@ impl AroundLayout {
             let height = layers.values().map(|&(_, h)| h).fold(0.0, f32::max);
             // Cada grupo ocupa como mucho este ángulo del cilindro, para que
             // quede un hueco entre grupos vecinos. Sobre el cuerpo, una pieza
-            // sola (una manga, por ejemplo) casi da la vuelta entera.
+            // sola (una manga, por ejemplo) casi da la vuelta entera, y
+            // también un tubo cosido a sí mismo.
             let wall_groups = |layer: u8| in_zone.iter().filter(|&&(l, a)| l == layer && is_wall(a)).count();
             let lone_walls = layers.keys().all(|&l| wall_groups(l) <= 1);
+            let tubes = in_zone.iter().filter(|&&(_, a)| is_wall(a)).all(|&(l, a)| closed.contains(&(zone, l, a)));
             let sides = in_zone.iter().any(|&(_, a)| matches!(a, Arrangement::Left | Arrangement::Right));
-            let max_angle = if by_zone && lone_walls {
+            let max_angle = if lone_walls && (by_zone || tubes) {
                 1.7
             } else if sides {
                 0.42
@@ -1070,6 +1161,8 @@ struct Shared {
     step_ms: f32,
     /// Quedan costuras por cerrar.
     sewing: bool,
+    /// Turno de montaje que se está cosiendo.
+    turn: Option<u32>,
     /// Presión aplicada (Pa) y volumen encerrado (m³).
     pressure: f32,
     volume: f32,
@@ -1081,6 +1174,8 @@ pub struct Stats {
     pub sim_time: f32,
     pub step_ms: f32,
     pub sewing: bool,
+    /// Turno de montaje que se está cosiendo.
+    pub turn: Option<u32>,
     pub pressure: f32,
     pub volume: f32,
 }
@@ -1120,6 +1215,7 @@ impl Runner {
                 shared.step_ms = 0.0;
             }
             shared.sewing = cloth.is_sewing();
+            shared.turn = cloth.sewing_turn();
             shared.generation
         };
         let _ = self.commands.send(Command::Load(generation, Box::new(cloth), colliders, params, keep_time));
@@ -1150,6 +1246,7 @@ impl Runner {
             sim_time: shared.sim_time,
             step_ms: shared.step_ms,
             sewing: shared.sewing,
+            turn: shared.turn,
             pressure: shared.pressure,
             volume: shared.volume,
         }
@@ -1208,6 +1305,7 @@ fn run(rx: Receiver<Command>, shared: Arc<Mutex<Shared>>) {
             shared.version += 1;
             shared.sim_time += FRAME;
             shared.sewing = cloth.is_sewing();
+            shared.turn = cloth.sewing_turn();
             shared.pressure = cloth.applied_pressure();
             shared.volume = volume;
             shared.step_ms = if shared.step_ms == 0.0 { ms } else { shared.step_ms * 0.9 + ms * 0.1 };
@@ -1267,6 +1365,47 @@ mod tests {
         // El panel fijo está en horizontal, a la altura de la costura.
         let top = scene.cloth.positions[scene.pieces[0].first_particle as usize].y;
         top - near.iter().sum::<f32>() / near.len() as f32
+    }
+
+    /// Un volante de 40 cm cosido a una cinturilla de 20 cm: fruncido, se
+    /// encoge hasta lo que mide la cinturilla y ella apenas se estira;
+    /// estirado, la cinturilla cede bastante más (las dos telas son iguales).
+    #[test]
+    fn gathered_seams_keep_the_short_side() {
+        let band_length = |fit: SeamFit| {
+            let mut pattern = Pattern::new("volante");
+            let band = pattern.add_rect("cinturilla", Point::ZERO, 200.0, 60.0);
+            let ruffle = pattern.add_rect("volante", Point::new(0.0, 100.0), 400.0, 100.0);
+            let bottom = pattern.piece(band).unwrap().edges()[2].id;
+            let top = pattern.piece(ruffle).unwrap().edges()[0].id;
+            let sides = vec![SeamSide::new(band, bottom, false), SeamSide::new(ruffle, top, true)];
+            let id = pattern.add_seam("", sides).unwrap();
+            pattern.seam_mut(id).unwrap().fit = fit;
+            let settings = SceneSettings { placement: Placement::Drop, ..Default::default() };
+            let mut scene = build(&pattern, &settings, |_| egui::Color32::WHITE);
+            let colliders = scene.colliders.clone();
+            for _ in 0..600 {
+                if !scene.cloth.is_sewing() {
+                    break;
+                }
+                scene.cloth.step(FRAME, &settings.params(), &colliders);
+            }
+            for _ in 0..60 {
+                scene.cloth.step(FRAME, &settings.params(), &colliders);
+            }
+            assert!(!scene.cloth.is_sewing(), "{fit:?}: sigue cosiendo");
+            assert!(scene.cloth.positions.iter().all(|p| p.is_finite()), "{fit:?}");
+            let gap = scene.cloth.max_seam_gap();
+            assert!(gap < 3e-3, "{fit:?}: costura abierta {gap}");
+            let line = &scene.seam_draws[0].sides[0].particles;
+            line.windows(2)
+                .map(|w| scene.cloth.positions[w[0] as usize].distance(scene.cloth.positions[w[1] as usize]))
+                .sum::<f32>()
+        };
+        let (gathered, stretched) = (band_length(SeamFit::Gathered), band_length(SeamFit::Stretched));
+        eprintln!("cinturilla: {gathered:.3} m fruncida, {stretched:.3} m estirada");
+        assert!(gathered < 0.22, "fruncida: la cinturilla mide {gathered} m");
+        assert!(stretched > gathered + 0.02, "estirada: {stretched} m, fruncida {gathered} m");
     }
 
     /// Una costura simple hace de bisagra y el panel suelto cuelga junto a

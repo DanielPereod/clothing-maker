@@ -24,6 +24,8 @@ pub enum Tool {
     /// Línea interior dentro de una pieza.
     Line,
     Seam,
+    /// Piquete: una marca en el borde para casar los lados de una costura.
+    Notch,
 }
 
 impl Tool {
@@ -40,7 +42,10 @@ impl Tool {
                 "Arrastra dentro de una pieza para trazar una línea interior: donde se cose encima un bolsillo, un asa o una separación"
             }
             Tool::Seam => {
-                "Clic en cada arista, cerca del extremo por el que empieza la costura · Mayús+clic: añadir más lados · Esc: cancelar"
+                "Clic en cada arista, cerca del extremo por el que empieza la costura · Mayús+clic: añadir más lados · Ctrl+clic: seguir el lado por el contorno hasta esa arista · Esc: cancelar"
+            }
+            Tool::Notch => {
+                "Clic en el borde para poner un piquete, o quitar el que hay · los lados de una costura con los mismos piquetes casan por ellos"
             }
         }
     }
@@ -371,6 +376,9 @@ impl Editor {
         if pressed(Key::I) {
             self.set_tool(Tool::Line);
         }
+        if pressed(Key::N) {
+            self.set_tool(Tool::Notch);
+        }
         if pressed(Key::F) {
             self.fit_view();
         }
@@ -442,8 +450,11 @@ impl Editor {
     /// Añade a la costura en curso la arista bajo el cursor. El sentido sale
     /// del extremo más cercano al clic: la costura empieza por ahí. Sin
     /// Mayús, a partir del segundo lado la costura se crea.
-    fn seam_click(&mut self, pattern: &mut Pattern, pos: Pos2, keep_open: bool) {
+    fn seam_click(&mut self, pattern: &mut Pattern, pos: Pos2, keep_open: bool, chain: bool) {
         let Some((piece, edge, t)) = self.edge_hit(pattern, pos) else { return };
+        if chain && self.extend_side(pattern, piece, edge) {
+            return;
+        }
         let side = SeamSide::new(piece, edge, t > 0.5);
         match self.seam_sides.iter_mut().find(|s| s.same_edge(&side)) {
             // Otra vez la misma arista: se le da la vuelta.
@@ -456,6 +467,26 @@ impl Editor {
                 self.selection = Selection::Seam(id);
             }
         }
+    }
+
+    /// Con Ctrl+clic: el lado de la pieza `piece` de la costura en curso (o,
+    /// si no hay, de la seleccionada) sigue el contorno hasta la arista
+    /// `edge`. Devuelve `false` si no hay tal lado.
+    fn extend_side(&mut self, pattern: &mut Pattern, piece: PieceId, edge: EdgeId) -> bool {
+        if pattern.piece(piece).and_then(|p| p.edge_index(edge)).is_none() {
+            return false;
+        }
+        let outline = |side: &SeamSide| pattern.piece(side.piece).and_then(|p| p.edge_index(side.edge)).is_some();
+        if let Some(k) = self.seam_sides.iter().rposition(|s| s.piece == piece && outline(s)) {
+            self.seam_sides[k] = self.seam_sides[k].through(edge);
+            return true;
+        }
+        let Selection::Seam(id) = self.selection else { return false };
+        let Some(seam) = pattern.seams.iter().find(|s| s.id == id) else { return false };
+        let Some(k) = seam.sides.iter().position(|s| s.piece == piece && outline(s)) else { return false };
+        let Some(seam) = pattern.seam_mut(id) else { return false };
+        seam.sides[k] = seam.sides[k].through(edge);
+        true
     }
 
     /// Arista o línea interior más cercana al cursor (pieza, id, parámetro)
@@ -629,9 +660,16 @@ impl Editor {
                     }
                 }
                 Tool::Rect | Tool::Line => {}
+                Tool::Notch => {
+                    if let Some((piece, edge, t)) = self.edge_hit(pattern, pos)
+                        && let Some(piece) = pattern.piece_mut(piece)
+                    {
+                        piece.toggle_notch(edge, t, 2.0 * HIT_PX / self.view.zoom as f64);
+                    }
+                }
                 Tool::Seam => {
-                    let shift = ui.input(|i| i.modifiers.shift);
-                    self.seam_click(pattern, pos, shift);
+                    let (shift, ctrl) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
+                    self.seam_click(pattern, pos, shift, ctrl);
                 }
             }
         }
@@ -662,7 +700,7 @@ impl Editor {
                 let p = self.snap_point(w, ui);
                 Drag::Rect { start: p, current: p }
             }
-            Tool::Pen | Tool::Seam => Drag::Pan,
+            Tool::Pen | Tool::Seam | Tool::Notch => Drag::Pan,
             Tool::Line => {
                 let p = self.snap_point(w, ui);
                 match Self::fabric_at(pattern, w) {
@@ -835,7 +873,7 @@ impl Editor {
             (Drag::Piece { .. } | Drag::Line { .. }, _) => CursorIcon::Move,
             (Drag::Vertex(..) | Drag::Handle(..) | Drag::LineEnd(..), _) => CursorIcon::Grabbing,
             (_, Tool::Pen | Tool::Rect | Tool::Line) => CursorIcon::Crosshair,
-            (_, Tool::Seam) => match response.hover_pos().and_then(|p| self.edge_hit(pattern, p)) {
+            (_, Tool::Seam | Tool::Notch) => match response.hover_pos().and_then(|p| self.edge_hit(pattern, p)) {
                 Some(_) => CursorIcon::PointingHand,
                 None => CursorIcon::Default,
             },
@@ -919,6 +957,7 @@ impl Editor {
                 self.draw_segment(painter, piece.segment(i), stroke);
             }
             self.draw_lines(painter, piece, outline, visuals.selection.stroke.color);
+            self.draw_notches(painter, piece, if focus { color } else { outline }, if focus { 2.0 } else { width });
             for (i, v) in piece.vertices().iter().enumerate() {
                 let pos = self.view.to_screen(rect, *v);
                 let vsel = self.selection == Selection::Vertex(piece.id, i);
@@ -1114,6 +1153,20 @@ impl Editor {
         }
     }
 
+    /// Piquetes: una muesca hacia fuera del borde, en el margen.
+    fn draw_notches(&self, painter: &Painter, piece: &Piece, color: Color32, width: f32) {
+        let zoom = self.view.zoom as f64;
+        for notch in &piece.notches {
+            let Some(seg) = piece.edge_segment(notch.edge) else { continue };
+            let (p, n) = (seg.eval(notch.t), -side_normal(piece, notch.edge, &seg, notch.t));
+            let tip = self.view.to_screen(self.canvas_rect, p + n * (9.0 / zoom));
+            let along = egui::vec2(-n.y as f32, n.x as f32) * 4.0;
+            let base = self.view.to_screen(self.canvas_rect, p);
+            painter.add(Shape::convex_polygon(vec![base + along, tip, base - along], color, Stroke::NONE));
+            painter.line_segment([base, tip], Stroke::new(width, color));
+        }
+    }
+
     /// Líneas finas entre los puntos que se cosen juntos de cada lado de la
     /// costura: si se cruzan, algún lado va al revés.
     fn draw_seam_matches(&self, painter: &Painter, pattern: &Pattern, seam: &pattern::Seam, color: Color32) {
@@ -1122,18 +1175,14 @@ impl Editor {
             .sides
             .iter()
             .filter_map(|side| {
-                let seg = pattern.piece(side.piece)?.edge_segment(side.edge)?;
-                let length = seg.arclen(1e-3);
-                Some(
-                    (0..=STEPS)
-                        .map(|k| {
-                            let s = k as f64 / STEPS as f64;
-                            let s = if side.reversed { 1.0 - s } else { s };
-                            let t = seg.inv_arclen(s * length, 1e-3);
-                            self.view.to_screen(self.canvas_rect, seg.eval(t))
-                        })
-                        .collect(),
-                )
+                let mut points: Vec<Pos2> = side_path(pattern, side, STEPS)?
+                    .iter()
+                    .map(|&(p, _)| self.view.to_screen(self.canvas_rect, p))
+                    .collect();
+                if side.reversed {
+                    points.reverse();
+                }
+                Some(points)
             })
             .collect();
         let Some((first, rest)) = points.split_first() else { return };
@@ -1171,27 +1220,33 @@ impl Editor {
         width: f32,
         label: &str,
     ) {
-        let Some(piece) = pattern.piece(side.piece) else { return };
-        let Some(seg) = piece.edge_segment(side.edge) else { return };
+        const STEPS: usize = 40;
+        let Some(path) = side_path(pattern, side, STEPS) else { return };
         let inset = 6.0 / self.view.zoom as f64;
-        let into = |t: f64| side_normal(piece, side.edge, &seg, t);
-        let at = |t: f64| self.view.to_screen(self.canvas_rect, seg.eval(t) + into(t) * inset);
-        let pts: Vec<Pos2> = (0..=24).map(|j| at(j as f64 / 24.0)).collect();
+        let at = |k: usize| self.view.to_screen(self.canvas_rect, path[k].0 + path[k].1 * inset);
+        let pts: Vec<Pos2> = (0..=STEPS).map(at).collect();
         painter.extend(Shape::dashed_line(&pts, Stroke::new(width, color), 6.0, 4.0));
 
         // Flecha en el centro, hacia donde avanza la costura.
-        let (from, to) = if side.reversed { (at(0.55), at(0.45)) } else { (at(0.45), at(0.55)) };
+        let middle = STEPS / 2;
+        let (from, to) =
+            if side.reversed { (at(middle + 1), at(middle - 1)) } else { (at(middle - 1), at(middle + 1)) };
         let dir = (to - from).normalized();
         if dir.is_finite() {
-            let tip = at(0.5) + dir * 7.0;
+            let tip = at(middle) + dir * 7.0;
             let back = tip - dir * 12.0;
             let normal = egui::vec2(-dir.y, dir.x) * 5.0;
             painter.add(Shape::convex_polygon(vec![tip, back + normal, back - normal], color, Stroke::NONE));
         }
-        // Punto en el extremo donde empieza.
-        painter.circle_filled(at(if side.reversed { 1.0 } else { 0.0 }), width + 1.5, color);
+        // Punto en el extremo donde empieza y raya en el otro: si el lado es
+        // solo un tramo, se ve dónde acaba.
+        let (start, end) = if side.reversed { (STEPS, 0) } else { (0, STEPS) };
+        painter.circle_filled(at(start), width + 1.5, color);
+        let (p, n) = path[end];
+        let tick = [p - n * (4.0 / self.view.zoom as f64), p + n * (12.0 / self.view.zoom as f64)];
+        painter.line_segment(tick.map(|q| self.view.to_screen(self.canvas_rect, q)), Stroke::new(width, color));
 
-        let label_at = seg.eval(0.5) + into(0.5) * (20.0 / self.view.zoom as f64);
+        let label_at = path[middle].0 + path[middle].1 * (20.0 / self.view.zoom as f64);
         painter.text(
             self.view.to_screen(self.canvas_rect, label_at),
             Align2::CENTER_CENTER,
@@ -1204,6 +1259,19 @@ impl Editor {
     /// Lados ya elegidos de la costura en curso y, bajo el cursor, la arista
     /// que se añadiría.
     fn draw_seam_tool(&self, painter: &Painter, ui: &Ui, pattern: &Pattern) {
+        if self.tool == Tool::Notch {
+            // Dónde caería el piquete.
+            let hover = ui.input(|i| i.pointer.hover_pos()).filter(|p| self.canvas_rect.contains(*p));
+            if let Some((piece, edge, t)) = hover.and_then(|p| self.edge_hit(pattern, p))
+                && let Some(piece) = pattern.piece(piece)
+                && piece.edge_index(edge).is_some()
+                && let Some(seg) = piece.edge_segment(edge)
+            {
+                let at = self.view.to_screen(self.canvas_rect, seg.eval(t));
+                painter.circle_stroke(at, 6.0, Stroke::new(1.5, ui.visuals().selection.stroke.color));
+            }
+            return;
+        }
         if self.tool != Tool::Seam {
             return;
         }
@@ -1214,7 +1282,13 @@ impl Editor {
         let hover = ui.input(|i| i.pointer.hover_pos()).filter(|p| self.canvas_rect.contains(*p));
         if let Some((piece, edge, t)) = hover.and_then(|p| self.edge_hit(pattern, p)) {
             let side = SeamSide::new(piece, edge, t > 0.5);
-            if !self.seam_sides.iter().any(|s| s.same_edge(&side)) {
+            let chain =
+                ui.input(|i| i.modifiers.command) && pattern.piece(piece).and_then(|p| p.edge_index(edge)).is_some();
+            let extended = self.seam_sides.iter().rev().find(|s| s.piece == piece).filter(|_| chain);
+            if let Some(extended) = extended {
+                let side = extended.through(edge);
+                self.draw_seam_side(painter, pattern, &side, accent.gamma_multiply(0.6), 3.0, "");
+            } else if !self.seam_sides.iter().any(|s| s.same_edge(&side)) {
                 let label = format!("{}", self.seam_sides.len() + 1);
                 self.draw_seam_side(painter, pattern, &side, accent.gamma_multiply(0.6), 3.0, &label);
             }
@@ -1309,6 +1383,30 @@ fn update_cache(
         let pieces = std::iter::once(piece).chain(pattern.holes_of(piece.id)).cloned().collect();
         cache.insert(piece.id, CachedMesh { pieces, key, mesh });
     }
+}
+
+/// `steps + 1` puntos repartidos a lo largo de lo que se cose de un lado de
+/// costura (todas sus aristas, solo su tramo), en el orden de la pieza, cada
+/// uno con la normal hacia la tela (ver [`side_normal`]).
+fn side_path(pattern: &Pattern, side: &SeamSide, steps: usize) -> Option<Vec<(Point, Vec2)>> {
+    let piece = pattern.piece(side.piece)?;
+    let spans = pattern.side_spans(side)?;
+    let segs: Vec<PathSeg> = spans.iter().map(|s| piece.edge_segment(s.edge)).collect::<Option<_>>()?;
+    let total: f64 = spans.iter().map(|s| s.length).sum();
+    let mut out = Vec::with_capacity(steps + 1);
+    let (mut k, mut start) = (0, 0.0);
+    for j in 0..=steps {
+        let s = total * j as f64 / steps as f64;
+        while k + 1 < spans.len() && s > start + spans[k].length {
+            start += spans[k].length;
+            k += 1;
+        }
+        let seg = &segs[k];
+        let length = seg.arclen(1e-3);
+        let t = seg.inv_arclen((spans[k].from * length + s - start).clamp(0.0, length), 1e-3);
+        out.push((seg.eval(t), side_normal(piece, spans[k].edge, seg, t)));
+    }
+    Some(out)
 }
 
 /// Hacia dónde se dibuja una costura sobre su arista: hacia la tela. En

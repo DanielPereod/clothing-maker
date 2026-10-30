@@ -163,10 +163,30 @@ pub fn checks(pattern: &Pattern, scene: &SceneReport) -> Vec<Check> {
             Issue::SeamLengthMismatch { seam, min, max } => push(
                 Stage::Assembly,
                 format!(
-                    "Los lados de la costura «{}» no miden lo mismo ({:.1}–{:.1} cm)",
+                    "Los lados de la costura «{}» no miden lo mismo ({:.1}–{:.1} cm): iguálalos o, si es a \
+                     propósito, márcala como embebida, fruncida o estirada",
                     seam_name(seam),
                     min / 10.0,
                     max / 10.0
+                ),
+                Some(Selection::Seam(seam)),
+            ),
+            Issue::TooMuchEase { seam, min, max } => push(
+                Stage::Assembly,
+                format!(
+                    "La costura «{}» embebe demasiado ({:.1}–{:.1} cm, más de un {:.0} %): márcala como fruncida",
+                    seam_name(seam),
+                    min / 10.0,
+                    max / 10.0,
+                    (pattern::MAX_EASE - 1.0) * 100.0
+                ),
+                Some(Selection::Seam(seam)),
+            ),
+            Issue::NotchesMismatch { seam } => push(
+                Stage::Assembly,
+                format!(
+                    "Los lados de la costura «{}» no tienen los mismos piquetes: se cosen sin casarlos",
+                    seam_name(seam)
                 ),
                 Some(Selection::Seam(seam)),
             ),

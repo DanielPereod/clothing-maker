@@ -110,6 +110,7 @@ struct Loaded {
     crossed: Vec<pattern::SeamId>,
     seams: usize,
     pieces: Vec<ScenePiece>,
+    turn_stages: Vec<usize>,
 }
 
 pub struct View3D {
@@ -229,6 +230,7 @@ impl View3D {
             crossed: scene.crossed,
             seams: scene.seams,
             pieces: scene.pieces,
+            turn_stages: scene.turn_stages,
         });
         let params = simulator::SimParams { pressure: pattern.pressure as f32, ..self.settings.params() };
         self.runner.load(scene.cloth, scene.colliders, params, live);
@@ -292,6 +294,15 @@ impl View3D {
         self.settings.sew_in_order = on;
         self.reload(pattern, &color_of);
         self.runner.set_running(true);
+    }
+
+    /// La etapa de la línea de montaje que se está cosiendo ahora (0 = las
+    /// costuras sin etapa; `k` = la etapa `k`, contando desde 1), o `None`
+    /// si no se está cosiendo.
+    pub fn sewing_stage(&self) -> Option<usize> {
+        let stats = self.runner.stats();
+        let turn = stats.turn.filter(|_| stats.sewing)?;
+        self.loaded.as_ref()?.turn_stages.get(turn as usize).copied()
     }
 
     /// Lo que se ha visto al montar la escena: piezas que no se han podido
@@ -451,7 +462,14 @@ impl View3D {
             ui.colored_label(theme::WARN, "El patrón ha cambiado: pulsa Reiniciar para verlo");
         }
         if stats.sewing {
-            ui.colored_label(theme::ACCENT, "Cosiendo…");
+            let step = self.sewing_stage().and_then(|k| Some((k, loaded.pattern.steps.get(k.checked_sub(1)?)?)));
+            match step {
+                Some((k, step)) => ui.colored_label(
+                    theme::ACCENT,
+                    format!("Cosiendo «{}» (etapa {k} de {})…", step.name, loaded.pattern.steps.len()),
+                ),
+                None => ui.colored_label(theme::ACCENT, "Cosiendo…"),
+            };
         }
         if pattern.pressure > 0.0 || stats.pressure > 0.0 {
             ui.label(
