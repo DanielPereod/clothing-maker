@@ -200,6 +200,20 @@ pub struct Piece {
     /// interiores esté cosida ([`crate::Pattern::mount`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<Mount>,
+    /// Piquetes: marcas en el borde para casar las piezas al coser.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notches: Vec<Notch>,
+}
+
+/// Un piquete: una marca en una arista. Al coser, los piquetes de los lados
+/// de una costura caen uno sobre otro, en orden, y el largo de cada lado se
+/// reparte entre ellos (lo que sobra de un fruncido o un embebido va donde
+/// dicen los piquetes).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Notch {
+    pub edge: EdgeId,
+    /// Parámetro (0..1) de la curva de la arista.
+    pub t: f64,
 }
 
 /// Una pieza colocada encima de otra.
@@ -251,6 +265,8 @@ struct RawPiece {
     layer: u8,
     #[serde(default)]
     on: Option<Mount>,
+    #[serde(default)]
+    notches: Vec<Notch>,
 }
 
 impl TryFrom<RawPiece> for Piece {
@@ -269,6 +285,7 @@ impl TryFrom<RawPiece> for Piece {
                 hole_in: raw.hole_in,
                 layer: raw.layer,
                 on: raw.on,
+                notches: raw.notches,
                 ..p
             })
             .ok_or_else(|| format!("la pieza {} no tiene el mismo número de vértices que de aristas", id.0))
@@ -293,6 +310,7 @@ impl Piece {
             hole_in: None,
             layer: 0,
             on: None,
+            notches: Vec::new(),
         })
     }
 
@@ -332,6 +350,29 @@ impl Piece {
         match self.edge_index(id) {
             Some(i) => Some(self.segment(i)),
             None => self.lines.iter().find(|l| l.id == id).map(InnerLine::segment),
+        }
+    }
+
+    /// Dónde cae un piquete, si su arista existe.
+    pub fn notch_point(&self, notch: &Notch) -> Option<Point> {
+        Some(self.edge_segment(notch.edge)?.eval(notch.t))
+    }
+
+    /// Pone un piquete en una arista del contorno, o lo quita si ya hay uno
+    /// a menos de `tolerance` (mm). Devuelve si lo ha puesto.
+    pub fn toggle_notch(&mut self, edge: EdgeId, t: f64, tolerance: f64) -> bool {
+        let Some(seg) = self.edge_index(edge).map(|i| self.segment(i)) else { return false };
+        let at = seg.eval(t);
+        let near = self.notches.iter().position(|n| n.edge == edge && seg.eval(n.t).distance(at) < tolerance);
+        match near {
+            Some(k) => {
+                self.notches.remove(k);
+                false
+            }
+            None => {
+                self.notches.push(Notch { edge, t: t.clamp(0.0, 1.0) });
+                true
+            }
         }
     }
 
@@ -406,6 +447,10 @@ impl Piece {
                 line.kind = EdgeKind::Cubic { h1: vector(h1), h2: vector(h2) };
             }
         }
+        // Cada arista se recorre ahora al revés.
+        for notch in &mut self.notches {
+            notch.t = 1.0 - notch.t;
+        }
     }
 
     /// Despliega la pieza «al doblez»: la arista recta `i` es el doblez de la
@@ -434,6 +479,8 @@ impl Piece {
         // La mitad reflejada, de A a B: el mismo camino al revés, sin A ni B,
         // que están en el doblez.
         vertices.extend(path[1..n - 1].iter().rev().map(|&v| reflect(self.vertices[v])));
+        let fold = self.edges[i].id;
+        let mut notches: Vec<Notch> = self.notches.iter().copied().filter(|n| n.edge != fold).collect();
         for old in kept_edges.iter().rev() {
             let Some(id) = new_ids.next() else { return false };
             let kind = match old.kind {
@@ -441,6 +488,8 @@ impl Piece {
                 EdgeKind::Cubic { h1, h2 } => EdgeKind::Cubic { h1: reflect_vec(h2), h2: reflect_vec(h1) },
             };
             edges.push(Edge { id, kind, allowance: old.allowance });
+            // Los piquetes se reflejan con su arista, que va al revés.
+            notches.extend(self.notches.iter().filter(|n| n.edge == old.id).map(|n| Notch { edge: id, t: 1.0 - n.t }));
         }
         let mut lines = self.lines.clone();
         for line in &self.lines {
@@ -454,6 +503,7 @@ impl Piece {
         self.vertices = vertices;
         self.edges = edges;
         self.lines = lines;
+        self.notches = notches;
         true
     }
 
@@ -649,8 +699,18 @@ impl Piece {
             _ => (EdgeKind::Line, EdgeKind::Line),
         };
         self.edges[i].kind = first;
+        let old_edge = self.edges[i].id;
         self.edges.insert(i + 1, Edge { id: new_edge, kind: second, allowance: self.edges[i].allowance });
         self.vertices.insert(i + 1, mid);
+        // Los piquetes de la arista se quedan donde estaban, en la mitad
+        // que les toque.
+        for notch in self.notches.iter_mut().filter(|n| n.edge == old_edge) {
+            if notch.t <= t {
+                notch.t = if t > 0.0 { notch.t / t } else { 0.0 };
+            } else {
+                *notch = Notch { edge: new_edge, t: (notch.t - t) / (1.0 - t) };
+            }
+        }
         Some(i + 1)
     }
 
@@ -680,6 +740,7 @@ impl Piece {
         self.edges[prev].kind = merged;
         let removed = self.edges.remove(v).id;
         self.vertices.remove(v);
+        self.notches.retain(|n| n.edge != removed);
         Some(removed)
     }
 

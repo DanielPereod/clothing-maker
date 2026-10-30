@@ -4,7 +4,10 @@
 //! quien mira), así que dos piezas vecinas recorren su borde común en
 //! sentidos contrarios y uno de los dos lados de cada costura va invertido.
 
-use pattern::{Arrangement, BodyZone, EdgeKind, Pattern, PieceId, Point, SeamKind, SeamSide, Textile, TextileId, Vec2};
+use pattern::{
+    Arrangement, BodyZone, EdgeKind, Notch, Pattern, PieceId, Point, SeamFit, SeamKind, SeamSide, Textile, TextileId,
+    Vec2,
+};
 
 /// Camiseta básica: delantero y espalda con escote y sisas curvas, unidos
 /// por hombros y costados.
@@ -254,19 +257,21 @@ pub fn leather_bag() -> Pattern {
 /// medidas del patrón menos su margen de 3/8" (9,5 mm), que es el margen
 /// del patrón.
 ///
-/// El cuerpo (piezas 1.1 y 1.2) y la base redonda (2) son de tela
-/// decorativa con refuerzo de lona; el forro de pelo (3 y 4) va como capa de
-/// esas mismas piezas. El puño de punto (5) se dobla por la mitad, así que
-/// lleva dos capas de punto; en la bolsa real va algo estirado para cerrar
-/// la boca y aquí se dibuja ya del ancho del cuerpo.
+/// El cuerpo (1.1 de tela decorativa y 1.2 de lona de refuerzo, cortadas
+/// iguales y al doblez) es una sola pieza cerrada por un costado; el forro
+/// de pelo (3 y 4) va como capa suya y de la base redonda (2). La base se
+/// cose en una sola costura que da la vuelta a sus cuatro aristas. El puño
+/// de punto (5) se dobla por la mitad, así que lleva dos capas de punto, y
+/// es más corto que la boca: se cose estirado. Los piquetes casan la base y
+/// el puño con el cuerpo, y la línea de montaje cose primero los costados,
+/// luego la base y por último el puño.
 pub fn chalk_bag() -> Pattern {
     const SEAM_ALLOWANCE: f64 = 9.5;
-    // La mitad del cuerpo mide 200 × 152,5 mm con margen; el margen solo va
-    // en el costado, porque el centro se corta al doblez.
-    let (w, h) = (200.0 - SEAM_ALLOWANCE, 152.5 - 2.0 * SEAM_ALLOWANCE);
+    // El cuerpo mide 400 × 152,5 mm con margen (200 al doblez); la base,
+    // 140 mm de diámetro; el puño, 360 × 152,5 mm antes de doblarlo.
+    let (w, h) = (400.0 - 2.0 * SEAM_ALLOWANCE, 152.5 - 2.0 * SEAM_ALLOWANCE);
     let radius = (140.0 - 2.0 * SEAM_ALLOWANCE) / 2.0;
-    // El puño mide 152,5 mm de alto antes de doblarlo.
-    let cuff = (152.5 - 2.0 * SEAM_ALLOWANCE) / 2.0;
+    let (cuff_w, cuff) = (360.0 - 2.0 * SEAM_ALLOWANCE, (152.5 - 2.0 * SEAM_ALLOWANCE) / 2.0);
 
     let mut p = Pattern::new("Chalk bag");
     p.seam_allowance = SEAM_ALLOWANCE;
@@ -283,21 +288,12 @@ pub fn chalk_bag() -> Pattern {
     let named = |p: &Pattern, name: &str| p.textiles.iter().find(|t| t.name == name).expect("tela genérica").id;
     let (cotton, canvas, knit) = (named(&p, "Algodón"), named(&p, "Lona"), named(&p, "Punto"));
 
-    // Cuerpo con el fondo partido por la mitad, para coser cada mitad a un
-    // cuarto de la base: 0 boca, 1 derecha, 2 y 3 fondo, 4 izquierda.
-    let body = |p: &mut Pattern, name: &str, x: f64| {
-        let pts =
-            [(0.0, 0.0), (w, 0.0), (w, h), (w / 2.0, h), (0.0, h)].map(|(px, py)| Point::new(x + px, cuff + 20.0 + py));
-        p.add_polygon(name, pts.to_vec())
-    };
-    let front = body(&mut p, "Cuerpo delantero (1.1)", 0.0);
-    let back = body(&mut p, "Cuerpo trasero (1.2)", w + 50.0);
-    let front_cuff = p.add_rect("Puño delantero (5.1)", Point::ZERO, w, cuff);
-    let back_cuff = p.add_rect("Puño trasero (5.2)", Point::new(w + 50.0, 0.0), w, cuff);
+    let body = p.add_rect("Cuerpo (1)", Point::new(0.0, cuff + 20.0), w, h);
+    let cuff_piece = p.add_rect("Puño (5)", Point::new((w - cuff_w) / 2.0, 0.0), cuff_w, cuff);
 
     // Base: un círculo de cuatro cuartos. Las aristas 3 y 0 (la mitad de
     // arriba del dibujo) caen delante.
-    let c = Point::new(w + 25.0, cuff + h + 40.0 + radius);
+    let c = Point::new(w / 2.0, cuff + h + 40.0 + radius);
     let pts = [(0.0, -radius), (radius, 0.0), (0.0, radius), (-radius, 0.0)].map(|(x, y)| c + Vec2::new(x, y));
     let base = p.add_polygon("Base (2)", pts.to_vec());
     let piece = p.piece_mut(base).unwrap();
@@ -313,35 +309,54 @@ pub fn chalk_bag() -> Pattern {
         let (a, b) = (pts[i], pts[(i + 1) % 4]);
         piece.set_edge_kind(i, EdgeKind::Cubic { h1: quarter(a), h2: -quarter(b) });
     }
-
-    for id in [back, back_cuff] {
-        p.piece_mut(id).unwrap().arrangement = Arrangement::Back;
+    // Piquetes en el centro de cada cuarto de la base y en los octavos del
+    // fondo del cuerpo, que caen en los mismos sitios al coserlos.
+    for i in 0..4 {
+        let edge = piece.edges()[i].id;
+        piece.notches.push(Notch { edge, t: 0.5 });
     }
-    for id in [front, back, base] {
+    let piece = p.piece_mut(body).unwrap();
+    let bottom = piece.edges()[BOTTOM].id;
+    let top = piece.edges()[TOP].id;
+    piece.notches.extend([0.125, 0.375, 0.625, 0.875].map(|t| Notch { edge: bottom, t }));
+    // Puño y boca, en los cuartos: el punto se estira igual por todo.
+    piece.notches.extend([0.25, 0.5, 0.75].map(|t| Notch { edge: top, t }));
+    let piece = p.piece_mut(cuff_piece).unwrap();
+    let cuff_bottom = piece.edges()[BOTTOM].id;
+    piece.notches.extend([0.25, 0.5, 0.75].map(|t| Notch { edge: cuff_bottom, t }));
+
+    for id in [body, base] {
         let piece = p.piece_mut(id).unwrap();
         piece.fabric = cotton;
         piece.layers = vec![canvas, fur];
     }
-    for id in [front_cuff, back_cuff] {
-        let piece = p.piece_mut(id).unwrap();
-        piece.fabric = knit;
-        piece.layers = vec![knit];
-    }
+    let piece = p.piece_mut(cuff_piece).unwrap();
+    piece.fabric = knit;
+    piece.layers = vec![knit];
 
-    sew(&mut p, "Costado dcho.", &[(front, 1, false), (back, 4, true)]);
-    sew(&mut p, "Costado izdo.", &[(front, 4, false), (back, 1, true)]);
-    sew(&mut p, "Base delantera dcha.", &[(front, 2, false), (base, 0, true)]);
-    sew(&mut p, "Base delantera izda.", &[(front, 3, false), (base, 3, true)]);
-    sew(&mut p, "Base trasera izda.", &[(back, 2, false), (base, 2, true)]);
-    sew(&mut p, "Base trasera dcha.", &[(back, 3, false), (base, 1, true)]);
-    sew(&mut p, "Puño delantero", &[(front_cuff, BOTTOM, false), (front, 0, true)]);
-    sew(&mut p, "Puño trasero", &[(back_cuff, BOTTOM, false), (back, 0, true)]);
-    sew(&mut p, "Costado dcho. del puño", &[(front_cuff, RIGHT, false), (back_cuff, LEFT, true)]);
-    sew(&mut p, "Costado izdo. del puño", &[(front_cuff, LEFT, false), (back_cuff, RIGHT, true)]);
-    // El punto se cose con remalladora.
+    let sides = p.add_step("Costados");
+    let bottom_step = p.add_step("Base");
+    let cuff_step = p.add_step("Puño");
+    sew(&mut p, "Costado", &[(body, RIGHT, false), (body, LEFT, true)]);
+    sew(&mut p, "Costado del puño", &[(cuff_piece, RIGHT, false), (cuff_piece, LEFT, true)]);
+    // La base, de atrás (el vértice 2) a atrás dando toda la vuelta: sus
+    // cuatro aristas son un solo lado.
+    let base_edges: Vec<_> = p.piece(base).unwrap().edges().iter().map(|e| e.id).collect();
+    let around = SeamSide::new(base, base_edges[2], true).through(base_edges[1]);
+    p.add_seam("Base", vec![SeamSide::new(body, bottom, false), around]).expect("costura válida");
+    sew(&mut p, "Puño", &[(cuff_piece, BOTTOM, false), (body, TOP, true)]);
     for seam in &mut p.seams {
-        if seam.name.to_lowercase().contains("puño") {
+        seam.step = Some(match seam.name.as_str() {
+            "Base" => bottom_step,
+            "Puño" => cuff_step,
+            _ => sides,
+        });
+        // El punto se cose con remalladora, y el puño, estirado hasta la boca.
+        if seam.name.contains("uño") {
             seam.set_kind(SeamKind::Overlocked);
+        }
+        if seam.name == "Puño" {
+            seam.fit = SeamFit::Stretched;
         }
     }
     p

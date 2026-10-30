@@ -6,22 +6,18 @@
     "pieces": [
       {
         "id": 1,
-        "name": "Cuerpo delantero (1.1)",
+        "name": "Cuerpo (1)",
         "vertices": [
           {
             "x": 0.0,
             "y": 86.75
           },
           {
-            "x": 190.5,
+            "x": 381.0,
             "y": 86.75
           },
           {
-            "x": 190.5,
-            "y": 220.25
-          },
-          {
-            "x": 95.25,
+            "x": 381.0,
             "y": 220.25
           },
           {
@@ -45,43 +41,69 @@
           {
             "id": 5,
             "type": "line"
-          },
-          {
-            "id": 6,
-            "type": "line"
           }
         ],
         "layers": [
           6,
           11
+        ],
+        "notches": [
+          {
+            "edge": 4,
+            "t": 0.125
+          },
+          {
+            "edge": 4,
+            "t": 0.375
+          },
+          {
+            "edge": 4,
+            "t": 0.625
+          },
+          {
+            "edge": 4,
+            "t": 0.875
+          },
+          {
+            "edge": 2,
+            "t": 0.25
+          },
+          {
+            "edge": 2,
+            "t": 0.5
+          },
+          {
+            "edge": 2,
+            "t": 0.75
+          }
         ]
       },
       {
-        "id": 7,
-        "name": "Cuerpo trasero (1.2)",
+        "id": 6,
+        "name": "Puño (5)",
         "vertices": [
           {
-            "x": 240.5,
-            "y": 86.75
+            "x": 20.0,
+            "y": 0.0
           },
           {
-            "x": 431.0,
-            "y": 86.75
+            "x": 361.0,
+            "y": 0.0
           },
           {
-            "x": 431.0,
-            "y": 220.25
+            "x": 361.0,
+            "y": 66.75
           },
           {
-            "x": 335.75,
-            "y": 220.25
-          },
-          {
-            "x": 240.5,
-            "y": 220.25
+            "x": 20.0,
+            "y": 66.75
           }
         ],
         "edges": [
+          {
+            "id": 7,
+            "type": "line"
+          },
           {
             "id": 8,
             "type": "line"
@@ -93,135 +115,51 @@
           {
             "id": 10,
             "type": "line"
-          },
-          {
-            "id": 11,
-            "type": "line"
-          },
-          {
-            "id": 12,
-            "type": "line"
-          }
-        ],
-        "arrangement": "back",
-        "layers": [
-          6,
-          11
-        ]
-      },
-      {
-        "id": 13,
-        "name": "Puño delantero (5.1)",
-        "vertices": [
-          {
-            "x": 0.0,
-            "y": 0.0
-          },
-          {
-            "x": 190.5,
-            "y": 0.0
-          },
-          {
-            "x": 190.5,
-            "y": 66.75
-          },
-          {
-            "x": 0.0,
-            "y": 66.75
-          }
-        ],
-        "edges": [
-          {
-            "id": 14,
-            "type": "line"
-          },
-          {
-            "id": 15,
-            "type": "line"
-          },
-          {
-            "id": 16,
-            "type": "line"
-          },
-          {
-            "id": 17,
-            "type": "line"
           }
         ],
         "fabric": 4,
         "layers": [
           4
+        ],
+        "notches": [
+          {
+            "edge": 9,
+            "t": 0.25
+          },
+          {
+            "edge": 9,
+            "t": 0.5
+          },
+          {
+            "edge": 9,
+            "t": 0.75
+          }
         ]
       },
       {
-        "id": 18,
-        "name": "Puño trasero (5.2)",
-        "vertices": [
-          {
-            "x": 240.5,
-            "y": 0.0
-          },
-          {
-            "x": 431.0,
-            "y": 0.0
-          },
-          {
-            "x": 431.0,
-            "y": 66.75
-          },
-          {
-            "x": 240.5,
-            "y": 66.75
-          }
-        ],
-        "edges": [
-          {
-            "id": 19,
-            "type": "line"
-          },
-          {
-            "id": 20,
-            "type": "line"
-          },
-          {
-            "id": 21,
-            "type": "line"
-          },
-          {
-            "id": 22,
-            "type": "line"
-          }
-        ],
-        "arrangement": "back",
-        "fabric": 4,
-        "layers": [
-          4
-        ]
-      },
-      {
-        "id": 23,
+        "id": 11,
         "name": "Base (2)",
         "vertices": [
           {
-            "x": 215.5,
+            "x": 190.5,
             "y": 240.25
           },
           {
-            "x": 276.0,
+            "x": 251.0,
             "y": 300.75
           },
           {
-            "x": 215.5,
+            "x": 190.5,
             "y": 361.25
           },
           {
-            "x": 155.0,
+            "x": 130.0,
             "y": 300.75
           }
         ],
         "edges": [
           {
-            "id": 24,
+            "id": 12,
             "type": "cubic",
             "h1": {
               "x": 33.413227375,
@@ -233,7 +171,7 @@
             }
           },
           {
-            "id": 25,
+            "id": 13,
             "type": "cubic",
             "h1": {
               "x": 0.0,
@@ -245,7 +183,7 @@
             }
           },
           {
-            "id": 26,
+            "id": 14,
             "type": "cubic",
             "h1": {
               "x": -33.413227375,
@@ -257,7 +195,7 @@
             }
           },
           {
-            "id": 27,
+            "id": 15,
             "type": "cubic",
             "h1": {
               "x": 0.0,
@@ -273,107 +211,86 @@
         "layers": [
           6,
           11
+        ],
+        "notches": [
+          {
+            "edge": 12,
+            "t": 0.5
+          },
+          {
+            "edge": 13,
+            "t": 0.5
+          },
+          {
+            "edge": 14,
+            "t": 0.5
+          },
+          {
+            "edge": 15,
+            "t": 0.5
+          }
         ]
       }
     ],
     "seams": [
       {
-        "id": 28,
-        "name": "Costado dcho.",
+        "id": 19,
+        "name": "Costado",
         "sides": [
           {
             "piece": 1,
             "edge": 3
           },
           {
-            "piece": 7,
-            "edge": 12,
+            "piece": 1,
+            "edge": 5,
             "reversed": true
           }
-        ]
+        ],
+        "step": 16
       },
       {
-        "id": 29,
-        "name": "Costado izdo.",
+        "id": 20,
+        "name": "Costado del puño",
         "sides": [
           {
-            "piece": 1,
-            "edge": 6
+            "piece": 6,
+            "edge": 8
           },
           {
-            "piece": 7,
-            "edge": 9,
+            "piece": 6,
+            "edge": 10,
             "reversed": true
           }
-        ]
+        ],
+        "kind": "overlocked",
+        "pressed_to": 0,
+        "step": 16
       },
       {
-        "id": 30,
-        "name": "Base delantera dcha.",
+        "id": 21,
+        "name": "Base",
         "sides": [
           {
             "piece": 1,
             "edge": 4
           },
           {
-            "piece": 23,
-            "edge": 24,
+            "piece": 11,
+            "edge": 14,
+            "end": 13,
             "reversed": true
           }
-        ]
+        ],
+        "step": 17
       },
       {
-        "id": 31,
-        "name": "Base delantera izda.",
+        "id": 22,
+        "name": "Puño",
         "sides": [
           {
-            "piece": 1,
-            "edge": 5
-          },
-          {
-            "piece": 23,
-            "edge": 27,
-            "reversed": true
-          }
-        ]
-      },
-      {
-        "id": 32,
-        "name": "Base trasera izda.",
-        "sides": [
-          {
-            "piece": 7,
-            "edge": 10
-          },
-          {
-            "piece": 23,
-            "edge": 26,
-            "reversed": true
-          }
-        ]
-      },
-      {
-        "id": 33,
-        "name": "Base trasera dcha.",
-        "sides": [
-          {
-            "piece": 7,
-            "edge": 11
-          },
-          {
-            "piece": 23,
-            "edge": 25,
-            "reversed": true
-          }
-        ]
-      },
-      {
-        "id": 34,
-        "name": "Puño delantero",
-        "sides": [
-          {
-            "piece": 13,
-            "edge": 16
+            "piece": 6,
+            "edge": 9
           },
           {
             "piece": 1,
@@ -382,58 +299,23 @@
           }
         ],
         "kind": "overlocked",
-        "pressed_to": 0
+        "pressed_to": 0,
+        "fit": "stretched",
+        "step": 18
+      }
+    ],
+    "steps": [
+      {
+        "id": 16,
+        "name": "Costados"
       },
       {
-        "id": 35,
-        "name": "Puño trasero",
-        "sides": [
-          {
-            "piece": 18,
-            "edge": 21
-          },
-          {
-            "piece": 7,
-            "edge": 8,
-            "reversed": true
-          }
-        ],
-        "kind": "overlocked",
-        "pressed_to": 0
+        "id": 17,
+        "name": "Base"
       },
       {
-        "id": 36,
-        "name": "Costado dcho. del puño",
-        "sides": [
-          {
-            "piece": 13,
-            "edge": 15
-          },
-          {
-            "piece": 18,
-            "edge": 22,
-            "reversed": true
-          }
-        ],
-        "kind": "overlocked",
-        "pressed_to": 0
-      },
-      {
-        "id": 37,
-        "name": "Costado izdo. del puño",
-        "sides": [
-          {
-            "piece": 13,
-            "edge": 17
-          },
-          {
-            "piece": 18,
-            "edge": 20,
-            "reversed": true
-          }
-        ],
-        "kind": "overlocked",
-        "pressed_to": 0
+        "id": 18,
+        "name": "Puño"
       }
     ],
     "textiles": [
@@ -538,6 +420,6 @@
       }
     ],
     "seam_allowance": 9.5,
-    "next_id": 38
+    "next_id": 23
   }
 }

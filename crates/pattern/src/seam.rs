@@ -220,3 +220,47 @@ impl Topstitch {
         *self == Topstitch::default()
     }
 }
+
+/// Cómo casan los lados de una costura que no miden lo mismo.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeamFit {
+    /// Los lados miden lo mismo; si no, el patrón avisa.
+    #[default]
+    Exact,
+    /// El lado largo se embebe: algo más largo, pero sin pliegues (una
+    /// manga en la sisa).
+    Eased,
+    /// El lado largo se frunce hasta el largo del corto (una falda en la
+    /// cinturilla, la boca de un saco).
+    Gathered,
+    /// El lado corto, de punto o elástico, se cose estirado hasta el largo
+    /// del otro (un puño, una cinturilla de punto).
+    Stretched,
+}
+
+impl SeamFit {
+    pub const ALL: [SeamFit; 4] = [SeamFit::Exact, SeamFit::Eased, SeamFit::Gathered, SeamFit::Stretched];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SeamFit::Exact => "Igual",
+            SeamFit::Eased => "Embebida",
+            SeamFit::Gathered => "Fruncida",
+            SeamFit::Stretched => "Estirada",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            SeamFit::Exact => "Los lados miden lo mismo",
+            SeamFit::Eased => "El lado largo se embebe, sin pliegues (hasta un 10 % más)",
+            SeamFit::Gathered => "El lado largo se frunce hasta el largo del corto",
+            SeamFit::Stretched => "El lado corto (punto, elástico) se cose estirado",
+        }
+    }
+
+    pub(crate) fn is_default(&self) -> bool {
+        *self == SeamFit::default()
+    }
+}

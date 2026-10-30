@@ -1,6 +1,7 @@
 //! Ventana principal: barra superior, cinta de herramientas, navegador,
 //! inspector, vistas 2D y 3D, ficheros y deshacer.
 
+mod assembly;
 mod panels;
 mod textiles;
 
@@ -234,7 +235,7 @@ impl ClothingMakerApp {
         let tool_fits = match self.editor.tool {
             Tool::Select => true,
             Tool::Pen | Tool::Rect | Tool::Line => stage == Stage::Pattern,
-            Tool::Seam => stage == Stage::Assembly,
+            Tool::Seam | Tool::Notch => stage == Stage::Assembly,
         };
         if !tool_fits {
             self.editor.set_tool(Tool::Select);
@@ -258,7 +259,7 @@ impl ClothingMakerApp {
     fn follow_tool(&mut self) {
         let stage = match self.editor.tool {
             Tool::Pen | Tool::Rect | Tool::Line => Stage::Pattern,
-            Tool::Seam => Stage::Assembly,
+            Tool::Seam | Tool::Notch => Stage::Assembly,
             Tool::Select => return,
         };
         if self.stage != stage {
@@ -731,6 +732,7 @@ impl ClothingMakerApp {
         widgets::ribbon_group(ui, "CREAR", false, |ui, _| {
             self.tool_button(ui, Tool::Select, Icon::Select, "Seleccionar", "V");
             self.tool_button(ui, Tool::Seam, Icon::Seam, "Costura", "S");
+            self.tool_button(ui, Tool::Notch, Icon::Notch, "Piquete", "N");
         });
         let selected = match self.editor.selection {
             Selection::Seam(id) => self.pattern.seams.iter().position(|s| s.id == id),
@@ -806,12 +808,15 @@ impl ClothingMakerApp {
                     ui.close();
                 }
                 if ui.button("Usar en cada costura el margen típico de su tipo").clicked() {
-                    let typical: Vec<_> = self
-                        .pattern
+                    let pattern = &self.pattern;
+                    let typical: Vec<_> = pattern
                         .seams
                         .iter()
                         .flat_map(|s| {
-                            s.sides.iter().map(move |side| (side.piece, side.edge, s.kind.typical_allowance()))
+                            s.sides.iter().flat_map(move |side| {
+                                let edges = pattern.side_edges(side).unwrap_or_default();
+                                edges.into_iter().map(move |edge| (side.piece, edge, s.kind.typical_allowance()))
+                            })
                         })
                         .collect();
                     for (piece, edge, allowance) in typical {
@@ -848,7 +853,7 @@ impl ClothingMakerApp {
             if widgets::ribbon_button(ui, Icon::Order, "Coser por orden", in_order, true)
                 .on_hover_text(
                     "En la vista 3D, cerrar las costuras de una en una en el orden de la lista \
-                     (si no, se cierran todas a la vez)",
+                     (si no, se cierran a la vez todas las de cada etapa de la línea de montaje)",
                 )
                 .clicked()
             {
@@ -1057,6 +1062,13 @@ impl eframe::App for ClothingMakerApp {
             .size_range(220.0..=480.0)
             .frame(side)
             .show(ui, |ui| self.inspector(ui));
+        if matches!(self.stage, Stage::Assembly | Stage::Simulation)
+            && (self.stage == Stage::Assembly || !self.pattern.steps.is_empty())
+        {
+            egui::Panel::bottom("assembly_line")
+                .frame(egui::Frame::NONE.fill(theme::HEADER).inner_margin(egui::Margin::symmetric(8, 6)))
+                .show(ui, |ui| self.assembly_line(ui));
+        }
 
         self.view3d.highlight_seams = self.stage == Stage::Assembly && self.highlight_seams;
         if self.layout.shows_3d() {

@@ -45,6 +45,7 @@ pub enum Icon {
     InnerLine,
     Mirror,
     Hole,
+    Notch,
 }
 
 /// Dibuja `icon` dentro de `rect` (se usa el cuadrado central).
@@ -324,6 +325,11 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             closed(&[(0.12, 0.18), (0.88, 0.18), (0.88, 0.82), (0.12, 0.82)], fill_soft);
             painter.rect_filled(Rect::from_min_max(p(0.3, 0.42), p(0.7, 0.58)), 2.0, Color32::from_black_alpha(160));
             painter.rect_stroke(Rect::from_min_max(p(0.3, 0.42), p(0.7, 0.58)), 2.0, thin, StrokeKind::Middle);
+        }
+        Icon::Notch => {
+            // Un borde de pieza con una muesca.
+            closed(&[(0.12, 0.45), (0.88, 0.45), (0.88, 0.85), (0.12, 0.85)], fill_soft);
+            closed(&[(0.38, 0.45), (0.5, 0.15), (0.62, 0.45)], color);
         }
         Icon::Mannequin => {
             painter.circle_stroke(p(0.5, 0.20), size * 0.09, stroke);
