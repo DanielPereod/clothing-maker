@@ -41,6 +41,7 @@ mod pressure;
 mod remap;
 mod sdf;
 mod self_collision;
+mod tether;
 
 pub use collider::Collider;
 pub use remap::Remap;
@@ -57,10 +58,35 @@ use std::collections::HashMap;
 /// de partículas) todo va en serie; el paralelismo entra con mallas finas.
 const PAR_MIN_LEN: usize = 16_384;
 
-/// Flexibilidad (m/N) de la cizalla, igual para todas las telas. Es la que
-/// tenía antes la flexión del algodón, cuando se hacía con estas mismas
-/// distancias.
+/// Flexibilidad de cada arista de la malla por cada unidad de flexibilidad
+/// de la tela ([`Fabric::stretch_compliance`]), con la cizalla incluida:
+/// así una tira estira lo que dice su módulo, sea cual sea la malla.
+const EDGE_COMPLIANCE: f32 = 1.6;
+
+/// Flexibilidad mínima (m/N) de la cizalla (que los triángulos se deformen
+/// dentro del plano). Es la que tenía antes la flexión del algodón, cuando
+/// se hacía con estas mismas distancias.
 const SHEAR_COMPLIANCE: f32 = 2e-2;
+/// La cizalla cede al menos estas veces lo que cede una arista al estirar:
+/// en un punto blando, no puede sujetar más que la propia tela.
+const SHEAR_RATIO: f32 = 2.0;
+
+/// Tensión (N/m) que tiene que soportar una tela antes de llegar a su
+/// límite de estiramiento: cada tela estira como mucho lo que le haría
+/// esta tensión.
+const STRAIN_LIMIT_TENSION: f32 = 20.0;
+/// Lo menos que deja estirar el límite (las telas muy firmes).
+const MIN_STRAIN: f32 = 0.01;
+/// Las telas que estiran más que esto bajo [`STRAIN_LIMIT_TENSION`] (el
+/// punto, los elásticos) no tienen límite: ceden lo que diga su módulo.
+const MAX_LIMITED_STRAIN: f32 = 0.1;
+
+/// Pasadas por subpaso sobre las restricciones de distancia (acumulando su
+/// multiplicador, como manda XPBD) y las costuras: con una, una tela firme
+/// cede ante una blanda mucho más de lo que dice su módulo, y una costura
+/// fruncida o que sostiene el peso de la bolsa puede quedar abierta unos
+/// milímetros. Cuestan poco al lado de la auto-colisión.
+const DISTANCE_ITERATIONS: usize = 2;
 
 /// Cada cuántos subpasos se buscan los pares de la auto-colisión.
 const SELF_COLLISION_EVERY: u32 = 5;
@@ -70,7 +96,12 @@ const SELF_COLLISION_EVERY: u32 = 5;
 pub struct Fabric {
     /// Gramaje en kg/m² (una camiseta de algodón ronda 0,15).
     pub density: f32,
-    /// Flexibilidad al estirar (m/N). 0 = inextensible.
+    /// Flexibilidad al estirar (m/N): la inversa del módulo de la tela, o
+    /// cuánto se alarga una tira por cada newton por metro de ancho que
+    /// tira de ella (una tira de punto de 5 cm con 100 g colgando se
+    /// alarga un 10 % con 5·10⁻³; una lona, menos de un 1 %). 0 =
+    /// inextensible. Las telas firmes, además, tienen un límite de
+    /// estiramiento (ver [`Fabric::max_strain`]).
     pub stretch_compliance: f32,
     /// Rigidez a la flexión (N·m): la firmeza. Más alto = más tieso; una
     /// camiseta de algodón ronda 5·10⁻⁶ y un cuero de bolso 10⁻³.
@@ -83,16 +114,19 @@ pub struct Fabric {
 
 impl Fabric {
     pub const COTTON: Fabric =
-        Fabric { density: 0.15, stretch_compliance: 1e-7, bend_stiffness: 5e-6, friction: 0.5, thickness: 0.003 };
+        Fabric { density: 0.15, stretch_compliance: 3e-4, bend_stiffness: 5e-6, friction: 0.5, thickness: 0.003 };
     pub const SILK: Fabric =
-        Fabric { density: 0.06, stretch_compliance: 2e-7, bend_stiffness: 8e-7, friction: 0.2, thickness: 0.002 };
+        Fabric { density: 0.06, stretch_compliance: 7e-4, bend_stiffness: 8e-7, friction: 0.2, thickness: 0.002 };
     pub const DENIM: Fabric =
-        Fabric { density: 0.40, stretch_compliance: 2e-8, bend_stiffness: 5e-5, friction: 0.6, thickness: 0.004 };
+        Fabric { density: 0.40, stretch_compliance: 4e-5, bend_stiffness: 5e-5, friction: 0.6, thickness: 0.004 };
     pub const LEATHER: Fabric =
-        Fabric { density: 0.90, stretch_compliance: 1e-8, bend_stiffness: 1e-3, friction: 0.7, thickness: 0.0015 };
+        Fabric { density: 0.90, stretch_compliance: 2e-5, bend_stiffness: 1e-3, friction: 0.7, thickness: 0.0015 };
     /// Forro: ligero y muy blando.
     pub const LINING: Fabric =
-        Fabric { density: 0.07, stretch_compliance: 2e-7, bend_stiffness: 6e-7, friction: 0.2, thickness: 0.001 };
+        Fabric { density: 0.07, stretch_compliance: 6e-4, bend_stiffness: 6e-7, friction: 0.2, thickness: 0.001 };
+    /// Punto de algodón: cede mucho y sin límite.
+    pub const KNIT: Fabric =
+        Fabric { density: 0.18, stretch_compliance: 6e-3, bend_stiffness: 2.5e-6, friction: 0.5, thickness: 0.003 };
 
     /// Varias capas de tela unidas en una sola lámina (p. ej. cuero por fuera
     /// y forro por dentro), de fuera hacia dentro. Las rigideces se suman
@@ -116,6 +150,13 @@ impl Fabric {
             friction: outer.friction,
             thickness: layers.iter().map(|l| l.thickness).sum(),
         }
+    }
+
+    /// Lo más que puede estirar la tela (0,01 = un 1 %), o `None` si no tiene
+    /// límite (el punto y los elásticos ceden lo que diga su módulo).
+    pub fn max_strain(&self) -> Option<f32> {
+        let strain = (STRAIN_LIMIT_TENSION * self.stretch_compliance).max(MIN_STRAIN);
+        (strain <= MAX_LIMITED_STRAIN).then_some(strain)
     }
 
     /// Firmeza al doblar comparada con la del algodón (1 = igual de firme).
@@ -243,6 +284,11 @@ pub struct Cloth {
     bends: Vec<BendConstraint>,
     /// Bisagras de la malla (índices globales), para doblarlas.
     hinges: Vec<[u32; 4]>,
+    /// Límite de estiramiento de las telas firmes, en serie.
+    tethers: Vec<tether::Tether>,
+    /// Hacia dónde empuja el relleno a cada triángulo (ver
+    /// [`Cloth::set_fill`]).
+    fill: Vec<f32>,
     /// Dobleces planchados, en serie.
     folds: Vec<FoldConstraint>,
     /// Costuras: pocas comparadas con la tela, así que van en serie.
@@ -250,7 +296,10 @@ pub struct Cloth {
     /// Turno de montaje de cada costura: solo se cierran las del turno más
     /// bajo que quede abierto.
     seam_order: Vec<u32>,
-    scratch: Vec<(Vec3, Vec3)>,
+    scratch: Vec<(Vec3, Vec3, f32)>,
+    /// Multiplicador acumulado de cada restricción de distancia en este
+    /// subpaso.
+    lambdas: Vec<f32>,
     /// Normal y profundidad del contacto de cada partícula en este subpaso.
     contacts: Vec<(Vec3, f32)>,
     /// Aristas de la malla y su longitud en reposo (m).
@@ -322,8 +371,10 @@ impl Cloth {
             rest_length: rest[a as usize].distance(rest[b as usize]),
             compliance,
         };
+        let stretch = fabric.stretch_compliance * EDGE_COMPLIANCE;
+        let shear = SHEAR_COMPLIANCE.max(stretch * SHEAR_RATIO);
         for [a, b] in mesh.edges() {
-            let c = distance(a, b, fabric.stretch_compliance);
+            let c = distance(a, b, stretch);
             self.mesh_edges.push([c.a, c.b]);
             self.rest_edges.push(c.rest_length);
             self.pending.push(c);
@@ -333,12 +384,16 @@ impl Cloth {
             // La distancia entre los vértices opuestos de cada bisagra apenas
             // frena la flexión mientras es suave, pero sujeta la cizalla (que
             // los triángulos se deformen dentro del plano).
-            self.pending.push(distance(hinge[2], hinge[3], SHEAR_COMPLIANCE));
+            self.pending.push(distance(hinge[2], hinge[3], shear));
             if fabric.bend_stiffness > 0.0
                 && let Some(bend) = bend_constraint(hinge.map(|i| rest[i as usize]), fabric.bend_stiffness)
             {
                 self.bends.push(BendConstraint { v: hinge.map(|i| i + base), ..bend });
             }
+        }
+
+        if let Some(strain) = fabric.max_strain() {
+            self.tethers.extend(tether::build(&rest, &triangles, base, strain));
         }
 
         let n = rest.len();
@@ -352,6 +407,7 @@ impl Cloth {
         let piece = self.pieces.len() as u32;
         self.rest.extend(rest.iter().map(|&r| (r, piece)));
         self.triangles.extend(triangles.iter().map(|t| t.map(|i| i + base)));
+        self.fill.extend(std::iter::repeat_n(1.0, triangles.len()));
         let range = PieceRange {
             first_particle: base,
             particle_count: n as u32,
@@ -430,6 +486,16 @@ impl Cloth {
                 *length = new;
             }
         }
+        // Si la tela queda estirada en reposo (un puño cosido estirado), su
+        // límite de estiramiento se alarga con ella.
+        for t in &mut self.tethers {
+            let flat = at(t.a).distance(at(t.b));
+            if let Some(new) = new_length(t.a, t.b)
+                && new > flat
+            {
+                t.max_length *= new / flat;
+            }
+        }
     }
 
     /// Dobla la tela por la arista de la malla `a`–`b`: deja de resistirse a
@@ -498,6 +564,17 @@ impl Cloth {
     pub fn set_layer(&mut self, piece: &PieceRange, layer: u8) {
         let start = piece.first_particle as usize;
         self.layer[start..start + piece.particle_count as usize].fill(layer);
+    }
+
+    /// Hacia dónde empuja el relleno ([`SimParams::pressure`]) a una pieza:
+    /// 1 hacia su derecho (la normal de sus triángulos), −1 hacia su revés
+    /// (un forro con el derecho hacia dentro, que el relleno aprieta contra
+    /// el exterior) y 0 nada (un bolsillo o un asa, que no encierran el
+    /// relleno). Por defecto, 1.
+    pub fn set_fill(&mut self, piece: &PieceRange, sign: f32) {
+        let start = piece.first_triangle as usize;
+        self.fill[start..start + piece.triangle_count as usize].fill(sign);
+        self.pressure.dirty = true;
     }
 
     /// Quita todas las costuras.
@@ -600,7 +677,21 @@ impl Cloth {
             // palabra (si no, se estira al pasar por un borde). Puede volver
             // a meter un poco las partículas, pero siempre dentro del grosor.
             self.solve_collisions(colliders, parallel);
-            self.solve_distances(h);
+            // Los tirantes, antes y después: antes, para que la tela empiece
+            // sin estirar de más; después, para que acabe así. Mientras se
+            // cose no actúan: las piezas empiezan colocadas más o menos (un
+            // asa en arco) y las costuras las llevan a su sitio.
+            if !sewing {
+                self.solve_tethers();
+            }
+            self.lambdas.fill(0.0);
+            for _ in 0..DISTANCE_ITERATIONS {
+                self.solve_distances(h);
+                self.solve_seams(h);
+            }
+            if !sewing {
+                self.solve_tethers();
+            }
             self.solve_bending(h);
             self.solve_folds(h);
             self.solve_seams(h);
@@ -625,7 +716,8 @@ impl Cloth {
     fn rebuild_pressure(&mut self) {
         if self.pressure.dirty {
             let seams: Vec<[u32; 2]> = self.seams.iter().map(|c| [c.a, c.b]).collect();
-            self.pressure.rebuild(self.positions.len(), &self.triangles, &seams);
+            let pieces: Vec<u32> = self.pieces.iter().map(|p| p.first_triangle).collect();
+            self.pressure.rebuild(self.positions.len(), &self.triangles, &seams, &self.fill, &pieces);
         }
     }
 
@@ -750,7 +842,8 @@ impl Cloth {
         while self.colors.len() <= SERIAL as usize + 1 {
             self.colors.push(self.constraints.len());
         }
-        self.scratch = vec![(Vec3::ZERO, Vec3::ZERO); self.constraints.len()];
+        self.scratch = vec![(Vec3::ZERO, Vec3::ZERO, 0.0); self.constraints.len()];
+        self.lambdas = vec![0.0; self.constraints.len()];
     }
 
     fn solve_distances(&mut self, h: f32) {
@@ -764,8 +857,9 @@ impl Cloth {
             }
             if k == groups - 1 || range.len() < PAR_MIN_LEN {
                 // Último grupo (puede compartir partículas) o grupo pequeño: en serie.
-                for c in &self.constraints[range] {
-                    let (da, db) = distance_correction(c, &self.positions, &self.inv_mass, inv_h2);
+                for (c, lambda) in self.constraints[range.clone()].iter().zip(&mut self.lambdas[range]) {
+                    let (da, db, l) = xpbd_correction(c, *lambda, &self.positions, &self.inv_mass, inv_h2);
+                    *lambda = l;
                     self.positions[c.a as usize] += da;
                     self.positions[c.b as usize] += db;
                 }
@@ -774,13 +868,35 @@ impl Cloth {
             let (positions, inv_mass) = (&self.positions, &self.inv_mass);
             self.constraints[range.clone()]
                 .par_iter()
+                .zip(&self.lambdas[range.clone()])
                 .zip(&mut self.scratch[range.clone()])
                 .with_min_len(PAR_MIN_LEN / 2)
-                .for_each(|(c, out)| *out = distance_correction(c, positions, inv_mass, inv_h2));
-            for (c, &(da, db)) in self.constraints[range.clone()].iter().zip(&self.scratch[range]) {
+                .for_each(|((c, &l), out)| *out = xpbd_correction(c, l, positions, inv_mass, inv_h2));
+            let lambdas = &mut self.lambdas[range.clone()];
+            for ((c, &(da, db, l)), lambda) in
+                self.constraints[range.clone()].iter().zip(&self.scratch[range]).zip(lambdas)
+            {
+                *lambda = l;
                 self.positions[c.a as usize] += da;
                 self.positions[c.b as usize] += db;
             }
+        }
+    }
+
+    /// Los tirantes solo tiran: acercan sus dos partículas si están más
+    /// lejos que su máximo, sin flexibilidad.
+    fn solve_tethers(&mut self) {
+        for t in &self.tethers {
+            let (a, b) = (t.a as usize, t.b as usize);
+            let (wa, wb) = (self.inv_mass[a], self.inv_mass[b]);
+            let d = self.positions[a] - self.positions[b];
+            let len = d.length();
+            if len <= t.max_length || wa + wb == 0.0 {
+                continue;
+            }
+            let corr = d * ((len - t.max_length) / (len * (wa + wb)));
+            self.positions[a] -= corr * wa;
+            self.positions[b] += corr * wb;
         }
     }
 
@@ -930,6 +1046,33 @@ fn distance_correction(c: &DistanceConstraint, positions: &[Vec3], inv_mass: &[f
     let lambda = -(len - c.rest_length) / (w + alpha);
     let corr = d / len * lambda;
     (corr * wa, -corr * wb)
+}
+
+/// Una iteración de XPBD sobre una restricción de distancia que ya lleva
+/// acumulado el multiplicador `lambda` en este subpaso. Devuelve los
+/// desplazamientos y el multiplicador nuevo.
+fn xpbd_correction(
+    c: &DistanceConstraint,
+    lambda: f32,
+    positions: &[Vec3],
+    inv_mass: &[f32],
+    inv_h2: f32,
+) -> (Vec3, Vec3, f32) {
+    let (a, b) = (c.a as usize, c.b as usize);
+    let (wa, wb) = (inv_mass[a], inv_mass[b]);
+    let w = wa + wb;
+    if w == 0.0 {
+        return (Vec3::ZERO, Vec3::ZERO, lambda);
+    }
+    let d = positions[a] - positions[b];
+    let len = d.length();
+    if len < 1e-9 {
+        return (Vec3::ZERO, Vec3::ZERO, lambda);
+    }
+    let alpha = c.compliance * inv_h2;
+    let delta = -(len - c.rest_length + alpha * lambda) / (w + alpha);
+    let corr = d / len * delta;
+    (corr * wa, -corr * wb, lambda + delta)
 }
 
 /// Bisagras de la malla: para cada arista interior `[a, b, c, d]`, con la
@@ -1237,12 +1380,12 @@ mod tests {
 
     /// Estiramiento de cada arista de la malla (1 = longitud en reposo), de
     /// menor a mayor.
-    fn stretch_ratios(cloth: &Cloth, fabric: &Fabric) -> Vec<f32> {
+    fn stretch_ratios(cloth: &Cloth) -> Vec<f32> {
         let mut ratios: Vec<f32> = cloth
-            .constraints
+            .mesh_edges
             .iter()
-            .filter(|c| c.compliance == fabric.stretch_compliance)
-            .map(|c| cloth.positions[c.a as usize].distance(cloth.positions[c.b as usize]) / c.rest_length)
+            .zip(&cloth.rest_edges)
+            .map(|(&[a, b], rest)| cloth.positions[a as usize].distance(cloth.positions[b as usize]) / rest)
             .collect();
         ratios.sort_by(f32::total_cmp);
         ratios
@@ -1259,7 +1402,7 @@ mod tests {
         assert!(min_y(&cloth) < 0.3, "punto más bajo: {}", min_y(&cloth));
         // En las esquinas de la mesa la tela tiene que estirarse algo para
         // doblarse; en el resto, casi nada.
-        let ratios = stretch_ratios(&cloth, &fabric);
+        let ratios = stretch_ratios(&cloth);
         let at = |q: f32| ratios[((ratios.len() - 1) as f32 * q) as usize];
         assert!(at(0.5) < 1.01, "mediana del estiramiento: {}", at(0.5));
         assert!(at(0.99) < 1.06, "percentil 99 del estiramiento: {}", at(0.99));
@@ -1351,7 +1494,7 @@ mod tests {
         assert!(flat < volume / 4.0, "sin presión debería quedar casi plano: {flat}");
         assert!(volume > 0.007 && volume < 0.02, "volumen del cojín: {volume}");
         assert!(cushion.max_seam_gap() < 2e-3, "costura abierta: {}", cushion.max_seam_gap());
-        let ratios = stretch_ratios(&cushion, &Fabric::COTTON);
+        let ratios = stretch_ratios(&cushion);
         assert!(ratios[ratios.len() / 2] < 1.02, "mediana del estiramiento: {}", ratios[ratios.len() / 2]);
         // Las fuerzas se compensan: no se desplaza.
         let drift = centroid(&cushion).distance(Vec3::new(0.0, 0.4, 0.0));
@@ -1470,5 +1613,49 @@ mod tests {
         let mut folded = x;
         folded[3].z = 0.01;
         assert!(curvature(folded) > 1e-3);
+    }
+
+    /// Cuánto se alarga (0,01 = un 1 %) una tira de 50 × 300 mm colgada de
+    /// arriba con `load` kg repartidos por abajo.
+    fn hanging_strip_stretch(fabric: &Fabric, load: f32) -> f32 {
+        let mut p = pattern::Pattern::new("t");
+        let id = p.add_rect("tira", pattern::Point::ZERO, 50.0, 300.0);
+        let options = mesher::MeshOptions { target_edge_length: 20.0, ..Default::default() };
+        let mesh = mesher::mesh_piece(p.piece(id).unwrap(), &options).unwrap();
+        let mut cloth = Cloth::from_mesh(&mesh, fabric);
+        let bottom: Vec<usize> = (0..mesh.positions.len()).filter(|&i| mesh.positions[i][1] == 300.0).collect();
+        for (i, q) in mesh.positions.iter().enumerate() {
+            if q[1] == 0.0 {
+                cloth.pin(i);
+            }
+        }
+        for &i in &bottom {
+            cloth.add_mass(i, load / bottom.len() as f32);
+        }
+        let params = SimParams { self_collision: false, ..Default::default() };
+        for _ in 0..600 {
+            cloth.step(1.0 / 60.0, &params, &[]);
+        }
+        let low = bottom.iter().map(|&i| cloth.positions[i].y).sum::<f32>() / bottom.len() as f32;
+        -low / 0.3 - 1.0
+    }
+
+    /// Con el mismo peso, el punto cede mucho más que un tejido. Con cuatro
+    /// veces más peso, el tejido no se alarga cuatro veces más: los tirantes
+    /// lo frenan cerca de su límite.
+    #[test]
+    fn knit_stretches_and_woven_stops() {
+        let woven = hanging_strip_stretch(&Fabric::COTTON, 0.05);
+        let knit = hanging_strip_stretch(&Fabric::KNIT, 0.05);
+        let heavy = hanging_strip_stretch(&Fabric::COTTON, 0.2);
+        eprintln!(
+            "algodón {:.2} %, punto {:.2} %, algodón con más peso {:.2} %",
+            woven * 100.0,
+            knit * 100.0,
+            heavy * 100.0
+        );
+        assert!(woven < 0.02, "el algodón se estira un {} %", woven * 100.0);
+        assert!(knit > 2.5 * woven, "el punto ({knit}) cede como el algodón ({woven})");
+        assert!(heavy < 2.5 * woven, "con más peso, el algodón se estira un {} %", heavy * 100.0);
     }
 }

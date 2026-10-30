@@ -1453,6 +1453,16 @@ impl Editor {
                     .collect();
                 painter.add(Shape::line(zigzag, Stroke::new(1.5, color)));
             }
+            // Una fijación: un gancho que sujeta el punto desde arriba.
+            FastenerKind::Pin => {
+                painter.circle_filled(at, 2.5, color);
+                let hook = [at + egui::vec2(0.0, -2.5), at + egui::vec2(0.0, -9.0)];
+                painter.line_segment(hook, Stroke::new(1.5, color));
+                painter.line_segment(
+                    [hook[1] + egui::vec2(-4.0, 0.0), hook[1] + egui::vec2(4.0, 0.0)],
+                    Stroke::new(1.5, color),
+                );
+            }
         };
         let focus = self.mode == Mode::Seams;
         for fastener in &pattern.fasteners {
@@ -1463,11 +1473,11 @@ impl Editor {
             let ends: Vec<Pos2> = ends.into_iter().map(|p| self.view.to_screen(rect, p)).collect();
             let selected = self.selection == Selection::Fastener(fastener.id);
             let color = if selected { accent } else { ink.gamma_multiply(if focus { 0.9 } else { 0.6 }) };
-            if focus || selected {
+            if (focus || selected) && !fastener.is_pin() {
                 let width = if selected { 1.5 } else { 1.0 };
                 painter.extend(Shape::dashed_line(&ends, Stroke::new(width, color.gamma_multiply(0.7)), 4.0, 3.0));
             }
-            for &at in &ends {
+            for &at in if fastener.is_pin() { &ends[..1] } else { &ends[..] } {
                 mark(at, fastener.kind, color, fastener.open && fastener.kind == FastenerKind::Snap);
             }
         }

@@ -206,7 +206,12 @@ impl ClothingMakerApp {
             });
 
             if !self.pattern.fasteners.is_empty() {
-                widgets::section(ui, "Broches y presillas", Some(self.pattern.fasteners.len()), |ui| {
+                let title = if self.pattern.fasteners.iter().any(|f| f.is_pin()) {
+                    "Broches, presillas y fijaciones"
+                } else {
+                    "Broches y presillas"
+                };
+                widgets::section(ui, title, Some(self.pattern.fasteners.len()), |ui| {
                     for fastener in &self.pattern.fasteners {
                         let detail = match (fastener.kind, fastener.open) {
                             (FastenerKind::Snap, true) => "abierto",
@@ -695,13 +700,20 @@ impl ClothingMakerApp {
             .map(|e| self.pattern.piece(e.piece).map_or("?".to_owned(), |p| p.name.clone()))
             .collect();
         let mut delete = false;
-        let editable = self.stage == Stage::Assembly;
+        // Las fijaciones se ponen y se quitan al simular; lo demás, al montar.
+        let editable = self.stage == if fastener.is_pin() { Stage::Simulation } else { Stage::Assembly };
         let Some(fastener) = self.pattern.fastener_mut(id) else { return };
         widgets::section(ui, fastener.kind.label(), None, |ui| {
             widgets::properties(ui, "fastener", |ui| {
                 widgets::prop_label(ui, "Nombre");
                 ui.text_edit_singleline(&mut fastener.name);
                 ui.end_row();
+                if fastener.is_pin() {
+                    widgets::prop_label(ui, "Sujeta");
+                    ui.label(&ends[0]);
+                    ui.end_row();
+                    return;
+                }
                 widgets::prop_label(ui, "Tipo");
                 let mut kind = fastener.kind;
                 egui::ComboBox::from_id_salt("fastener_kind").selected_text(kind.label()).show_ui(ui, |ui| {

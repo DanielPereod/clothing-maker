@@ -36,6 +36,9 @@ const SLIDER_SIZE: [f32; 3] = [0.014, 0.009, 0.003];
 /// Radio de un broche y largo y ancho de una presilla (m).
 const SNAP_RADIUS: f32 = 0.006;
 const BAR_TACK: [f32; 2] = [0.012, 0.003];
+/// Una fijación: un poste fino que sube del punto, como un gancho.
+const PIN: [f32; 3] = [0.85, 0.30, 0.20];
+const PIN_SIZE: [f32; 2] = [0.003, 0.05];
 
 /// Malla que se va llenando.
 #[derive(Default)]
@@ -168,6 +171,25 @@ pub fn build(
 /// (una barra de hilo por las dos caras de cada una).
 pub fn fasteners(draws: &[FastenerDraw], positions: &[Vec3], normals: &[Vec3], out: &mut SeamMesh) {
     for draw in draws {
+        if draw.kind == pattern::FastenerKind::Pin {
+            // Un poste cuadrado hacia arriba, con su tapa.
+            let p = positions[draw.particles[0] as usize];
+            let (half, height) = (PIN_SIZE[0] / 2.0, PIN_SIZE[1]);
+            let corners = [
+                Vec3::new(-half, 0.0, -half),
+                Vec3::new(half, 0.0, -half),
+                Vec3::new(half, 0.0, half),
+                Vec3::new(-half, 0.0, half),
+            ];
+            for i in 0..4 {
+                let (a, b) = (p + corners[i], p + corners[(i + 1) % 4]);
+                let out_dir = (corners[i] + corners[(i + 1) % 4]).normalize_or_zero();
+                out.quad([a, b, b + Vec3::Y * height, a + Vec3::Y * height], out_dir, PIN);
+            }
+            let top = corners.map(|c| p + c * 2.0 + Vec3::Y * height);
+            out.quad(top, Vec3::Y, PIN);
+            continue;
+        }
         for (k, &particle) in draw.particles.iter().enumerate() {
             let p = positions[particle as usize];
             let n = normals[particle as usize].normalize_or_zero();
@@ -175,7 +197,7 @@ pub fn fasteners(draws: &[FastenerDraw], positions: &[Vec3], normals: &[Vec3], o
             let u = n.any_orthonormal_vector();
             let v = n.cross(u);
             let faces: &[f32] = match draw.kind {
-                pattern::FastenerKind::Snap => &[1.0],
+                pattern::FastenerKind::Snap | pattern::FastenerKind::Pin => &[1.0],
                 pattern::FastenerKind::BarTack => &[1.0, -1.0],
             };
             for &face in faces {
@@ -196,6 +218,7 @@ pub fn fasteners(draws: &[FastenerDraw], positions: &[Vec3], normals: &[Vec3], o
                         let (a, w) = (u * BAR_TACK[0] / 2.0, v * BAR_TACK[1] / 2.0);
                         out.quad([base - a - w, base + a - w, base + a + w, base - a + w], up, THREAD);
                     }
+                    pattern::FastenerKind::Pin => {}
                 }
             }
         }

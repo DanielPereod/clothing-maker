@@ -53,6 +53,7 @@ pub enum Icon {
     Piping,
     Elastic,
     Snap,
+    Pin,
 }
 
 /// Dibuja `icon` dentro de `rect` (se usa el cuadrado central).
@@ -394,6 +395,13 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             closed(&[(0.3, 0.42), (0.9, 0.42), (0.9, 0.84), (0.3, 0.84)], fill_soft);
             painter.circle_stroke(p(0.5, 0.52), size * 0.17, stroke);
             painter.circle_filled(p(0.5, 0.52), size * 0.07, color);
+        }
+        Icon::Pin => {
+            // Una tela colgada de un gancho.
+            line(&[(0.5, 0.08), (0.5, 0.30)]);
+            line(&[(0.36, 0.08), (0.64, 0.08)]);
+            painter.circle_filled(p(0.5, 0.32), size * 0.06, color);
+            closed(&[(0.5, 0.32), (0.86, 0.62), (0.80, 0.90), (0.20, 0.90), (0.14, 0.62)], fill_soft);
         }
         Icon::Mannequin => {
             painter.circle_stroke(p(0.5, 0.20), size * 0.09, stroke);

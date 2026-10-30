@@ -305,7 +305,9 @@ impl Pattern {
     }
 
     /// Cose un elástico a un borde: más corto que él (`ELASTIC_RATIO`) y
-    /// estirado al coserlo.
+    /// estirado al coserlo. Al soltarlo, el elástico recupera su largo y
+    /// frunce la tela (que se arruga con mucha menos fuerza de la que hace
+    /// falta para estirarlo), así que la costura es fruncida.
     pub fn add_elastic(&mut self, side: SeamSide, width: f64) -> Option<NotionParts> {
         let mut draft = self.clone();
         let host = draft.piece(side.piece)?.name.clone();
@@ -313,7 +315,7 @@ impl Pattern {
         let strip = draft.strip_along(Notion::Elastic, format!("Elástico de {host}"), &side, length, width)?;
         let seam = draft.add_seam(format!("Elástico de {host}"), vec![side, strip.near])?;
         let s = draft.seam_mut(seam)?;
-        s.fit = SeamFit::Stretched;
+        s.fit = SeamFit::Gathered;
         s.set_kind(SeamKind::Overlocked);
         *self = draft;
         Some(NotionParts { pieces: vec![strip.piece], seams: vec![seam] })
@@ -404,12 +406,12 @@ mod tests {
     }
 
     #[test]
-    fn elastic_is_shorter_and_sewn_stretched() {
+    fn elastic_is_shorter_and_gathers_its_edge() {
         let (mut p, front, ..) = bag();
         let bottom = SeamSide::new(front, p.piece(front).unwrap().edges()[2].id, false);
         let parts = p.add_elastic(bottom, 20.0).unwrap();
         let seam = p.seam(parts.seams[0]).unwrap();
-        assert_eq!(seam.fit, SeamFit::Stretched);
+        assert_eq!(seam.fit, SeamFit::Gathered);
         let lengths: Vec<f64> = seam.sides.iter().map(|s| p.side_length(s).unwrap()).collect();
         assert!((lengths[1] / lengths[0] - ELASTIC_RATIO).abs() < 1e-6, "{lengths:?}");
         // La tela elástica, una sola vez en la biblioteca.
