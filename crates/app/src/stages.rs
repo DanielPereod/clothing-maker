@@ -110,12 +110,31 @@ pub fn checks(pattern: &Pattern, scene: &SceneReport) -> Vec<Check> {
                 format!("El contorno de «{}» se cruza consigo mismo", piece_name(piece)),
                 piece_target(piece),
             ),
+            Issue::LineOutside { piece, line } => push(
+                Stage::Pattern,
+                format!("Una línea interior de «{}» se sale de la tela o toca el borde", piece_name(piece)),
+                line_target(pattern, piece, line),
+            ),
+            Issue::LinesCross { piece, line } => push(
+                Stage::Pattern,
+                format!("Dos líneas interiores de «{}» se cruzan", piece_name(piece)),
+                line_target(pattern, piece, line),
+            ),
+            Issue::HoleOutside { hole } => push(
+                Stage::Pattern,
+                format!(
+                    "El agujero «{}» no cabe en su pieza: tiene que quedar del todo dentro, sin tocar el borde ni \
+                     otros agujeros",
+                    piece_name(hole)
+                ),
+                piece_target(hole),
+            ),
             _ => {}
         }
     }
 
     // Telas.
-    for piece in &pattern.pieces {
+    for piece in pattern.pieces.iter().filter(|p| !p.is_hole()) {
         if piece.textiles().any(|t| pattern.textile(t).is_none()) {
             push(
                 Stage::Fabrics,
@@ -167,7 +186,7 @@ pub fn checks(pattern: &Pattern, scene: &SceneReport) -> Vec<Check> {
         );
     }
     if !pattern.seams.is_empty() {
-        for piece in &pattern.pieces {
+        for piece in pattern.pieces.iter().filter(|p| !p.is_hole()) {
             let sewn = pattern.seams.iter().any(|s| s.sides.iter().any(|side| side.piece == piece.id));
             if !sewn {
                 push(
@@ -206,6 +225,11 @@ fn piece_target(id: PieceId) -> Option<Selection> {
     Some(Selection::Piece(id))
 }
 
+fn line_target(pattern: &Pattern, piece: PieceId, line: pattern::EdgeId) -> Option<Selection> {
+    let k = pattern.piece(piece)?.line_index(line)?;
+    Some(Selection::Line(piece, k))
+}
+
 /// Dónde va una pieza en 3D, en palabras: su lado y, en las prendas, su
 /// zona del cuerpo.
 pub fn slot_label(pattern: &Pattern, piece: &Piece) -> String {
@@ -230,10 +254,12 @@ pub fn overlapping_pieces(pattern: &Pattern) -> Vec<(PieceId, PieceId)> {
     let mut out = Vec::new();
     for (i, a) in pattern.pieces.iter().enumerate() {
         for (j, b) in pattern.pieces.iter().enumerate().skip(i + 1) {
-            if slot(pattern, a) != slot(pattern, b) || a.len() < 3 || b.len() < 3 {
+            // Un agujero está dentro de su pieza a propósito.
+            if slot(pattern, a) != slot(pattern, b) || a.len() < 3 || b.len() < 3 || a.is_hole() || b.is_hole() {
                 continue;
             }
             if !a.bounding_box().intersect(b.bounding_box()).is_zero_area()
+                && !sewn_on(pattern, a, b)
                 && outlines_overlap(&outlines[i], &outlines[j], a, b)
             {
                 out.push((a.id, b.id));
@@ -241,6 +267,17 @@ pub fn overlapping_pieces(pattern: &Pattern) -> Vec<(PieceId, PieceId)> {
         }
     }
     out
+}
+
+/// Si una de las dos piezas va cosida sobre una línea interior de la otra
+/// (un bolsillo de parche): entonces que se solapen es lo que se busca.
+fn sewn_on(pattern: &Pattern, a: &Piece, b: &Piece) -> bool {
+    let on_line =
+        |side: &pattern::SeamSide, piece: &Piece| side.piece == piece.id && piece.line_index(side.edge).is_some();
+    pattern.seams.iter().any(|seam| {
+        let touches = |p: &Piece| seam.sides.iter().any(|s| s.piece == p.id);
+        touches(a) && touches(b) && seam.sides.iter().any(|s| on_line(s, a) || on_line(s, b))
+    })
 }
 
 /// Dos contornos se solapan si sus bordes se cortan o uno está dentro del
@@ -300,6 +337,23 @@ mod tests {
         p.piece_mut(pocket).unwrap().arrangement = Arrangement::Left;
         let found = checks(&p, &SceneReport::default());
         assert_eq!(found.iter().map(|c| c.stage).collect::<Vec<_>>(), [Stage::Assembly]);
+    }
+
+    /// Un bolsillo cosido sobre una línea interior del delantero puede ir
+    /// encima de él.
+    #[test]
+    fn pockets_sewn_on_a_line_may_overlap() {
+        let mut p = examples::tote_bag();
+        let front = p.pieces[0].id;
+        let pocket = p.add_rect("Bolsillo", Point::new(100.0, 100.0), 150.0, 150.0);
+        let line = p.add_line(front, Point::new(100.0, 250.0), Point::new(250.0, 250.0)).unwrap();
+        let bottom = p.piece(pocket).unwrap().edges()[2].id;
+        p.add_seam(
+            "Fondo",
+            vec![pattern::SeamSide::new(pocket, bottom, true), pattern::SeamSide::new(front, line, false)],
+        );
+        let found = checks(&p, &SceneReport::default());
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]

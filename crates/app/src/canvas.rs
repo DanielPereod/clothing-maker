@@ -7,9 +7,9 @@ use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Key, Painter, PointerButton, Pos2, Rect, Sense, Shape, Stroke, Ui,
     epaint::CubicBezierShape,
 };
-use kurbo::{ParamCurve, ParamCurveArclen, ParamCurveDeriv, PathSeg};
+use kurbo::{ParamCurve, ParamCurveArclen, ParamCurveDeriv, ParamCurveNearest, PathSeg};
 use mesher::{Mesh2D, MeshOptions};
-use pattern::{Pattern, Piece, PieceId, Point, SeamId, SeamSide, TextileId, Vec2};
+use pattern::{EdgeId, InnerLine, Pattern, Piece, PieceId, Point, SeamId, SeamSide, TextileId, Vec2};
 
 /// Distancia (px) a la que se "engancha" el cursor a puntos y aristas.
 const HIT_PX: f64 = 8.0;
@@ -21,6 +21,8 @@ pub enum Tool {
     Select,
     Pen,
     Rect,
+    /// Línea interior dentro de una pieza.
+    Line,
     Seam,
 }
 
@@ -34,6 +36,9 @@ impl Tool {
                 "Clic para añadir puntos · clic en el primero o Intro para cerrar · Retroceso: quitar el último · Esc: cancelar"
             }
             Tool::Rect => "Arrastra para crear un rectángulo",
+            Tool::Line => {
+                "Arrastra dentro de una pieza para trazar una línea interior: donde se cose encima un bolsillo, un asa o una separación"
+            }
             Tool::Seam => {
                 "Clic en cada arista, cerca del extremo por el que empieza la costura · Mayús+clic: añadir más lados · Esc: cancelar"
             }
@@ -76,6 +81,8 @@ pub enum Selection {
     Piece(PieceId),
     Vertex(PieceId, usize),
     Edge(PieceId, usize),
+    /// Una línea interior (pieza, índice en `Piece::lines`).
+    Line(PieceId, usize),
     Seam(SeamId),
 }
 
@@ -83,7 +90,9 @@ impl Selection {
     pub fn piece(self) -> Option<PieceId> {
         match self {
             Selection::None | Selection::Seam(_) => None,
-            Selection::Piece(id) | Selection::Vertex(id, _) | Selection::Edge(id, _) => Some(id),
+            Selection::Piece(id) | Selection::Vertex(id, _) | Selection::Edge(id, _) | Selection::Line(id, _) => {
+                Some(id)
+            }
         }
     }
 
@@ -97,6 +106,7 @@ impl Selection {
         };
         match self {
             Selection::Vertex(_, i) | Selection::Edge(_, i) if i >= piece.len() => Selection::Piece(piece.id),
+            Selection::Line(_, i) if i >= piece.lines.len() => Selection::Piece(piece.id),
             s => s,
         }
     }
@@ -107,6 +117,9 @@ enum Hit {
     Handle(PieceId, usize, usize),
     Vertex(PieceId, usize),
     Edge(PieceId, usize, f64),
+    /// Extremo de una línea interior (pieza, línea, 0 = principio, 1 = final).
+    LineEnd(PieceId, usize, usize),
+    Line(PieceId, usize),
     Interior(PieceId),
 }
 
@@ -115,8 +128,28 @@ enum Drag {
     Pan,
     Vertex(PieceId, usize),
     Handle(PieceId, usize, usize),
-    Piece { original: Piece, start: Point },
-    Rect { start: Point, current: Point },
+    /// Mover una pieza con sus agujeros.
+    Piece {
+        original: Piece,
+        holes: Vec<Piece>,
+        start: Point,
+    },
+    Rect {
+        start: Point,
+        current: Point,
+    },
+    LineEnd(PieceId, usize, usize),
+    Line {
+        piece: PieceId,
+        original: InnerLine,
+        start: Point,
+    },
+    /// Línea interior nueva en `piece`.
+    NewLine {
+        piece: PieceId,
+        start: Point,
+        current: Point,
+    },
 }
 
 /// Transformación mundo (mm) ↔ pantalla (px).
@@ -140,7 +173,8 @@ impl View {
 }
 
 struct CachedMesh {
-    piece: Piece,
+    /// La pieza y sus agujeros, para saber si hay que volver a mallarla.
+    pieces: Vec<Piece>,
     key: f64,
     mesh: Option<Mesh2D>,
 }
@@ -334,6 +368,9 @@ impl Editor {
         if pressed(Key::S) {
             self.set_tool(Tool::Seam);
         }
+        if pressed(Key::I) {
+            self.set_tool(Tool::Line);
+        }
         if pressed(Key::F) {
             self.fit_view();
         }
@@ -392,6 +429,12 @@ impl Editor {
                 pattern.remove_seam(id);
                 self.selection = Selection::None;
             }
+            Selection::Line(id, i) => {
+                if let Some(line) = pattern.piece(id).and_then(|p| p.lines.get(i)).map(|l| l.id) {
+                    pattern.remove_line(id, line);
+                }
+                self.selection = Selection::Piece(id);
+            }
             Selection::Edge(..) | Selection::None => {}
         }
     }
@@ -400,8 +443,7 @@ impl Editor {
     /// del extremo más cercano al clic: la costura empieza por ahí. Sin
     /// Mayús, a partir del segundo lado la costura se crea.
     fn seam_click(&mut self, pattern: &mut Pattern, pos: Pos2, keep_open: bool) {
-        let Some((piece, i, t)) = self.edge_hit(pattern, pos) else { return };
-        let edge = pattern.piece(piece).unwrap().edges()[i].id;
+        let Some((piece, edge, t)) = self.edge_hit(pattern, pos) else { return };
         let side = SeamSide::new(piece, edge, t > 0.5);
         match self.seam_sides.iter_mut().find(|s| s.same_edge(&side)) {
             // Otra vez la misma arista: se le da la vuelta.
@@ -416,19 +458,25 @@ impl Editor {
         }
     }
 
-    /// Arista más cercana al cursor (pieza, índice, parámetro) dentro del
-    /// margen de enganche, sin contar los vértices.
-    fn edge_hit(&self, pattern: &Pattern, pos: Pos2) -> Option<(PieceId, usize, f64)> {
+    /// Arista o línea interior más cercana al cursor (pieza, id, parámetro)
+    /// dentro del margen de enganche: lo que se puede coser.
+    fn edge_hit(&self, pattern: &Pattern, pos: Pos2) -> Option<(PieceId, EdgeId, f64)> {
         let w = self.view.to_world(self.canvas_rect, pos);
         let tol = HIT_PX / self.view.zoom as f64;
-        pattern
-            .pieces
-            .iter()
-            .rev()
-            .filter_map(|p| p.nearest_edge(w).map(|(i, t, d)| (p.id, i, t, d)))
-            .filter(|h| h.3 < tol)
-            .min_by(|a, b| a.3.total_cmp(&b.3))
-            .map(|(id, i, t, _)| (id, i, t))
+        let edges =
+            pattern.pieces.iter().filter_map(|p| p.nearest_edge(w).map(|(i, t, d)| (p.id, p.edges()[i].id, t, d)));
+        let lines = pattern.pieces.iter().flat_map(|p| {
+            p.lines.iter().map(move |l| {
+                let n = l.segment().nearest(w, 1e-3);
+                (p.id, l.id, n.t, n.distance_sq.sqrt())
+            })
+        });
+        edges.chain(lines).filter(|h| h.3 < tol).min_by(|a, b| a.3.total_cmp(&b.3)).map(|(id, e, t, _)| (id, e, t))
+    }
+
+    /// Pieza de tela (no agujero) en la que cae un punto, la de más arriba.
+    fn fabric_at(pattern: &Pattern, w: Point) -> Option<PieceId> {
+        pattern.pieces.iter().rev().find(|p| !p.is_hole() && pattern.in_fabric(p, w, 0.0)).map(|p| p.id)
     }
 
     fn finish_pen(&mut self, pattern: &mut Pattern) {
@@ -474,6 +522,24 @@ impl Editor {
                 return Some(Hit::Vertex(piece.id, i));
             }
         }
+        for piece in order.iter().filter(|_| shape) {
+            for (k, line) in piece.lines.iter().enumerate() {
+                if line.from.distance(w) < tol {
+                    return Some(Hit::LineEnd(piece.id, k, 0));
+                }
+                if line.to.distance(w) < tol {
+                    return Some(Hit::LineEnd(piece.id, k, 1));
+                }
+            }
+        }
+        // Las líneas, antes que los bordes: suelen estar dentro, lejos de ellos.
+        for piece in order.iter().filter(|_| edges) {
+            for (k, line) in piece.lines.iter().enumerate() {
+                if line.segment().nearest(w, 1e-3).distance_sq.sqrt() < tol {
+                    return Some(Hit::Line(piece.id, k));
+                }
+            }
+        }
         for piece in &order {
             if let Some((i, t, d)) = piece.nearest_edge(w)
                 && d < tol
@@ -490,6 +556,7 @@ impl Editor {
             None => Selection::None,
             Some(Hit::Handle(id, e, _)) | Some(Hit::Edge(id, e, _)) => Selection::Edge(id, e),
             Some(Hit::Vertex(id, i)) => Selection::Vertex(id, i),
+            Some(Hit::LineEnd(id, k, _)) | Some(Hit::Line(id, k)) => Selection::Line(id, k),
             Some(Hit::Interior(id)) => Selection::Piece(id),
         };
     }
@@ -521,14 +588,25 @@ impl Editor {
         }
 
         if response.drag_stopped() {
-            if let Drag::Rect { start, current } = std::mem::replace(&mut self.drag, Drag::None) {
-                let r = kurbo::Rect::from_points(start, current);
-                if r.width() >= 1.0 && r.height() >= 1.0 {
-                    let name = format!("Pieza {}", pattern.pieces.len() + 1);
-                    let id = pattern.add_rect(name, r.origin(), r.width(), r.height());
-                    self.selection = Selection::Piece(id);
-                    self.tool = Tool::Select;
+            match std::mem::replace(&mut self.drag, Drag::None) {
+                Drag::Rect { start, current } => {
+                    let r = kurbo::Rect::from_points(start, current);
+                    if r.width() >= 1.0 && r.height() >= 1.0 {
+                        let name = format!("Pieza {}", pattern.pieces.len() + 1);
+                        let id = pattern.add_rect(name, r.origin(), r.width(), r.height());
+                        self.selection = Selection::Piece(id);
+                        self.tool = Tool::Select;
+                    }
                 }
+                Drag::NewLine { piece, start, current } if start.distance(current) >= 2.0 => {
+                    if pattern.add_line(piece, start, current).is_some()
+                        && let Some(p) = pattern.piece(piece)
+                    {
+                        self.selection = Selection::Line(piece, p.lines.len() - 1);
+                        self.tool = Tool::Select;
+                    }
+                }
+                _ => {}
             }
             self.drag = Drag::None;
         }
@@ -550,7 +628,7 @@ impl Editor {
                         }
                     }
                 }
-                Tool::Rect => {}
+                Tool::Rect | Tool::Line => {}
                 Tool::Seam => {
                     let shift = ui.input(|i| i.modifiers.shift);
                     self.seam_click(pattern, pos, shift);
@@ -585,6 +663,13 @@ impl Editor {
                 Drag::Rect { start: p, current: p }
             }
             Tool::Pen | Tool::Seam => Drag::Pan,
+            Tool::Line => {
+                let p = self.snap_point(w, ui);
+                match Self::fabric_at(pattern, w) {
+                    Some(piece) => Drag::NewLine { piece, start: p, current: p },
+                    None => Drag::Pan,
+                }
+            }
             Tool::Select => {
                 let hit = self.hit_test(pattern, origin);
                 self.select_hit(hit);
@@ -593,8 +678,13 @@ impl Editor {
                     None => Drag::Pan,
                     Some(Hit::Handle(id, e, h)) => Drag::Handle(id, e, h),
                     Some(Hit::Vertex(id, i)) => Drag::Vertex(id, i),
-                    Some(Hit::Edge(id, ..)) | Some(Hit::Interior(id)) if moves => {
-                        Drag::Piece { original: pattern.piece(id).unwrap().clone(), start: w }
+                    Some(Hit::LineEnd(id, k, end)) => Drag::LineEnd(id, k, end),
+                    Some(Hit::Line(id, k)) if self.mode.edits_shape() => {
+                        Drag::Line { piece: id, original: pattern.piece(id).unwrap().lines[k], start: w }
+                    }
+                    Some(Hit::Edge(id, ..)) | Some(Hit::Interior(id)) | Some(Hit::Line(id, _)) if moves => {
+                        let holes = pattern.holes_of(id).cloned().collect();
+                        Drag::Piece { original: pattern.piece(id).unwrap().clone(), holes, start: w }
                     }
                     Some(_) => Drag::Pan,
                 }
@@ -618,17 +708,48 @@ impl Editor {
                     piece.set_control_point(*e, *h, w);
                 }
             }
-            Drag::Piece { original, start } => {
+            Drag::Piece { original, holes, start } => {
                 let mut delta = w - *start;
                 if self.snap && !ui.input(|i| i.modifiers.alt) {
                     let s = self.snap_step;
                     delta = Vec2::new((delta.x / s).round() * s, (delta.y / s).round() * s);
                 }
-                let mut moved = original.clone();
-                moved.translate(delta);
-                if let Some(piece) = pattern.piece_mut(moved.id) {
-                    *piece = moved;
+                // Los agujeros van con su pieza.
+                for original in std::iter::once(&*original).chain(holes.iter()) {
+                    let mut moved = original.clone();
+                    moved.translate(delta);
+                    if let Some(piece) = pattern.piece_mut(moved.id) {
+                        *piece = moved;
+                    }
                 }
+            }
+            Drag::LineEnd(id, k, end) => {
+                let (id, k, end) = (*id, *k, *end);
+                let p = self.snap_point(w, ui);
+                if let Some(line) = pattern.piece_mut(id).and_then(|piece| piece.lines.get_mut(k)) {
+                    if end == 0 { line.from = p } else { line.to = p }
+                }
+            }
+            Drag::Line { piece, original, start } => {
+                let mut delta = w - *start;
+                if self.snap && !ui.input(|i| i.modifiers.alt) {
+                    let s = self.snap_step;
+                    delta = Vec2::new((delta.x / s).round() * s, (delta.y / s).round() * s);
+                }
+                let moved = InnerLine { from: original.from + delta, to: original.to + delta, ..*original };
+                if let Some(line) =
+                    pattern.piece_mut(*piece).and_then(|p| p.lines.iter_mut().find(|l| l.id == moved.id))
+                {
+                    *line = moved;
+                }
+            }
+            Drag::NewLine { current, .. } => {
+                *current = if self.snap && !ui.input(|i| i.modifiers.alt) {
+                    let s = self.snap_step;
+                    Point::new((w.x / s).round() * s, (w.y / s).round() * s)
+                } else {
+                    w
+                };
             }
             Drag::Rect { current, .. } => {
                 let p = if self.snap && !ui.input(|i| i.modifiers.alt) {
@@ -664,9 +785,24 @@ impl Editor {
                 {
                     self.selection = Selection::Vertex(id, v);
                 }
+                if shape
+                    && !is_curve
+                    && ui
+                        .button("Desplegar al doblez")
+                        .on_hover_text("La pieza se cortó al doblez por esta arista: la convierte en la pieza entera")
+                        .clicked()
+                    && pattern.unfold_piece(id, i)
+                {
+                    self.selection = Selection::Piece(id);
+                }
             }
             Selection::Vertex(..) => {
                 if ui.button("Borrar punto (Supr)").clicked() {
+                    self.delete_selection(pattern);
+                }
+            }
+            Selection::Line(..) => {
+                if ui.button("Borrar línea (Supr)").clicked() {
                     self.delete_selection(pattern);
                 }
             }
@@ -681,6 +817,11 @@ impl Editor {
                 {
                     self.selection = Selection::Piece(new);
                 }
+                if ui.button("Duplicar en espejo").clicked()
+                    && let Some(new) = pattern.mirror_piece(id)
+                {
+                    self.selection = Selection::Piece(new);
+                }
                 if ui.button("Borrar pieza (Supr)").clicked() {
                     self.delete_selection(pattern);
                 }
@@ -691,16 +832,16 @@ impl Editor {
     fn update_cursor_icon(&self, ui: &Ui, response: &egui::Response, pattern: &Pattern) {
         let icon = match (&self.drag, self.tool) {
             (Drag::Pan, _) => CursorIcon::Grabbing,
-            (Drag::Piece { .. }, _) => CursorIcon::Move,
-            (Drag::Vertex(..) | Drag::Handle(..), _) => CursorIcon::Grabbing,
-            (_, Tool::Pen | Tool::Rect) => CursorIcon::Crosshair,
+            (Drag::Piece { .. } | Drag::Line { .. }, _) => CursorIcon::Move,
+            (Drag::Vertex(..) | Drag::Handle(..) | Drag::LineEnd(..), _) => CursorIcon::Grabbing,
+            (_, Tool::Pen | Tool::Rect | Tool::Line) => CursorIcon::Crosshair,
             (_, Tool::Seam) => match response.hover_pos().and_then(|p| self.edge_hit(pattern, p)) {
                 Some(_) => CursorIcon::PointingHand,
                 None => CursorIcon::Default,
             },
             (_, Tool::Select) => match response.hover_pos().and_then(|p| self.hit_test(pattern, p)) {
-                Some(Hit::Vertex(..) | Hit::Handle(..)) => CursorIcon::Grab,
-                Some(Hit::Edge(..) | Hit::Interior(..)) => CursorIcon::PointingHand,
+                Some(Hit::Vertex(..) | Hit::Handle(..) | Hit::LineEnd(..)) => CursorIcon::Grab,
+                Some(Hit::Edge(..) | Hit::Line(..) | Hit::Interior(..)) => CursorIcon::PointingHand,
                 None => CursorIcon::Default,
             },
         };
@@ -735,7 +876,9 @@ impl Editor {
             if self.show_allowance || focus {
                 self.draw_allowance(painter, pattern, piece, color);
             }
-            if let Some(mesh) = self.fill_cache.get(&piece.id).and_then(|c| c.mesh.as_ref()) {
+            if let Some(mesh) = self.fill_cache.get(&piece.id).and_then(|c| c.mesh.as_ref())
+                && !piece.is_hole()
+            {
                 let alpha = match (focus, is_sel, self.mode) {
                     (true, _, _) => 25,
                     (false, true, Mode::Fabrics) => 150,
@@ -754,7 +897,8 @@ impl Editor {
                 self.draw_wireframe(painter, mesh, color.gamma_multiply(0.6));
             }
 
-            let broken = self.fill_cache.get(&piece.id).is_some_and(|c| c.mesh.is_none());
+            // Un agujero no se malla: está bien si su pieza se malla.
+            let broken = !piece.is_hole() && self.fill_cache.get(&piece.id).is_some_and(|c| c.mesh.is_none());
             let outline = match (broken, focus) {
                 (true, _) => Color32::RED,
                 (false, true) => color.gamma_multiply(0.55),
@@ -774,6 +918,7 @@ impl Editor {
                 };
                 self.draw_segment(painter, piece.segment(i), stroke);
             }
+            self.draw_lines(painter, piece, outline, visuals.selection.stroke.color);
             for (i, v) in piece.vertices().iter().enumerate() {
                 let pos = self.view.to_screen(rect, *v);
                 let vsel = self.selection == Selection::Vertex(piece.id, i);
@@ -798,6 +943,10 @@ impl Editor {
             let pos = self.view.to_screen(rect, c);
             painter.text(pos, Align2::CENTER_CENTER, &piece.name, FontId::proportional(14.0), text_color);
             let note = match self.mode {
+                _ if piece.is_hole() => Some(match piece.hole_in.and_then(|id| pattern.piece(id)) {
+                    Some(parent) => format!("agujero en «{}»", parent.name),
+                    None => "agujero sin pieza".to_owned(),
+                }),
                 Mode::Fabrics => Some(textile_names(pattern, piece)),
                 Mode::Placement if piece.right_side_in => {
                     Some(format!("{} · revés fuera", crate::stages::slot_label(pattern, piece)))
@@ -824,6 +973,20 @@ impl Editor {
         self.draw_tool_preview(painter, ui);
     }
 
+    /// Líneas interiores de una pieza: trazo continuo con los extremos
+    /// marcados; la seleccionada, resaltada.
+    fn draw_lines(&self, painter: &Painter, piece: &Piece, color: Color32, accent: Color32) {
+        for (k, line) in piece.lines.iter().enumerate() {
+            let selected = self.selection == Selection::Line(piece.id, k);
+            let (width, color) = if selected { (3.5, accent) } else { (2.0, color) };
+            self.draw_segment(painter, line.segment(), Stroke::new(width, color));
+            for end in [line.from, line.to] {
+                let r = if selected && self.mode.edits_shape() { 5.0 } else { 3.0 };
+                painter.circle_stroke(self.view.to_screen(self.canvas_rect, end), r, Stroke::new(1.5, color));
+            }
+        }
+    }
+
     fn refresh_caches(&mut self, pattern: &Pattern) {
         let fill_opts = MeshOptions { target_edge_length: f64::MAX / 4.0, curve_tolerance: 0.3 };
         let sim_opts = MeshOptions { target_edge_length: self.mesh_size, ..Default::default() };
@@ -831,9 +994,9 @@ impl Editor {
         self.fill_cache.retain(|id, _| ids.contains(id));
         self.mesh_cache.retain(|id, _| ids.contains(id));
         for piece in &pattern.pieces {
-            update_cache(&mut self.fill_cache, piece, 0.0, &fill_opts);
+            update_cache(&mut self.fill_cache, pattern, piece, 0.0, &fill_opts);
             if self.show_mesh {
-                update_cache(&mut self.mesh_cache, piece, self.mesh_size, &sim_opts);
+                update_cache(&mut self.mesh_cache, pattern, piece, self.mesh_size, &sim_opts);
             }
         }
     }
@@ -959,8 +1122,7 @@ impl Editor {
             .sides
             .iter()
             .filter_map(|side| {
-                let piece = pattern.piece(side.piece)?;
-                let seg = piece.segment(piece.edge_index(side.edge)?);
+                let seg = pattern.piece(side.piece)?.edge_segment(side.edge)?;
                 let length = seg.arclen(1e-3);
                 Some(
                     (0..=STEPS)
@@ -985,7 +1147,10 @@ impl Editor {
 
     /// Línea de corte: el contorno más el margen de cada arista, discontinua.
     fn draw_allowance(&self, painter: &Painter, pattern: &Pattern, piece: &Piece, color: Color32) {
-        let outline = piece.allowance_outline(&pattern.allowances(piece));
+        // El margen de un agujero queda dentro de él, que es donde se corta.
+        let sign = if piece.is_hole() { -1.0 } else { 1.0 };
+        let allowances: Vec<f64> = pattern.allowances(piece).into_iter().map(|a| a * sign).collect();
+        let outline = piece.allowance_outline(&allowances);
         if outline.is_empty() {
             return;
         }
@@ -1007,10 +1172,10 @@ impl Editor {
         label: &str,
     ) {
         let Some(piece) = pattern.piece(side.piece) else { return };
-        let Some(i) = piece.edge_index(side.edge) else { return };
-        let seg = piece.segment(i);
+        let Some(seg) = piece.edge_segment(side.edge) else { return };
         let inset = 6.0 / self.view.zoom as f64;
-        let at = |t: f64| self.view.to_screen(self.canvas_rect, seg.eval(t) + inward_normal(piece, &seg, t) * inset);
+        let into = |t: f64| side_normal(piece, side.edge, &seg, t);
+        let at = |t: f64| self.view.to_screen(self.canvas_rect, seg.eval(t) + into(t) * inset);
         let pts: Vec<Pos2> = (0..=24).map(|j| at(j as f64 / 24.0)).collect();
         painter.extend(Shape::dashed_line(&pts, Stroke::new(width, color), 6.0, 4.0));
 
@@ -1026,7 +1191,7 @@ impl Editor {
         // Punto en el extremo donde empieza.
         painter.circle_filled(at(if side.reversed { 1.0 } else { 0.0 }), width + 1.5, color);
 
-        let label_at = seg.eval(0.5) + inward_normal(piece, &seg, 0.5) * (20.0 / self.view.zoom as f64);
+        let label_at = seg.eval(0.5) + into(0.5) * (20.0 / self.view.zoom as f64);
         painter.text(
             self.view.to_screen(self.canvas_rect, label_at),
             Align2::CENTER_CENTER,
@@ -1047,8 +1212,7 @@ impl Editor {
             self.draw_seam_side(painter, pattern, side, accent, 3.5, &format!("{}", k + 1));
         }
         let hover = ui.input(|i| i.pointer.hover_pos()).filter(|p| self.canvas_rect.contains(*p));
-        if let Some((piece, i, t)) = hover.and_then(|p| self.edge_hit(pattern, p)) {
-            let edge = pattern.piece(piece).unwrap().edges()[i].id;
+        if let Some((piece, edge, t)) = hover.and_then(|p| self.edge_hit(pattern, p)) {
             let side = SeamSide::new(piece, edge, t > 0.5);
             if !self.seam_sides.iter().any(|s| s.same_edge(&side)) {
                 let label = format!("{}", self.seam_sides.len() + 1);
@@ -1102,6 +1266,18 @@ impl Editor {
                     accent,
                 );
             }
+            (Drag::NewLine { start, current, .. }, _) => {
+                let (a, b) = (self.view.to_screen(rect, *start), self.view.to_screen(rect, *current));
+                painter.line_segment([a, b], Stroke::new(2.0, accent));
+                painter.circle_filled(a, 3.5, accent);
+                painter.text(
+                    b + egui::vec2(8.0, 8.0),
+                    Align2::LEFT_TOP,
+                    format!("{:.1} cm", start.distance(*current) / 10.0),
+                    FontId::monospace(11.0),
+                    accent,
+                );
+            }
             (_, Tool::Pen) if !self.pen_points.is_empty() => {
                 let mut pts: Vec<Pos2> = self.pen_points.iter().map(|p| self.view.to_screen(rect, *p)).collect();
                 if let Some(c) = self.cursor {
@@ -1118,12 +1294,34 @@ impl Editor {
     }
 }
 
-fn update_cache(cache: &mut HashMap<PieceId, CachedMesh>, piece: &Piece, key: f64, opts: &MeshOptions) {
-    let fresh = cache.get(&piece.id).is_some_and(|c| c.key == key && c.piece == *piece);
+fn update_cache(
+    cache: &mut HashMap<PieceId, CachedMesh>,
+    pattern: &Pattern,
+    piece: &Piece,
+    key: f64,
+    opts: &MeshOptions,
+) {
+    let fresh = cache.get(&piece.id).is_some_and(|c| {
+        c.key == key && c.pieces.first() == Some(piece) && c.pieces[1..].iter().eq(pattern.holes_of(piece.id))
+    });
     if !fresh {
-        let mesh = mesher::mesh_piece(piece, opts).ok();
-        cache.insert(piece.id, CachedMesh { piece: piece.clone(), key, mesh });
+        let mesh = mesher::mesh_piece_in(pattern, piece, opts).ok();
+        let pieces = std::iter::once(piece).chain(pattern.holes_of(piece.id)).cloned().collect();
+        cache.insert(piece.id, CachedMesh { pieces, key, mesh });
     }
+}
+
+/// Hacia dónde se dibuja una costura sobre su arista: hacia la tela. En
+/// una arista del contorno, hacia dentro de la pieza; en la de un agujero,
+/// hacia fuera de él; en una línea interior, a su izquierda.
+fn side_normal(piece: &Piece, edge: EdgeId, seg: &PathSeg, t: f64) -> Vec2 {
+    if piece.line_index(edge).is_some() {
+        let d = seg.eval((t + 1e-3).min(1.0)) - seg.eval((t - 1e-3).max(0.0));
+        let len = d.hypot();
+        return if len < 1e-12 { Vec2::ZERO } else { Vec2::new(d.y, -d.x) / len };
+    }
+    let n = inward_normal(piece, seg, t);
+    if piece.is_hole() { -n } else { n }
 }
 
 /// Normal unitaria hacia el interior de la pieza en el punto `t` de `seg`.

@@ -45,6 +45,39 @@ impl Edge {
     }
 }
 
+/// Línea dentro de una pieza. No corta la tela: la malla la sigue, así que
+/// se puede coser encima otra pieza (un bolsillo, un asa, una separación).
+/// Sus extremos tienen que quedar dentro de la pieza.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InnerLine {
+    /// Del mismo tipo que los de las aristas: una costura puede usar una
+    /// línea como uno de sus lados.
+    pub id: EdgeId,
+    pub from: Point,
+    pub to: Point,
+    #[serde(flatten)]
+    pub kind: EdgeKind,
+}
+
+impl InnerLine {
+    pub fn line(id: EdgeId, from: Point, to: Point) -> Self {
+        Self { id, from, to, kind: EdgeKind::Line }
+    }
+
+    pub fn segment(&self) -> PathSeg {
+        match self.kind {
+            EdgeKind::Line => PathSeg::Line(Line::new(self.from, self.to)),
+            EdgeKind::Cubic { h1, h2 } => {
+                PathSeg::Cubic(CubicBez::new(self.from, self.from + h1, self.to + h2, self.to))
+            }
+        }
+    }
+
+    pub fn length(&self) -> f64 {
+        self.segment().arclen(ACCURACY)
+    }
+}
+
 /// Dónde se coloca una pieza en 3D antes de coser, mirando la prenda (u
 /// objeto) de frente. Las piezas se dibujan en 2D vistas desde fuera, con el
 /// derecho de la tela hacia quien mira: la espalda, por ejemplo, se dibuja
@@ -149,6 +182,14 @@ pub struct Piece {
     /// se dibuja igual, vista desde fuera, pero lo que se ve es el revés.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub right_side_in: bool,
+    /// Líneas interiores: dónde se cose algo encima de la pieza.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<InnerLine>,
+    /// Si la pieza es un agujero: el contorno que se recorta de otra pieza
+    /// (una ventana para una cremallera, un asa troquelada). No es tela, pero
+    /// sus aristas se pueden coser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hole_in: Option<PieceId>,
 }
 
 /// Forma serializada, para comprobar invariantes al deserializar.
@@ -168,6 +209,10 @@ struct RawPiece {
     layers: Vec<TextileId>,
     #[serde(default)]
     right_side_in: bool,
+    #[serde(default)]
+    lines: Vec<InnerLine>,
+    #[serde(default)]
+    hole_in: Option<PieceId>,
 }
 
 impl TryFrom<RawPiece> for Piece {
@@ -182,6 +227,8 @@ impl TryFrom<RawPiece> for Piece {
                 fabric: raw.fabric,
                 layers: raw.layers,
                 right_side_in: raw.right_side_in,
+                lines: raw.lines,
+                hole_in: raw.hole_in,
                 ..p
             })
             .ok_or_else(|| format!("la pieza {} no tiene el mismo número de vértices que de aristas", id.0))
@@ -202,6 +249,8 @@ impl Piece {
             fabric: TextileId::default(),
             layers: Vec::new(),
             right_side_in: false,
+            lines: Vec::new(),
+            hole_in: None,
         })
     }
 
@@ -231,6 +280,24 @@ impl Piece {
         self.edges.iter().position(|e| e.id == id)
     }
 
+    /// Índice de la línea interior con ese id.
+    pub fn line_index(&self, id: EdgeId) -> Option<usize> {
+        self.lines.iter().position(|l| l.id == id)
+    }
+
+    /// Geometría de una arista o de una línea interior, por su id.
+    pub fn edge_segment(&self, id: EdgeId) -> Option<PathSeg> {
+        match self.edge_index(id) {
+            Some(i) => Some(self.segment(i)),
+            None => self.lines.iter().find(|l| l.id == id).map(InnerLine::segment),
+        }
+    }
+
+    /// Si es un agujero de otra pieza.
+    pub fn is_hole(&self) -> bool {
+        self.hole_in.is_some()
+    }
+
     /// Índices de los vértices inicial y final de la arista `i`.
     pub fn edge_endpoints(&self, i: usize) -> (usize, usize) {
         (i, (i + 1) % self.len())
@@ -245,6 +312,107 @@ impl Piece {
         for v in &mut self.vertices {
             *v += delta;
         }
+        for line in &mut self.lines {
+            line.from += delta;
+            line.to += delta;
+        }
+    }
+
+    /// Aplica una transformación rígida: `point` a los vértices y extremos
+    /// de líneas, `vector` a los manejadores (relativos).
+    pub fn transform(&mut self, point: impl Fn(Point) -> Point, vector: impl Fn(Vec2) -> Vec2) {
+        let kind = |k: EdgeKind| match k {
+            EdgeKind::Line => EdgeKind::Line,
+            EdgeKind::Cubic { h1, h2 } => EdgeKind::Cubic { h1: vector(h1), h2: vector(h2) },
+        };
+        for v in &mut self.vertices {
+            *v = point(*v);
+        }
+        for e in &mut self.edges {
+            e.kind = kind(e.kind);
+        }
+        for line in &mut self.lines {
+            (line.from, line.to, line.kind) = (point(line.from), point(line.to), kind(line.kind));
+        }
+    }
+
+    /// Refleja la pieza en la recta vertical `x = axis`, como al darle la
+    /// vuelta a la tela. Los vértices se recorren al revés para que el
+    /// contorno siga en el mismo sentido; cada arista conserva su id.
+    pub fn mirror_x(&mut self, axis: f64) {
+        let point = |p: Point| Point::new(2.0 * axis - p.x, p.y);
+        let vector = |v: Vec2| Vec2::new(-v.x, v.y);
+        let n = self.len();
+        let vertices: Vec<Point> = (0..n).map(|k| point(self.vertices[(n - k) % n])).collect();
+        // La arista k nueva es la n-1-k vieja recorrida al revés.
+        let edges = (0..n)
+            .map(|k| {
+                let old = self.edges[(2 * n - k - 1) % n];
+                let kind = match old.kind {
+                    EdgeKind::Line => EdgeKind::Line,
+                    EdgeKind::Cubic { h1, h2 } => EdgeKind::Cubic { h1: vector(h2), h2: vector(h1) },
+                };
+                Edge { kind, ..old }
+            })
+            .collect();
+        self.vertices = vertices;
+        self.edges = edges;
+        for line in &mut self.lines {
+            line.from = point(line.from);
+            line.to = point(line.to);
+            if let EdgeKind::Cubic { h1, h2 } = line.kind {
+                line.kind = EdgeKind::Cubic { h1: vector(h1), h2: vector(h2) };
+            }
+        }
+    }
+
+    /// Despliega la pieza «al doblez»: la arista recta `i` es el doblez de la
+    /// tela, y la pieza pasa a ser la entera, con la otra mitad reflejada en
+    /// esa arista. La arista del doblez desaparece; las demás conservan su
+    /// id y las reflejadas toman los de `new_ids` (hacen falta `len() - 1`
+    /// para el contorno y uno por cada línea interior). Devuelve `false`, sin
+    /// cambiar nada, si la arista no es recta o faltan ids.
+    pub fn unfold(&mut self, i: usize, new_ids: &mut impl Iterator<Item = EdgeId>) -> bool {
+        let n = self.len();
+        if i >= n || self.edges[i].is_curve() || n < 3 {
+            return false;
+        }
+        let (a, b) = (self.vertices[i], self.vertices[(i + 1) % n]);
+        let axis = b - a;
+        if axis.hypot2() < 1e-12 {
+            return false;
+        }
+        let reflect_vec = |v: Vec2| axis * (2.0 * v.dot(axis) / axis.hypot2()) - v;
+        let reflect = |p: Point| a + reflect_vec(p - a);
+        // De B a A por el contorno, sin la arista del doblez.
+        let path: Vec<usize> = (1..=n).map(|k| (i + k) % n).collect();
+        let kept_edges: Vec<Edge> = (1..n).map(|k| self.edges[(i + k) % n]).collect();
+        let mut vertices: Vec<Point> = path.iter().map(|&v| self.vertices[v]).collect();
+        let mut edges = kept_edges.clone();
+        // La mitad reflejada, de A a B: el mismo camino al revés, sin A ni B,
+        // que están en el doblez.
+        vertices.extend(path[1..n - 1].iter().rev().map(|&v| reflect(self.vertices[v])));
+        for old in kept_edges.iter().rev() {
+            let Some(id) = new_ids.next() else { return false };
+            let kind = match old.kind {
+                EdgeKind::Line => EdgeKind::Line,
+                EdgeKind::Cubic { h1, h2 } => EdgeKind::Cubic { h1: reflect_vec(h2), h2: reflect_vec(h1) },
+            };
+            edges.push(Edge { id, kind, allowance: old.allowance });
+        }
+        let mut lines = self.lines.clone();
+        for line in &self.lines {
+            let Some(id) = new_ids.next() else { return false };
+            let kind = match line.kind {
+                EdgeKind::Line => EdgeKind::Line,
+                EdgeKind::Cubic { h1, h2 } => EdgeKind::Cubic { h1: reflect_vec(h1), h2: reflect_vec(h2) },
+            };
+            lines.push(InnerLine { id, from: reflect(line.from), to: reflect(line.to), kind });
+        }
+        self.vertices = vertices;
+        self.edges = edges;
+        self.lines = lines;
+        true
     }
 
     pub fn set_edge_kind(&mut self, i: usize, kind: EdgeKind) {

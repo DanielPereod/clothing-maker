@@ -174,6 +174,26 @@ sus propiedades y sus comprobaciones:
   colocación (en 3D se cruzarían), costuras que se retuercen al colocar las
   piezas (un lado va al revés) y piezas que no se pueden mallar.
 
+**Líneas interiores, agujeros, espejo y corte al doblez:** lo que hace
+falta para piezas de verdad (bolsillos, ventanas, piezas simétricas).
+
+- Herramienta *Línea* (I): arrastra dentro de una pieza para dibujar una
+  línea interior (dónde va un bolsillo, un asa, un cierre). Se puede coser
+  como cualquier arista, así que una pieza se cose *encima* de otra; en 3D
+  la malla sigue la línea y la costura tira de esos puntos. Sus extremos se
+  mueven arrastrándolos y sus coordenadas se editan en Propiedades.
+- *Agujero*: una pieza dibujada dentro de otra pasa a ser un hueco en ella
+  (una ventana, el paso de un cordón, un ojal grande). Se mueve con su
+  pieza, no lleva tela y sus bordes se pueden coser (una vista o un vivo
+  alrededor de la ventana). Se elige en la cinta o en *Agujero en* de
+  Propiedades.
+- *Espejo* crea la pieza simétrica (izquierda y derecha) con sus líneas,
+  y *Desplegar al doblez* (menú de la arista) convierte media pieza cortada
+  al doblez en la pieza entera, uniendo las dos mitades por esa arista.
+- Comprobaciones nuevas: líneas fuera de su pieza o que se cruzan y agujeros
+  que se salen de la pieza. Una pieza cosida sobre una línea de otra puede
+  solaparse con ella sin aviso.
+
 **Interfaz:** inspirada en los programas de CAD como Fusion 360, con tema
 oscuro.
 
@@ -269,6 +289,13 @@ que va el margen), `"topstitch"` (`none`, `single` o `double`) y
 montaje. Cada arista puede llevar `"allowance"` (margen en mm); el patrón,
 `"seam_allowance"` (10 por defecto) e `"inside_out"`, y cada pieza
 `"right_side_in"`.
+
+Líneas interiores y agujeros (también opcionales): cada pieza puede llevar
+`"lines"`, una lista de líneas interiores
+`{ "id": 30, "from": { "x": 110, "y": 120 }, "to": { "x": 110, "y": 300 }, "type": "line" }`
+(o `"type": "cubic"` con `h1` y `h2`, relativos a cada extremo). Su `id` es
+un id de arista más, así que un lado de costura puede apuntar a él. Una
+pieza con `"hole_in": <id de pieza>` es un agujero en esa pieza.
 
 ## Desarrollo
 

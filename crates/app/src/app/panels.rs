@@ -44,6 +44,7 @@ impl ClothingMakerApp {
                 for piece in &self.pattern.pieces {
                     // Lo que importa de cada pieza en la etapa.
                     let (color, detail) = match self.stage {
+                        _ if piece.is_hole() => (canvas::piece_color(piece.id), Some("agujero".to_owned())),
                         Stage::Fabrics => {
                             let name = self.pattern.textile(piece.fabric).map_or("?", |t| t.name.as_str());
                             let detail = match piece.layers.len() {
@@ -240,6 +241,10 @@ impl ClothingMakerApp {
             return;
         };
         let places = stage == Stage::Placement;
+        // Piezas de tela de las que esta podría ser un agujero.
+        let parents: Vec<(pattern::PieceId, String)> =
+            self.pattern.pieces.iter().filter(|p| p.id != id && !p.is_hole()).map(|p| (p.id, p.name.clone())).collect();
+        let has_holes = self.pattern.holes_of(id).next().is_some();
         let Some(piece) = self.pattern.piece_mut(id) else { return };
         let mut duplicate = false;
         let mut delete = false;
@@ -257,6 +262,23 @@ impl ClothingMakerApp {
                 widgets::prop_label(ui, "Puntos");
                 ui.label(piece.len().to_string());
                 ui.end_row();
+                if stage == Stage::Pattern && !has_holes {
+                    widgets::prop_label(ui, "Agujero en").on_hover_text(
+                        "Convierte la pieza en un agujero recortado de otra (una ventana para una cremallera, un \
+                         asa troquelada). Tiene que quedar del todo dentro de ella.",
+                    );
+                    let name = |id: Option<pattern::PieceId>| match id {
+                        None => "Ninguna: es tela".to_owned(),
+                        Some(id) => parents.iter().find(|p| p.0 == id).map_or("?".to_owned(), |p| p.1.clone()),
+                    };
+                    egui::ComboBox::from_id_salt("hole_in").selected_text(name(piece.hole_in)).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut piece.hole_in, None, name(None));
+                        for (id, label) in &parents {
+                            ui.selectable_value(&mut piece.hole_in, Some(*id), label);
+                        }
+                    });
+                    ui.end_row();
+                }
                 if !places {
                     return;
                 }
@@ -398,6 +420,9 @@ impl ClothingMakerApp {
                     self.editor.selection = Selection::Seam(seam);
                 }
             }
+            Selection::Line(_, k) if matches!(stage, Stage::Pattern | Stage::Assembly) => {
+                self.line_details(ui, id, k);
+            }
             _ => {}
         }
 
@@ -410,6 +435,72 @@ impl ClothingMakerApp {
         } else if delete {
             self.pattern.remove_piece(id);
             self.editor.selection = Selection::None;
+        }
+    }
+
+    /// Una línea interior: su largo, sus extremos (al dibujar) y las
+    /// costuras que van sobre ella (al montar).
+    fn line_details(&mut self, ui: &mut Ui, id: pattern::PieceId, k: usize) {
+        let shape = self.stage == Stage::Pattern;
+        let Some(line) = self.pattern.piece(id).and_then(|p| p.lines.get(k)).copied() else { return };
+        let seams: Vec<(usize, SeamId, String)> = self
+            .pattern
+            .seams
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.sides.iter().any(|side| side.piece == id && side.edge == line.id))
+            .map(|(n, s)| (n, s.id, s.name.clone()))
+            .collect();
+        let mut edited = line;
+        let mut delete = false;
+        let mut go_to = None;
+        widgets::section(ui, "Línea interior", None, |ui| {
+            widgets::properties(ui, "line", |ui| {
+                widgets::prop_label(ui, "Longitud");
+                ui.label(format!("{:.1} cm", line.length() / 10.0));
+                ui.end_row();
+                if shape {
+                    widgets::prop_label(ui, "Desde");
+                    point_editor(ui, &mut edited.from);
+                    ui.end_row();
+                    widgets::prop_label(ui, "Hasta");
+                    point_editor(ui, &mut edited.to);
+                    ui.end_row();
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "Cose encima otra pieza (un bolsillo, un asa) eligiendo esta línea con la herramienta Costura.",
+                )
+                .size(11.0)
+                .color(theme::TEXT_WEAK),
+            );
+            if shape {
+                ui.add_space(6.0);
+                delete = ui.button("Borrar línea").clicked();
+            }
+        });
+        if !shape && !seams.is_empty() {
+            widgets::section(ui, "Costuras de la línea", Some(seams.len()), |ui| {
+                for (n, seam, name) in &seams {
+                    if widgets::tree_row(ui, canvas::seam_color(*n), name, None, false, 0).clicked() {
+                        go_to = Some(*seam);
+                    }
+                }
+            });
+        }
+        if edited != line
+            && let Some(slot) = self.pattern.piece_mut(id).and_then(|p| p.lines.get_mut(k))
+        {
+            *slot = edited;
+        }
+        if delete {
+            self.pattern.remove_line(id, line.id);
+            self.editor.selection = Selection::Piece(id);
+        }
+        if let Some(seam) = go_to {
+            self.editor.selection = Selection::Seam(seam);
         }
     }
 
