@@ -9,7 +9,7 @@ use eframe::egui::{
 };
 use kurbo::{ParamCurve, ParamCurveArclen, ParamCurveDeriv, PathSeg};
 use mesher::{Mesh2D, MeshOptions};
-use pattern::{Pattern, Piece, PieceId, Point, SeamId, SeamSide, Vec2};
+use pattern::{Pattern, Piece, PieceId, Point, SeamId, SeamSide, TextileId, Vec2};
 
 /// Distancia (px) a la que se "engancha" el cursor a puntos y aristas.
 const HIT_PX: f64 = 8.0;
@@ -38,6 +38,34 @@ impl Tool {
                 "Clic en cada arista, cerca del extremo por el que empieza la costura · Mayús+clic: añadir más lados · Esc: cancelar"
             }
         }
+    }
+}
+
+/// Qué se puede hacer en el lienzo y qué destaca, según la etapa de trabajo.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// Dibujar y cambiar la forma de las piezas.
+    #[default]
+    Draw,
+    /// Elegir telas: se selecciona la pieza entera y se ve de qué tela es.
+    Fabrics,
+    /// Coser: las piezas se atenúan y destacan las costuras; se eligen
+    /// aristas y costuras, pero la forma no se toca.
+    Seams,
+    /// Colocar: se ve dónde va cada pieza en 3D. Las piezas se pueden mover
+    /// (su sitio en el patrón cuenta al colocarlas), pero no su forma.
+    Placement,
+}
+
+impl Mode {
+    /// Se pueden mover puntos y manejadores.
+    fn edits_shape(self) -> bool {
+        self == Mode::Draw
+    }
+
+    /// Se pueden elegir aristas.
+    fn picks_edges(self) -> bool {
+        matches!(self, Mode::Draw | Mode::Seams)
     }
 }
 
@@ -126,8 +154,8 @@ pub struct Editor {
     pub show_mesh: bool,
     /// Dibujar la línea de corte (el contorno más el margen de costura).
     pub show_allowance: bool,
-    /// Modo costuras: las piezas se atenúan y las costuras destacan.
-    pub focus_seams: bool,
+    /// Qué se hace en el lienzo según la etapa de trabajo.
+    pub mode: Mode,
     /// Tamaño de los triángulos de la vista previa de malla (mm).
     pub mesh_size: f64,
     /// Posición del cursor en el mundo (mm), si está sobre el lienzo.
@@ -152,7 +180,7 @@ impl Default for Editor {
             snap_step: 5.0,
             show_mesh: false,
             show_allowance: true,
-            focus_seams: false,
+            mode: Mode::Draw,
             mesh_size: 20.0,
             cursor: None,
             view: View { pan: egui::Vec2::ZERO, zoom: 1.0 },
@@ -170,9 +198,9 @@ impl Default for Editor {
 impl Editor {
     /// Deja el editor listo para un patrón nuevo.
     pub fn reset(&mut self) {
-        let keep = (self.snap, self.snap_step, self.show_mesh, self.mesh_size, self.show_allowance, self.focus_seams);
+        let keep = (self.snap, self.snap_step, self.show_mesh, self.mesh_size, self.show_allowance, self.mode);
         *self = Self::default();
-        (self.snap, self.snap_step, self.show_mesh, self.mesh_size, self.show_allowance, self.focus_seams) = keep;
+        (self.snap, self.snap_step, self.show_mesh, self.mesh_size, self.show_allowance, self.mode) = keep;
     }
 
     pub fn fit_view(&mut self) {
@@ -337,6 +365,7 @@ impl Editor {
             self.delete_selection(pattern);
         }
         if let Selection::Edge(id, i) = self.selection
+            && self.mode.edits_shape()
             && let Some(piece) = pattern.piece_mut(id)
         {
             if pressed(Key::C) {
@@ -418,8 +447,9 @@ impl Editor {
         let w = self.view.to_world(self.canvas_rect, pos);
         let tol = HIT_PX / self.view.zoom as f64;
         let selected = self.selection.piece();
+        let (shape, edges) = (self.mode.edits_shape(), self.mode.picks_edges());
 
-        if let Some(piece) = selected.and_then(|id| pattern.piece(id)) {
+        if shape && let Some(piece) = selected.and_then(|id| pattern.piece(id)) {
             for i in 0..piece.len() {
                 if let Some((c1, c2)) = piece.control_points(i) {
                     if c1.distance(w) < tol {
@@ -439,7 +469,7 @@ impl Editor {
             order.insert(0, p);
         }
 
-        for piece in &order {
+        for piece in order.iter().filter(|_| shape) {
             if let Some(i) = piece.vertices().iter().position(|v| v.distance(w) < tol) {
                 return Some(Hit::Vertex(piece.id, i));
             }
@@ -448,7 +478,8 @@ impl Editor {
             if let Some((i, t, d)) = piece.nearest_edge(w)
                 && d < tol
             {
-                return Some(Hit::Edge(piece.id, i, t));
+                // Sin elegir aristas, pinchar en el borde elige la pieza.
+                return Some(if edges { Hit::Edge(piece.id, i, t) } else { Hit::Interior(piece.id) });
             }
         }
         order.iter().find(|p| p.contains(w)).map(|p| Hit::Interior(p.id))
@@ -529,6 +560,7 @@ impl Editor {
 
         if response.double_clicked()
             && self.tool == Tool::Select
+            && self.mode.picks_edges()
             && let Some(pos) = pointer
             && let Some(Hit::Edge(id, i, t)) = self.hit_test(pattern, pos)
             && let Some(v) = pattern.split_edge(id, i, t)
@@ -556,13 +588,15 @@ impl Editor {
             Tool::Select => {
                 let hit = self.hit_test(pattern, origin);
                 self.select_hit(hit);
+                let moves = matches!(self.mode, Mode::Draw | Mode::Placement);
                 match hit {
                     None => Drag::Pan,
                     Some(Hit::Handle(id, e, h)) => Drag::Handle(id, e, h),
                     Some(Hit::Vertex(id, i)) => Drag::Vertex(id, i),
-                    Some(Hit::Edge(id, ..)) | Some(Hit::Interior(id)) => {
+                    Some(Hit::Edge(id, ..)) | Some(Hit::Interior(id)) if moves => {
                         Drag::Piece { original: pattern.piece(id).unwrap().clone(), start: w }
                     }
+                    Some(_) => Drag::Pan,
                 }
             }
         };
@@ -618,10 +652,11 @@ impl Editor {
             }
             Selection::Edge(id, i) => {
                 let is_curve = pattern.piece(id).is_some_and(|p| p.edges()[i].is_curve());
-                if !is_curve && ui.button("Convertir en curva (C)").clicked() {
+                let shape = self.mode.edits_shape();
+                if shape && !is_curve && ui.button("Convertir en curva (C)").clicked() {
                     pattern.piece_mut(id).unwrap().make_curve(i);
                 }
-                if is_curve && ui.button("Convertir en recta (L)").clicked() {
+                if shape && is_curve && ui.button("Convertir en recta (L)").clicked() {
                     pattern.piece_mut(id).unwrap().make_line(i);
                 }
                 if ui.button("Añadir punto en el centro").clicked()
@@ -687,22 +722,30 @@ impl Editor {
         let selected = self.selection.piece();
 
         self.refresh_caches(pattern);
-        let focus = self.focus_seams;
+        let focus = self.mode == Mode::Seams;
         for piece in &pattern.pieces {
             let color = piece_color(piece.id);
+            // En la etapa Telas, cada pieza se pinta del color de su tela.
+            let fill = match self.mode {
+                Mode::Fabrics => textile_color(piece.fabric),
+                _ => color,
+            };
             let is_sel = Some(piece.id) == selected;
 
             if self.show_allowance || focus {
                 self.draw_allowance(painter, pattern, piece, color);
             }
             if let Some(mesh) = self.fill_cache.get(&piece.id).and_then(|c| c.mesh.as_ref()) {
-                let alpha = match (focus, is_sel) {
-                    (true, _) => 25,
-                    (false, true) => 70,
-                    (false, false) => 45,
+                let alpha = match (focus, is_sel, self.mode) {
+                    (true, _, _) => 25,
+                    (false, true, Mode::Fabrics) => 150,
+                    (false, false, Mode::Fabrics) => 110,
+                    (false, true, _) => 70,
+                    (false, false, _) => 45,
                 };
                 // Si lo que se ve desde fuera es el revés, un relleno gris.
-                let fill = if piece.right_side_in { Color32::from_gray(150) } else { color };
+                let fill =
+                    if piece.right_side_in && self.mode != Mode::Fabrics { Color32::from_gray(150) } else { fill };
                 painter.add(self.egui_mesh(mesh, fill.gamma_multiply_u8(alpha)));
             }
             if self.show_mesh
@@ -748,13 +791,21 @@ impl Editor {
         self.draw_seams(painter, pattern);
         self.draw_seam_tool(painter, ui, pattern);
 
-        // Nombres encima de todo lo demás.
+        // Nombres encima de todo lo demás y, debajo, lo que importa en la
+        // etapa: las telas de la pieza o dónde va en 3D.
         for piece in &pattern.pieces {
             let c = piece.bounding_box().center();
             let pos = self.view.to_screen(rect, c);
             painter.text(pos, Align2::CENTER_CENTER, &piece.name, FontId::proportional(14.0), text_color);
-            if piece.right_side_in {
-                let note = "revés hacia fuera";
+            let note = match self.mode {
+                Mode::Fabrics => Some(textile_names(pattern, piece)),
+                Mode::Placement if piece.right_side_in => {
+                    Some(format!("{} · revés fuera", crate::stages::slot_label(pattern, piece)))
+                }
+                Mode::Placement => Some(crate::stages::slot_label(pattern, piece)),
+                _ => piece.right_side_in.then(|| "revés hacia fuera".to_owned()),
+            };
+            if let Some(note) = note {
                 let below = pos + egui::vec2(0.0, 15.0);
                 painter.text(
                     below,
@@ -880,13 +931,13 @@ impl Editor {
         for (k, seam) in pattern.seams.iter().enumerate() {
             let color = seam_color(k);
             let selected = self.selection == Selection::Seam(seam.id);
-            let width = match (selected, self.focus_seams) {
+            let width = match (selected, self.mode == Mode::Seams) {
                 (true, _) => 3.5,
                 (false, true) => 2.8,
                 (false, false) => 2.0,
             };
             // En el modo costuras, la seleccionada dice también su tipo.
-            let label = if self.focus_seams && selected {
+            let label = if self.mode == Mode::Seams && selected {
                 format!("{} · {}", k + 1, seam.kind.label())
             } else {
                 format!("{}", k + 1)
@@ -940,7 +991,7 @@ impl Editor {
         }
         let mut pts: Vec<Pos2> = outline.iter().map(|p| self.view.to_screen(self.canvas_rect, *p)).collect();
         pts.push(pts[0]);
-        let stroke = Stroke::new(1.0, color.gamma_multiply(if self.focus_seams { 0.8 } else { 0.5 }));
+        let stroke = Stroke::new(1.0, color.gamma_multiply(if self.mode == Mode::Seams { 0.8 } else { 0.5 }));
         painter.extend(Shape::dashed_line(&pts, stroke, 5.0, 3.0));
     }
 
@@ -1092,9 +1143,22 @@ fn inward_normal(piece: &Piece, seg: &PathSeg, t: f64) -> Vec2 {
     if piece.area() >= 0.0 { n } else { -n }
 }
 
+/// Las telas de una pieza, de fuera a dentro («Lona + Entretela»).
+fn textile_names(pattern: &Pattern, piece: &Piece) -> String {
+    let names: Vec<&str> = piece.textiles().map(|t| pattern.textile(t).map_or("?", |t| t.name.as_str())).collect();
+    names.join(" + ")
+}
+
 pub fn piece_color(id: PieceId) -> Color32 {
     let hue = (id.0 as f32 * 0.618_034).fract();
     egui::ecolor::Hsva::new(hue, 0.55, 0.85, 1.0).into()
+}
+
+/// Color con el que se pinta una tela en la etapa Telas: el mismo para
+/// todas las piezas de esa tela.
+pub fn textile_color(id: TextileId) -> Color32 {
+    let hue = (id.0 as f32 * 0.381_966 + 0.08).fract();
+    egui::ecolor::Hsva::new(hue, 0.45, 0.75, 1.0).into()
 }
 
 pub fn seam_color(index: usize) -> Color32 {

@@ -13,6 +13,7 @@ use crate::canvas::{self, Editor, Selection, Tool};
 use crate::examples;
 use crate::history::History;
 use crate::icons::{self, Icon};
+use crate::stages::{self, Check, Stage};
 use crate::theme;
 use crate::view3d::View3D;
 use crate::widgets::{self, Part};
@@ -42,9 +43,12 @@ pub struct ClothingMakerApp {
     history: History,
     editor: Editor,
     view3d: View3D,
-    tab: Tab,
+    /// Etapa de trabajo activa.
+    stage: Stage,
+    /// Lo que falta o está mal en cada etapa, calculado en cada fotograma.
+    checks: Vec<Check>,
     layout: ViewLayout,
-    /// Resaltar las costuras en 3D en la pestaña Costuras.
+    /// Resaltar las costuras en 3D en la etapa Montaje.
     highlight_seams: bool,
     status: Option<(String, bool)>,
     pending: Option<Pending>,
@@ -65,7 +69,8 @@ impl ClothingMakerApp {
             path: None,
             editor: Editor::default(),
             view3d: View3D::new(cc),
-            tab: Tab::Pattern,
+            stage: Stage::Pattern,
+            checks: Vec::new(),
             layout: ViewLayout::Split,
             highlight_seams: true,
             status: None,
@@ -208,8 +213,56 @@ impl ClothingMakerApp {
 
     fn set_layout(&mut self, layout: ViewLayout) {
         self.layout = layout;
-        if !layout.shows_3d() && self.tab == Tab::Simulation {
-            self.tab = Tab::Pattern;
+        if !layout.shows_3d() && self.stage.needs_3d() {
+            self.set_stage(Stage::Pattern);
+        } else if !layout.shows_2d() && !self.stage.needs_3d() {
+            self.set_stage(Stage::Simulation);
+        }
+    }
+
+    /// Pasa a otra etapa: el lienzo cambia lo que deja hacer, la
+    /// herramienta vuelve a Seleccionar si no es de la etapa y se muestran
+    /// las vistas que hacen falta.
+    fn set_stage(&mut self, stage: Stage) {
+        self.stage = stage;
+        if stage.needs_3d() && !self.layout.shows_3d() {
+            self.layout = ViewLayout::Split;
+        }
+        if !stage.needs_3d() && !self.layout.shows_2d() {
+            self.layout = ViewLayout::Split;
+        }
+        let tool_fits = match self.editor.tool {
+            Tool::Select => true,
+            Tool::Pen | Tool::Rect => stage == Stage::Pattern,
+            Tool::Seam => stage == Stage::Assembly,
+        };
+        if !tool_fits {
+            self.editor.set_tool(Tool::Select);
+        }
+        self.editor.mode = match stage {
+            Stage::Pattern => canvas::Mode::Draw,
+            Stage::Fabrics => canvas::Mode::Fabrics,
+            Stage::Assembly => canvas::Mode::Seams,
+            Stage::Placement | Stage::Simulation => canvas::Mode::Placement,
+        };
+        // Puntos y aristas solo se eligen donde se trabaja con ellos.
+        self.editor.selection = match self.editor.selection {
+            Selection::Vertex(id, _) if stage != Stage::Pattern => Selection::Piece(id),
+            Selection::Edge(id, _) if !matches!(stage, Stage::Pattern | Stage::Assembly) => Selection::Piece(id),
+            s => s,
+        };
+    }
+
+    /// Las herramientas de dibujo llevan a la etapa Patrón y la de coser, a
+    /// Montaje, se elijan desde donde se elijan (también con su tecla).
+    fn follow_tool(&mut self) {
+        let stage = match self.editor.tool {
+            Tool::Pen | Tool::Rect => Stage::Pattern,
+            Tool::Seam => Stage::Assembly,
+            Tool::Select => return,
+        };
+        if self.stage != stage {
+            self.set_stage(stage);
         }
     }
 
@@ -326,34 +379,48 @@ impl ClothingMakerApp {
         }
     }
 
-    /// Cinta de herramientas: pestañas de los espacios de trabajo y, debajo,
-    /// los grupos de órdenes del espacio activo.
+    /// Cinta de herramientas: las etapas de trabajo en orden y, debajo,
+    /// los grupos de órdenes de la etapa activa.
     fn ribbon(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for (tab, label) in [(Tab::Pattern, "Patrón"), (Tab::Seams, "Costuras"), (Tab::Simulation, "Simulación")]
-            {
-                if widgets::tab(ui, label, self.tab == tab).clicked() {
-                    self.tab = tab;
-                    if tab == Tab::Simulation && !self.layout.shows_3d() {
-                        self.layout = ViewLayout::Split;
-                    }
-                    if tab == Tab::Seams && self.layout == ViewLayout::Garment {
-                        self.layout = ViewLayout::Split;
-                    }
+            for stage in Stage::ALL {
+                if stage.number() > 1 {
+                    widgets::stage_arrow(ui);
                 }
+                let pending = self.checks.iter().filter(|c| c.stage == stage).count();
+                let hint = match pending {
+                    0 => stage.hint().to_owned(),
+                    1 => format!("{}\n\nHay 1 cosa pendiente (míralo en Comprobaciones)", stage.hint()),
+                    n => format!("{}\n\nHay {n} cosas pendientes (míralas en Comprobaciones)", stage.hint()),
+                };
+                if widgets::stage_tab(ui, stage.number(), stage.label(), pending, self.stage == stage)
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    self.set_stage(stage);
+                }
+            }
+            if let Some(next) = self.stage.next() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(format!("Siguiente: {} ›", next.label())).on_hover_text(next.hint()).clicked() {
+                        self.set_stage(next);
+                    }
+                });
             }
         });
         let rect = ui.max_rect();
         ui.painter().hline(rect.x_range(), ui.min_rect().bottom(), egui::Stroke::new(1.0, theme::BORDER));
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            // La misma altura en todas las pestañas, para que las vistas no salten.
+            // La misma altura en todas las etapas, para que las vistas no salten.
             ui.set_min_height(80.0);
-            match self.tab {
-                Tab::Pattern => self.pattern_ribbon(ui),
-                Tab::Seams => self.seams_ribbon(ui),
-                Tab::Simulation => {
+            match self.stage {
+                Stage::Pattern => self.pattern_ribbon(ui),
+                Stage::Fabrics => self.fabrics_ribbon(ui),
+                Stage::Assembly => self.seams_ribbon(ui),
+                Stage::Placement => self.placement_ribbon(ui),
+                Stage::Simulation => {
                     self.view3d.ribbon(ui, &self.pattern, canvas::piece_color);
                     self.fill_group(ui);
                 }
@@ -427,9 +494,6 @@ impl ClothingMakerApp {
                 }
             },
         });
-        widgets::ribbon_group(ui, "COSER", false, |ui, _| {
-            self.tool_button(ui, Tool::Seam, Icon::Seam, "Costura", "S");
-        });
         widgets::ribbon_group(ui, "INSPECCIONAR", true, |ui, part| match part {
             Part::Buttons => {
                 if widgets::ribbon_button(ui, Icon::Grid, "Rejilla", self.editor.snap, true)
@@ -460,16 +524,11 @@ impl ClothingMakerApp {
                 });
             }
         });
-        widgets::ribbon_group(ui, "PRENDA", false, |ui, _| {
-            if widgets::ribbon_button(ui, Icon::Mannequin, "Maniquí", self.pattern.on_avatar, true)
-                .on_hover_text(
-                    "Prenda para el maniquí: la vista 3D la viste sobre él. Quítalo para objetos como bolsas.",
-                )
-                .clicked()
-            {
-                self.pattern.on_avatar = !self.pattern.on_avatar;
-            }
-        });
+        self.view_group(ui);
+    }
+
+    /// Encuadrar el patrón, al final de las cintas que trabajan en 2D.
+    fn view_group(&mut self, ui: &mut Ui) {
         widgets::ribbon_group(ui, "VISTA", false, |ui, _| {
             if widgets::ribbon_button(ui, Icon::Fit, "Encuadrar", false, true)
                 .on_hover_text("Encuadrar el patrón (F)")
@@ -480,7 +539,138 @@ impl ClothingMakerApp {
         });
     }
 
-    /// Cinta de la pestaña Costuras: crear costuras, su tipo, el margen, el
+    /// Cinta de la etapa Telas: la tela de la selección o de todas las
+    /// piezas, las capas pegadas y telas nuevas para la biblioteca.
+    fn fabrics_ribbon(&mut self, ui: &mut Ui) {
+        widgets::ribbon_group(ui, "SELECCIONAR", false, |ui, _| {
+            self.tool_button(ui, Tool::Select, Icon::Select, "Seleccionar", "V");
+        });
+        let piece = self.editor.selection.piece();
+        let textiles: Vec<(pattern::TextileId, String)> =
+            self.pattern.textiles.iter().map(|t| (t.id, t.name.clone())).collect();
+        widgets::ribbon_group(ui, "TELA", true, |ui, part| match part {
+            Part::Buttons => {
+                ui.vertical(|ui| {
+                    ui.add_space(4.0);
+                    let Some(piece) = piece.and_then(|id| self.pattern.piece_mut(id)) else {
+                        ui.add_enabled(false, egui::Button::new("Selecciona una pieza"));
+                        return;
+                    };
+                    widgets::prop_label(ui, "Exterior");
+                    let name = textiles.iter().find(|t| t.0 == piece.fabric).map_or("?", |t| t.1.as_str());
+                    egui::ComboBox::from_id_salt("ribbon_fabric").width(130.0).selected_text(name).show_ui(ui, |ui| {
+                        for (id, name) in &textiles {
+                            ui.selectable_value(&mut piece.fabric, *id, name);
+                        }
+                    });
+                });
+            }
+            Part::Menu => {
+                let fabric = piece.and_then(|id| self.pattern.piece(id)).map(|p| p.fabric);
+                let label = match fabric.and_then(|t| self.pattern.textile(t)) {
+                    Some(t) => format!("Poner «{}» por fuera en todas las piezas", t.name),
+                    None => "Selecciona una pieza para usar su tela en todas".to_owned(),
+                };
+                if ui.add_enabled(fabric.is_some(), egui::Button::new(label)).clicked()
+                    && let Some(fabric) = fabric
+                {
+                    for piece in &mut self.pattern.pieces {
+                        piece.fabric = fabric;
+                    }
+                    ui.close();
+                }
+            }
+        });
+        widgets::ribbon_group(ui, "CAPAS", false, |ui, _| {
+            if widgets::ribbon_button(ui, Icon::Layer, "Añadir capa", false, piece.is_some())
+                .on_hover_text(
+                    "Pega otra tela por dentro a toda la pieza (entretela, refuerzo). Un forro que va suelto \
+                     es mejor como pieza aparte.",
+                )
+                .clicked()
+                && let Some(piece) = piece.and_then(|id| self.pattern.piece_mut(id))
+            {
+                let interfacing = textiles.iter().find(|t| t.1 == "Entretela").map_or(piece.fabric, |t| t.0);
+                piece.layers.push(interfacing);
+            }
+        });
+        widgets::ribbon_group(ui, "BIBLIOTECA", false, |ui, _| {
+            let base = piece.and_then(|id| self.pattern.piece(id)).map_or(pattern::TextileId::COTTON, |p| p.fabric);
+            if widgets::ribbon_button(ui, Icon::Fabric, "Nueva tela", false, true)
+                .on_hover_text("Una copia de la tela de la selección (o del algodón) para ajustarla aparte")
+                .clicked()
+            {
+                self.open_textile = self.pattern.duplicate_textile(base);
+            }
+        });
+        self.view_group(ui);
+    }
+
+    /// Cinta de la etapa Colocación: dónde empieza en 3D la pieza
+    /// seleccionada, el tipo de prenda y cómo se colocan todas.
+    fn placement_ribbon(&mut self, ui: &mut Ui) {
+        widgets::ribbon_group(ui, "SELECCIONAR", false, |ui, _| {
+            self.tool_button(ui, Tool::Select, Icon::Select, "Seleccionar", "V");
+        });
+        let on_avatar = self.pattern.on_avatar;
+        let piece = self.editor.selection.piece();
+        widgets::ribbon_group(ui, "PIEZA", false, |ui, _| {
+            let Some(piece) = piece.and_then(|id| self.pattern.piece_mut(id)) else {
+                ui.vertical(|ui| {
+                    ui.add_space(8.0);
+                    ui.add_enabled(false, egui::Button::new("Selecciona una pieza"));
+                });
+                return;
+            };
+            egui::Grid::new("ribbon_place").num_columns(2).spacing(egui::vec2(6.0, 2.0)).show(ui, |ui| {
+                widgets::prop_label(ui, "Lado").on_hover_text(
+                    "Dónde va la pieza mirando la prenda de frente (modo Alrededor). Dibuja cada pieza como \
+                     se ve desde fuera.",
+                );
+                egui::ComboBox::from_id_salt("ribbon_arrangement")
+                    .width(110.0)
+                    .selected_text(piece.arrangement.label())
+                    .show_ui(ui, |ui| {
+                        for a in pattern::Arrangement::ALL {
+                            ui.selectable_value(&mut piece.arrangement, a, a.label());
+                        }
+                    });
+                ui.end_row();
+                if on_avatar {
+                    widgets::prop_label(ui, "Zona");
+                    egui::ComboBox::from_id_salt("ribbon_zone").width(110.0).selected_text(piece.zone.label()).show_ui(
+                        ui,
+                        |ui| {
+                            for zone in pattern::BodyZone::ALL {
+                                ui.selectable_value(&mut piece.zone, zone, zone.label());
+                            }
+                        },
+                    );
+                    ui.end_row();
+                }
+                widgets::prop_label(ui, "Cara");
+                ui.checkbox(&mut piece.right_side_in, "Derecho hacia dentro").on_hover_text(
+                    "Para forros y vistas: la pieza se dibuja igual (vista desde fuera), pero lo que queda hacia \
+                     fuera es el revés de la tela.",
+                );
+                ui.end_row();
+            });
+        });
+        widgets::ribbon_group(ui, "PRENDA", false, |ui, _| {
+            if widgets::ribbon_button(ui, Icon::Mannequin, "Maniquí", self.pattern.on_avatar, true)
+                .on_hover_text(
+                    "Prenda para el maniquí: la vista 3D la viste sobre él y cada pieza va en su zona del \
+                     cuerpo. Quítalo para objetos como bolsas.",
+                )
+                .clicked()
+            {
+                self.pattern.on_avatar = !self.pattern.on_avatar;
+            }
+        });
+        self.view3d.placement_ribbon(ui, &self.pattern, canvas::piece_color);
+    }
+
+    /// Cinta de la etapa Montaje: crear costuras, su tipo, el margen, el
     /// orden de montaje y dar la vuelta a la prenda.
     fn seams_ribbon(&mut self, ui: &mut Ui) {
         widgets::ribbon_group(ui, "CREAR", false, |ui, _| {
@@ -785,6 +975,9 @@ impl eframe::App for ClothingMakerApp {
             self.status = None;
         }
 
+        self.follow_tool();
+        self.checks = stages::checks(&self.pattern, &self.view3d.report());
+
         let bar = |fill| egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(6, 3));
         egui::Panel::top("app_bar").frame(bar(theme::APP_BAR)).show(ui, |ui| self.app_bar(ui));
         egui::Panel::top("ribbon")
@@ -810,8 +1003,7 @@ impl eframe::App for ClothingMakerApp {
             .frame(side)
             .show(ui, |ui| self.inspector(ui));
 
-        self.editor.focus_seams = self.tab == Tab::Seams;
-        self.view3d.highlight_seams = self.tab == Tab::Seams && self.highlight_seams;
+        self.view3d.highlight_seams = self.stage == Stage::Assembly && self.highlight_seams;
         if self.layout.shows_3d() {
             self.view3d.sync(&ctx, &self.pattern, canvas::piece_color);
         }
@@ -838,14 +1030,6 @@ impl eframe::App for ClothingMakerApp {
         }
         self.update_title(&ctx);
     }
-}
-
-/// Espacio de trabajo de la cinta.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Pattern,
-    Seams,
-    Simulation,
 }
 
 /// Qué vistas se ven en el centro.

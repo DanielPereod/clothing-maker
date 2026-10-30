@@ -9,6 +9,7 @@ mod gpu;
 mod history;
 mod icons;
 mod section;
+mod stages;
 mod theme;
 mod view3d;
 mod widgets;

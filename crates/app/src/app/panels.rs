@@ -1,19 +1,24 @@
-//! Paneles laterales: el navegador (árbol de piezas, costuras y avisos) a
-//! la izquierda y el inspector de propiedades de la selección a la derecha.
+//! Paneles laterales: el navegador (árbol de piezas, costuras y
+//! comprobaciones de cada etapa) a la izquierda y el inspector de
+//! propiedades de la selección a la derecha, con lo que importa en la etapa
+//! activa.
 
 use eframe::egui::{self, Color32, RichText, Ui};
-use pattern::{Arrangement, BodyZone, EdgeKind, Issue, Point, SeamId, SeamKind, Topstitch};
+use pattern::{Arrangement, BodyZone, EdgeKind, Point, SeamId, SeamKind, Topstitch};
 
 use super::ClothingMakerApp;
 use crate::canvas::{self, Selection};
 use crate::icons::Icon;
 use crate::section;
+use crate::stages::{self, Stage};
 use crate::theme;
 use crate::widgets;
 
 /// Algo que se puede hacer desde una fila del navegador.
 enum TreeAction {
     Select(Selection),
+    /// Ir a una etapa y seleccionar lo que tiene pendiente.
+    Check(Stage, Option<Selection>),
     Duplicate(pattern::PieceId),
     DeletePiece(pattern::PieceId),
     DeleteSeam(SeamId),
@@ -32,15 +37,34 @@ impl ClothingMakerApp {
             });
             ui.add_space(4.0);
 
+            self.checks_section(ui, &mut action);
+
             let selected = self.editor.selection;
             widgets::section(ui, "Piezas", Some(self.pattern.pieces.len()), |ui| {
                 for piece in &self.pattern.pieces {
-                    let detail = self.pattern.on_avatar.then(|| piece.zone.label());
+                    // Lo que importa de cada pieza en la etapa.
+                    let (color, detail) = match self.stage {
+                        Stage::Fabrics => {
+                            let name = self.pattern.textile(piece.fabric).map_or("?", |t| t.name.as_str());
+                            let detail = match piece.layers.len() {
+                                0 => name.to_owned(),
+                                n => format!("{name} +{n}"),
+                            };
+                            (canvas::textile_color(piece.fabric), Some(detail))
+                        }
+                        Stage::Placement | Stage::Simulation => {
+                            (canvas::piece_color(piece.id), Some(stages::slot_label(&self.pattern, piece)))
+                        }
+                        _ => (
+                            canvas::piece_color(piece.id),
+                            self.pattern.on_avatar.then(|| piece.zone.label().to_owned()),
+                        ),
+                    };
                     let response = widgets::tree_row(
                         ui,
-                        canvas::piece_color(piece.id),
+                        color,
                         &piece.name,
-                        detail,
+                        detail.as_deref(),
                         selected.piece() == Some(piece.id) && !matches!(selected, Selection::Seam(_)),
                         0,
                     );
@@ -98,26 +122,16 @@ impl ClothingMakerApp {
                     ui.weak("Aún no hay costuras. Usa la herramienta Costura (S).");
                 }
             });
-
-            let issues = self.pattern.validate();
-            if !issues.is_empty() {
-                widgets::section(ui, "Avisos", Some(issues.len()), |ui| {
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                    for issue in &issues {
-                        let text = RichText::new(format!("⚠ {}", self.describe(issue))).color(theme::WARN);
-                        let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
-                        if response.clicked()
-                            && let Some(selection) = issue_selection(issue)
-                        {
-                            action = Some(TreeAction::Select(selection));
-                        }
-                    }
-                });
-            }
         });
 
         match action {
             Some(TreeAction::Select(selection)) => self.editor.selection = selection,
+            Some(TreeAction::Check(stage, target)) => {
+                self.set_stage(stage);
+                if let Some(target) = target {
+                    self.editor.selection = target;
+                }
+            }
             Some(TreeAction::Duplicate(id)) => {
                 if let Some(new) = self.pattern.duplicate_piece(id, pattern::Vec2::new(20.0, 20.0)) {
                     self.editor.selection = Selection::Piece(new);
@@ -137,42 +151,59 @@ impl ClothingMakerApp {
 
     pub(super) fn inspector(&mut self, ui: &mut Ui) {
         widgets::panel_title(ui, "Propiedades");
+        let stage = self.stage;
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            ui.add_space(4.0);
+            egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
+                ui.label(RichText::new(format!("{}. {}", stage.number(), stage.label())).strong());
+                ui.label(RichText::new(stage.hint()).size(11.0).color(theme::TEXT_WEAK));
+            });
+            ui.add_space(4.0);
             self.selection_details(ui);
+            if stage == Stage::Fabrics {
+                self.textile_library(ui);
+            }
             widgets::section(ui, "Patrón", None, |ui| {
                 widgets::properties(ui, "pattern", |ui| {
                     widgets::prop_label(ui, "Nombre");
                     ui.text_edit_singleline(&mut self.pattern.name);
                     ui.end_row();
-                    widgets::prop_label(ui, "Tipo");
-                    ui.checkbox(&mut self.pattern.on_avatar, "Prenda para el maniquí").on_hover_text(
-                        "La vista 3D la viste sobre el maniquí y cada pieza se coloca en su zona del cuerpo. \
-                         Quítalo para objetos como bolsas o mochilas.",
-                    );
-                    ui.end_row();
-                    widgets::prop_label(ui, "Relleno");
-                    ui.add(egui::Slider::new(&mut self.pattern.pressure, 0.0..=60.0).suffix(" Pa").max_decimals(0))
-                        .on_hover_text(
-                            "Presión interior en la vista 3D: hincha la prenda como si estuviera rellena. \
+                    // El tipo de prenda se decide al dibujar o al colocar.
+                    if matches!(stage, Stage::Pattern | Stage::Placement) {
+                        widgets::prop_label(ui, "Tipo");
+                        ui.checkbox(&mut self.pattern.on_avatar, "Prenda para el maniquí").on_hover_text(
+                            "La vista 3D la viste sobre el maniquí y cada pieza se coloca en su zona del cuerpo. \
+                             Quítalo para objetos como bolsas o mochilas.",
+                        );
+                        ui.end_row();
+                    }
+                    if stage == Stage::Assembly {
+                        widgets::prop_label(ui, "Margen");
+                        ui.add(
+                            egui::DragValue::new(&mut self.pattern.seam_allowance)
+                                .range(0.0..=50.0)
+                                .speed(0.5)
+                                .suffix(" mm"),
+                        )
+                        .on_hover_text("Margen de costura de los bordes que no tienen uno propio");
+                        ui.end_row();
+                        widgets::prop_label(ui, "Volteada");
+                        ui.checkbox(&mut self.pattern.inside_out, "Del revés").on_hover_text(
+                            "La prenda está del revés: el derecho de la tela queda dentro y los márgenes, fuera",
+                        );
+                        ui.end_row();
+                    }
+                    if stage == Stage::Simulation {
+                        widgets::prop_label(ui, "Relleno");
+                        ui.add(egui::Slider::new(&mut self.pattern.pressure, 0.0..=60.0).suffix(" Pa").max_decimals(0))
+                            .on_hover_text(
+                                "Presión interior en la vista 3D: hincha la prenda como si estuviera rellena. \
                              0 = vacía (una bolsa sin nada dentro queda plana). Con unos 10 Pa una bolsa se llena \
                              y con 30 un cojín queda firme; mucho más y se pone redonda como un globo. Las bocas \
                              sin coser se abren.",
-                        );
-                    ui.end_row();
-                    widgets::prop_label(ui, "Margen");
-                    ui.add(
-                        egui::DragValue::new(&mut self.pattern.seam_allowance)
-                            .range(0.0..=50.0)
-                            .speed(0.5)
-                            .suffix(" mm"),
-                    )
-                    .on_hover_text("Margen de costura de los bordes que no tienen uno propio");
-                    ui.end_row();
-                    widgets::prop_label(ui, "Volteada");
-                    ui.checkbox(&mut self.pattern.inside_out, "Del revés").on_hover_text(
-                        "La prenda está del revés: el derecho de la tela queda dentro y los márgenes, fuera",
-                    );
-                    ui.end_row();
+                            );
+                        ui.end_row();
+                    }
                     widgets::prop_label(ui, "Piezas");
                     ui.label(self.pattern.pieces.len().to_string());
                     ui.end_row();
@@ -181,7 +212,6 @@ impl ClothingMakerApp {
                     ui.end_row();
                 });
             });
-            self.textile_library(ui);
         });
     }
 
@@ -192,13 +222,24 @@ impl ClothingMakerApp {
             return;
         }
         let on_avatar = self.pattern.on_avatar;
+        let stage = self.stage;
         let Some(id) = selection.piece() else {
+            let hint = match stage {
+                Stage::Pattern => "Selecciona una pieza, un punto o una arista para ver sus propiedades.",
+                Stage::Fabrics => "Selecciona una pieza para elegir su tela y sus capas.",
+                Stage::Assembly => "Selecciona una costura, o una arista para ver su margen y sus costuras.",
+                Stage::Placement => {
+                    "Selecciona una pieza para decidir dónde empieza en 3D: su lado, su zona y su cara."
+                }
+                Stage::Simulation => "Selecciona una pieza o una costura para ver sus datos.",
+            };
             widgets::section(ui, "Selección", None, |ui| {
                 ui.add_space(2.0);
-                ui.weak("Selecciona una pieza, un punto, una arista o una costura para ver sus propiedades.");
+                ui.weak(hint);
             });
             return;
         };
+        let places = stage == Stage::Placement;
         let Some(piece) = self.pattern.piece_mut(id) else { return };
         let mut duplicate = false;
         let mut delete = false;
@@ -216,6 +257,9 @@ impl ClothingMakerApp {
                 widgets::prop_label(ui, "Puntos");
                 ui.label(piece.len().to_string());
                 ui.end_row();
+                if !places {
+                    return;
+                }
                 widgets::prop_label(ui, "Colocación 3D").on_hover_text(
                     "Dónde va la pieza al coser en la vista 3D (modo Alrededor), mirando la prenda de frente. \
                      Dibuja cada pieza como se ve desde fuera.",
@@ -248,15 +292,17 @@ impl ClothingMakerApp {
                     ui.end_row();
                 }
             });
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                duplicate = ui.button("Duplicar").on_hover_text("Ctrl+D").clicked();
-                delete = ui.button("Borrar pieza").clicked();
-            });
+            if stage == Stage::Pattern {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    duplicate = ui.button("Duplicar").on_hover_text("Ctrl+D").clicked();
+                    delete = ui.button("Borrar pieza").clicked();
+                });
+            }
         });
 
         match selection {
-            Selection::Vertex(_, i) => {
+            Selection::Vertex(_, i) if stage == Stage::Pattern => {
                 let mut remove = false;
                 widgets::section(ui, &format!("Punto {}", i + 1), None, |ui| {
                     widgets::properties(ui, "vertex", |ui| {
@@ -275,7 +321,8 @@ impl ClothingMakerApp {
                     return;
                 }
             }
-            Selection::Edge(_, i) => {
+            Selection::Edge(_, i) if matches!(stage, Stage::Pattern | Stage::Assembly) => {
+                let shape = stage == Stage::Pattern;
                 let mut split = false;
                 let mut go_to = None;
                 let edge = piece.edges()[i].id;
@@ -286,9 +333,12 @@ impl ClothingMakerApp {
                         widgets::prop_label(ui, "Longitud");
                         ui.label(format!("{:.1} cm", piece.edge_length(i) / 10.0));
                         ui.end_row();
-                        widgets::prop_label(ui, "Margen");
-                        allowance_editor(ui, piece, i, default_allowance);
-                        ui.end_row();
+                        if !shape {
+                            widgets::prop_label(ui, "Margen");
+                            allowance_editor(ui, piece, i, default_allowance);
+                            ui.end_row();
+                            return;
+                        }
                         widgets::prop_label(ui, "Tipo");
                         let mut curve = piece.edges()[i].is_curve();
                         ui.horizontal(|ui| {
@@ -312,6 +362,9 @@ impl ClothingMakerApp {
                             ui.end_row();
                         }
                     });
+                    if !shape {
+                        return;
+                    }
                     ui.add_space(6.0);
                     ui.horizontal_wrapped(|ui| {
                         if piece.edges()[i].is_curve() && ui.button("Enderezar manejadores").clicked() {
@@ -329,7 +382,7 @@ impl ClothingMakerApp {
                     .filter(|(_, s)| s.sides.iter().any(|side| side.piece == id && side.edge == edge))
                     .map(|(k, s)| (k, s.id, s.name.clone()))
                     .collect();
-                if !seams.is_empty() {
+                if !seams.is_empty() && !shape {
                     widgets::section(ui, "Costuras de la arista", Some(seams.len()), |ui| {
                         for (k, seam, name) in seams {
                             if widgets::tree_row(ui, canvas::seam_color(k), &name, None, false, 0).clicked() {
@@ -345,10 +398,12 @@ impl ClothingMakerApp {
                     self.editor.selection = Selection::Seam(seam);
                 }
             }
-            Selection::Piece(_) | Selection::Seam(_) | Selection::None => {}
+            _ => {}
         }
 
-        self.piece_textiles(ui, id);
+        if stage == Stage::Fabrics {
+            self.piece_textiles(ui, id);
+        }
 
         if duplicate && let Some(new) = self.pattern.duplicate_piece(id, pattern::Vec2::new(20.0, 20.0)) {
             self.editor.selection = Selection::Piece(new);
@@ -497,38 +552,55 @@ impl ClothingMakerApp {
         }
     }
 
-    fn describe(&self, issue: &Issue) -> String {
-        let piece = |id| self.pattern.piece(id).map_or("?".to_owned(), |p| p.name.clone());
-        let seam = |id| self.pattern.seams.iter().find(|s| s.id == id).map_or("?".to_owned(), |s| s.name.clone());
-        match *issue {
-            Issue::TooFewVertices { piece: id } => format!("«{}» tiene menos de 3 puntos", piece(id)),
-            Issue::DegeneratePiece { piece: id } => format!("«{}» no tiene área", piece(id)),
-            Issue::SelfIntersecting { piece: id } => format!("El contorno de «{}» se cruza consigo mismo", piece(id)),
-            Issue::DanglingSeam { seam: id } => format!("La costura «{}» apunta a una arista que no existe", seam(id)),
-            Issue::SeamTooFewSides { seam: id } => format!("La costura «{}» tiene menos de dos lados", seam(id)),
-            Issue::SeamLengthMismatch { seam: id, min, max } => format!(
-                "Los lados de la costura «{}» no miden lo mismo ({:.1}–{:.1} cm)",
-                seam(id),
-                min / 10.0,
-                max / 10.0
-            ),
-        }
+    /// Lo que falta o está mal, por etapas: la etapa activa primero y
+    /// desplegada. Un clic lleva a la etapa y selecciona lo que hay que
+    /// arreglar.
+    fn checks_section(&self, ui: &mut Ui, action: &mut Option<TreeAction>) {
+        let count = self.checks.len();
+        widgets::section(ui, "Comprobaciones", Some(count), |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.add_space(2.0);
+            if count == 0 {
+                ui.label(RichText::new("✔ Todo en orden en todas las etapas").color(theme::OK));
+                return;
+            }
+            let order = std::iter::once(self.stage).chain(Stage::ALL.into_iter().filter(|&s| s != self.stage));
+            for stage in order {
+                let checks: Vec<_> = self.checks.iter().filter(|c| c.stage == stage).collect();
+                if checks.is_empty() {
+                    continue;
+                }
+                let title = format!("{} · {} ({})", stage.number(), stage.label(), checks.len());
+                egui::CollapsingHeader::new(RichText::new(title).size(11.5))
+                    // Al cambiar de etapa, se despliega solo la nueva.
+                    .id_salt(("checks", stage.number(), self.stage.number()))
+                    .default_open(stage == self.stage)
+                    .show(ui, |ui| {
+                        for check in checks {
+                            let text = RichText::new(format!("⚠ {}", check.text)).color(theme::WARN);
+                            let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                            if response.on_hover_text("Clic para ir a la etapa y seleccionarlo").clicked() {
+                                *action = Some(TreeAction::Check(check.stage, check.target));
+                            }
+                        }
+                    });
+            }
+        });
     }
 
-    /// Pista de la herramienta activa, para la barra de estado.
+    /// Pista de la herramienta activa en la etapa, para la barra de estado.
     pub(super) fn tool_hint(&self) -> &'static str {
-        self.editor.tool.hint()
-    }
-}
-
-/// Lo que hay que seleccionar para ver de qué va un aviso.
-fn issue_selection(issue: &Issue) -> Option<Selection> {
-    match *issue {
-        Issue::TooFewVertices { piece } | Issue::DegeneratePiece { piece } | Issue::SelfIntersecting { piece } => {
-            Some(Selection::Piece(piece))
-        }
-        Issue::DanglingSeam { seam } | Issue::SeamTooFewSides { seam } | Issue::SeamLengthMismatch { seam, .. } => {
-            Some(Selection::Seam(seam))
+        match (self.editor.tool, self.stage) {
+            (canvas::Tool::Select, Stage::Fabrics) => {
+                "Clic en una pieza para ver y cambiar su tela y sus capas · F: encuadrar"
+            }
+            (canvas::Tool::Select, Stage::Assembly) => {
+                "Clic en una costura o una arista para ver su tipo, su margen y su orden · S: nueva costura · F: encuadrar"
+            }
+            (canvas::Tool::Select, Stage::Placement | Stage::Simulation) => {
+                "Clic en una pieza para elegir su lado, su zona y su cara · arrastra para moverla · F: encuadrar"
+            }
+            (tool, _) => tool.hint(),
         }
     }
 }

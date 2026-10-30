@@ -53,7 +53,7 @@ desplazar, F para encuadrar todo.
   ti: la espalda, como se vería desde detrás. Por eso, al coser dos piezas
   vecinas, lo normal es que una de las dos aristas vaya al revés; basta con
   pinchar cada arista por el extremo que corresponde.
-- *Colocación 3D* de cada pieza (en sus propiedades): delante, detrás,
+- *Colocación 3D* de cada pieza (en la etapa *Colocación*): delante, detrás,
   izquierda, derecha, arriba o abajo. En la vista 3D, la colocación
   *Alrededor* curva las piezas sobre un cilindro, cada una en su lado y con
   la disposición del editor, y las costuras las van cerrando (casilla *Coser*).
@@ -120,7 +120,7 @@ desplazar, F para encuadrar todo.
 - Ejemplo nuevo: *Cojín* (dos cuadrados de 40 cm cosidos por los cuatro
   lados, con 30 Pa).
 
-**Costuras:** pestaña *Costuras* dedicada a cómo se hace cada costura.
+**Costuras:** etapa *Montaje* dedicada a cómo se hace cada costura.
 
 - Tipos: simple, sobrehilada (remallada), a la vista, francesa, inglesa
   (plana, la de los vaqueros), solapada y volteada (embolsada). Cada tipo
@@ -135,7 +135,7 @@ desplazar, F para encuadrar todo.
 - **Derecho y revés:** cada pieza puede tener el *derecho hacia dentro*
   (forros, vistas) y la prenda entera se puede **voltear** (del revés). En 3D
   el derecho se ve del color de la pieza y el revés más claro y apagado.
-- En la pestaña, el patrón se atenúa y las costuras destacan; la
+- En el montaje, el patrón se atenúa y las costuras destacan; la
   seleccionada dice su tipo y une con líneas finas los puntos que se cosen
   juntos (si se cruzan, algún lado va al revés).
 - En 3D: el margen se ve tumbado por su cara (dentro o, en la costura a la
@@ -148,22 +148,51 @@ desplazar, F para encuadrar todo.
   doblada una pieza sobre otra (volteada). *Coser por orden* cierra las
   costuras de una en una en el orden de la lista.
 
+**Flujo por etapas:** como en Fusion 360 (primero el boceto, luego el
+volumen), una prenda se hace en orden y cada etapa tiene sus herramientas,
+sus propiedades y sus comprobaciones:
+
+1. **Patrón**: dibujar las piezas (pluma, rectángulo, curvas, puntos).
+2. **Telas**: la tela de cada pieza y las capas pegadas (entretelas,
+   refuerzos); el lienzo pinta cada pieza del color de su tela y la
+   biblioteca de telas está a mano.
+3. **Montaje**: las costuras, su tipo, el margen, el orden y voltear.
+4. **Colocación**: dónde empieza cada pieza en 3D antes de coser (lado, zona
+   del cuerpo, cara), el modo de colocación y el maniquí. *Colocación* en la
+   cinta vuelve a colocar las piezas y para, para verlas antes de coser.
+5. **Simulación**: coser y asentar la prenda (obstáculo, relleno, precisión).
+
+- El lienzo solo deja hacer lo de la etapa: la forma de las piezas se
+  cambia en *Patrón*, las aristas se eligen en *Patrón* y *Montaje*, y las
+  piezas se pueden mover también en *Colocación* (su sitio en el patrón
+  cuenta al colocarlas). Las herramientas de dibujo (P, R) llevan a
+  *Patrón* y la de coser (S), a *Montaje*.
+- **Comprobaciones**: cada pestaña dice cuántas cosas tiene pendientes y el
+  navegador las lista por etapa (clic para ir y seleccionarlo): piezas sin
+  área o que se cruzan, telas que faltan, costuras rotas o de largos
+  distintos, piezas sin coser, piezas que se solapan en el mismo sitio de
+  colocación (en 3D se cruzarían), costuras que se retuercen al colocar las
+  piezas (un lado va al revés) y piezas que no se pueden mallar.
+
 **Interfaz:** inspirada en los programas de CAD como Fusion 360, con tema
 oscuro.
 
 - Barra superior: menús, accesos rápidos (nuevo, abrir, guardar, deshacer,
   rehacer), el documento abierto (con un punto si hay cambios sin guardar) y
   la disposición de las vistas.
-- Cinta de herramientas con tres espacios de trabajo (el de *Costuras*,
-  arriba). *Patrón*: seleccionar,
-  crear (pluma, rectángulo), modificar, coser, inspeccionar (rejilla, malla),
-  prenda (maniquí) y encuadrar. *Simulación*: simular / pausa, reiniciar, en
-  vivo, montaje (colocación, coser), entorno (obstáculo, tejido), precisión,
-  inicio de cámara y relleno (también en las propiedades del patrón). Los grupos con ⏷ despliegan más órdenes.
-- Navegador a la izquierda: árbol con las piezas, las costuras y los avisos
-  (clic para seleccionar, botón derecho para duplicar o borrar).
+- Cinta de herramientas con las cinco etapas numeradas y *Siguiente* para
+  pasar a la próxima. *Patrón*: seleccionar, crear (pluma, rectángulo),
+  modificar, inspeccionar (rejilla, malla) y encuadrar. *Telas*: tela de la
+  selección (o de todas), añadir capa y tela nueva. *Montaje*: costura, tipo,
+  margen, orden, voltear y resaltar. *Colocación*: lado, zona y cara de la
+  pieza, maniquí, modo de colocación y coser. *Simulación*: simular / pausa,
+  reiniciar, en vivo, entorno (obstáculo), precisión, inicio de cámara y
+  relleno. Los grupos con ⏷ despliegan más órdenes.
+- Navegador a la izquierda: las comprobaciones de cada etapa y el árbol con
+  las piezas (con su tela o su sitio de colocación, según la etapa) y las
+  costuras (clic para seleccionar, botón derecho para duplicar o borrar).
 - Propiedades a la derecha: lo seleccionado (pieza, punto, arista o costura)
-  y el patrón.
+  y el patrón, con lo que importa en la etapa activa.
 - Vista 3D con cubo de vista: pulsar una cara (frente, detrás, lados, arriba)
   lleva la cámara a esa vista. Cada vista tiene abajo una barra de navegación
   (encuadrar, zoom, rejilla y malla en 2D; inicio, simular, reiniciar y en
