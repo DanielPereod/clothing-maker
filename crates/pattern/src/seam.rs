@@ -36,6 +36,9 @@ pub enum SeamKind {
     /// así la costura queda en el borde y el margen escondido entre las dos
     /// capas (cuellos, vistas, carteras).
     Bagged,
+    /// Los dientes de una cremallera: unen dos cintas sin margen y se abren
+    /// y se cierran (ver `Seam::open`).
+    Zipper,
 }
 
 /// Hacia dónde tiende a doblarse la tela en la costura.
@@ -59,7 +62,7 @@ pub enum AllowanceSide {
 }
 
 impl SeamKind {
-    pub const ALL: [SeamKind; 7] = [
+    pub const ALL: [SeamKind; 8] = [
         SeamKind::Plain,
         SeamKind::Overlocked,
         SeamKind::Exposed,
@@ -67,6 +70,7 @@ impl SeamKind {
         SeamKind::FlatFelled,
         SeamKind::Lapped,
         SeamKind::Bagged,
+        SeamKind::Zipper,
     ];
 
     pub fn label(self) -> &'static str {
@@ -78,6 +82,7 @@ impl SeamKind {
             SeamKind::FlatFelled => "Inglesa (plana)",
             SeamKind::Lapped => "Solapada",
             SeamKind::Bagged => "Volteada",
+            SeamKind::Zipper => "Cremallera",
         }
     }
 
@@ -104,6 +109,10 @@ impl SeamKind {
                 "Se cose derecho con derecho y se da la vuelta: la costura queda justo en el borde, con el margen \
                  escondido entre las dos capas. Cuellos, vistas, carteras."
             }
+            SeamKind::Zipper => {
+                "Los dientes de una cremallera: unen dos cintas a tope, sin margen, y se abren o se cierran con \
+                 el tirador. Fornituras › Cremallera crea las cintas y esta costura."
+            }
         }
     }
 
@@ -114,6 +123,7 @@ impl SeamKind {
             SeamKind::Overlocked => 7.0,
             SeamKind::French => 15.0,
             SeamKind::FlatFelled => 15.0,
+            SeamKind::Zipper => 0.0,
         }
     }
 
@@ -123,6 +133,8 @@ impl SeamKind {
         match self {
             SeamKind::Plain | SeamKind::Exposed | SeamKind::Bagged | SeamKind::Lapped => 2.0,
             SeamKind::Overlocked => 2.5,
+            // Los dientes pesan y abultan como varias capas.
+            SeamKind::Zipper => 4.0,
             SeamKind::French => 4.0,
             SeamKind::FlatFelled => 4.0,
         }
@@ -137,6 +149,7 @@ impl SeamKind {
             SeamKind::French => 3.0,
             SeamKind::Lapped => 3.0,
             SeamKind::FlatFelled => 5.0,
+            SeamKind::Zipper => 6.0,
         }
     }
 
@@ -144,7 +157,7 @@ impl SeamKind {
     pub fn fold(self) -> SeamFold {
         match self {
             SeamKind::Plain | SeamKind::Overlocked | SeamKind::Exposed => SeamFold::Free,
-            SeamKind::French | SeamKind::FlatFelled | SeamKind::Lapped => SeamFold::Flat,
+            SeamKind::French | SeamKind::FlatFelled | SeamKind::Lapped | SeamKind::Zipper => SeamFold::Flat,
             SeamKind::Bagged => SeamFold::Folded,
         }
     }
@@ -162,6 +175,7 @@ impl SeamKind {
         match self {
             SeamKind::French => 0.4,
             SeamKind::FlatFelled => 0.5,
+            SeamKind::Zipper => 0.0,
             _ => 1.0,
         }
     }

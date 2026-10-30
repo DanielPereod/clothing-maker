@@ -6,7 +6,7 @@ use glam::Vec3;
 use pattern::{AllowanceSide, SeamKind};
 
 use super::render::Vertex;
-use super::scene::{SeamDraw, SeamSideDraw};
+use super::scene::{FastenerDraw, SeamDraw, SeamSideDraw};
 
 /// Color (lineal) del hilo de los pespuntes y del remallado.
 const THREAD: [f32; 3] = [0.80, 0.52, 0.12];
@@ -24,6 +24,18 @@ const TOPSTITCH_AT: [f32; 2] = [0.003, 0.009];
 /// Largo de cada puntada visible y de cada hueco (m).
 const DASH: f32 = 0.004;
 const GAP: f32 = 0.002;
+/// Dientes de una cremallera: color (lineal), cuánto salen de cada cinta,
+/// paso entre dientes y qué parte del paso ocupa cada uno (m).
+const TEETH: [f32; 3] = [0.55, 0.55, 0.58];
+const TOOTH_DEPTH: f32 = 0.003;
+const TOOTH_PITCH: f32 = 0.003;
+const TOOTH_FILL: f32 = 0.55;
+/// El tirador de la cremallera: color, largo, ancho y alto (m).
+const SLIDER: [f32; 3] = [0.25, 0.25, 0.27];
+const SLIDER_SIZE: [f32; 3] = [0.014, 0.009, 0.003];
+/// Radio de un broche y largo y ancho de una presilla (m).
+const SNAP_RADIUS: f32 = 0.006;
+const BAR_TACK: [f32; 2] = [0.012, 0.003];
 
 /// Malla que se va llenando.
 #[derive(Default)]
@@ -90,7 +102,10 @@ pub fn build(
             AllowanceSide::WrongSide => -1.0,
             AllowanceSide::RightSide => 1.0,
         };
-        for (j, side) in draw.sides.iter().enumerate() {
+        if draw.kind == SeamKind::Zipper {
+            zipper(draw, positions, normals, n, out);
+        }
+        for (j, side) in draw.sides.iter().enumerate().filter(|_| draw.kind != SeamKind::Zipper) {
             let toward = draw.pressed.and_then(|p| draw.sides.get(p)).unwrap_or(side);
             // La cara del margen que queda a la vista.
             let visible = if face > 0.0 { side.right_color } else { side.wrong_color };
@@ -149,6 +164,119 @@ pub fn build(
     }
 }
 
+/// Broches (un disco de metal por el derecho de cada pieza) y presillas
+/// (una barra de hilo por las dos caras de cada una).
+pub fn fasteners(draws: &[FastenerDraw], positions: &[Vec3], normals: &[Vec3], out: &mut SeamMesh) {
+    for draw in draws {
+        for (k, &particle) in draw.particles.iter().enumerate() {
+            let p = positions[particle as usize];
+            let n = normals[particle as usize].normalize_or_zero();
+            // Dos direcciones sobre la tela.
+            let u = n.any_orthonormal_vector();
+            let v = n.cross(u);
+            let faces: &[f32] = match draw.kind {
+                pattern::FastenerKind::Snap => &[1.0],
+                pattern::FastenerKind::BarTack => &[1.0, -1.0],
+            };
+            for &face in faces {
+                let up = n * draw.right_sign[k] * face;
+                let base = p + up * LIFT * 2.0;
+                match draw.kind {
+                    pattern::FastenerKind::Snap => {
+                        // Un octógono.
+                        let corner = |i: usize| {
+                            let a = i as f32 * std::f32::consts::TAU / 8.0;
+                            base + (u * a.cos() + v * a.sin()) * SNAP_RADIUS
+                        };
+                        for i in 0..8 {
+                            out.quad([base, corner(i), corner(i + 1), base], up, SLIDER);
+                        }
+                    }
+                    pattern::FastenerKind::BarTack => {
+                        let (a, w) = (u * BAR_TACK[0] / 2.0, v * BAR_TACK[1] / 2.0);
+                        out.quad([base - a - w, base + a - w, base + a + w, base - a + w], up, THREAD);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Los dientes de cada cinta de una cremallera, por las dos caras (los de
+/// una cinta, medio paso desplazados de los de la otra: encajan), y el
+/// tirador donde empieza la parte cerrada.
+fn zipper(draw: &SeamDraw, positions: &[Vec3], normals: &[Vec3], n: usize, out: &mut SeamMesh) {
+    for (j, side) in draw.sides.iter().enumerate() {
+        for face in [1.0f32, -1.0] {
+            let path: Vec<_> = (0..n)
+                .map(|k| {
+                    let nrm = normals[side.particles[k] as usize];
+                    let dir = inward(side, k, positions, nrm)?;
+                    let up = nrm * face;
+                    // Desde un poco más allá del canto: los dientes de las dos
+                    // cintas se tocan en el centro.
+                    let p = positions[side.particles[k] as usize] + up * (side.thickness / 2.0 + LIFT) - dir * 0.0005;
+                    Some((p, dir * TOOTH_DEPTH, up))
+                })
+                .collect();
+            teeth(&path, j as f32 * 0.5 * TOOTH_PITCH, out);
+        }
+    }
+    // El tirador, sobre la primera cinta por su cara de delante.
+    let (Some(first), Some(k)) = (draw.sides.first(), draw.slider) else { return };
+    let k = k.min(n.saturating_sub(1));
+    if n < 2 {
+        return;
+    }
+    let p = positions[first.particles[k] as usize];
+    let nrm = normals[first.particles[k] as usize] * first.right_sign;
+    let next = positions[first.particles[(k + 1).min(n - 1)] as usize];
+    let prev = positions[first.particles[k.saturating_sub(1)] as usize];
+    let along = (next - prev).normalize_or_zero();
+    let across = along.cross(nrm).normalize_or_zero();
+    let [length, width, height] = SLIDER_SIZE;
+    let base = p + nrm * (first.thickness / 2.0 + LIFT * 2.0);
+    let (a, w, h) = (along * length / 2.0, across * width / 2.0, nrm * height);
+    // Una caja: la tapa y los cuatro lados.
+    let corners = |z: Vec3| [base - a - w + z, base + a - w + z, base + a + w + z, base - a + w + z];
+    let (bottom, top) = (corners(Vec3::ZERO), corners(h));
+    out.quad(top, nrm, SLIDER);
+    for i in 0..4 {
+        let j = (i + 1) % 4;
+        let outward = ((bottom[i] + bottom[j]) / 2.0 - base).normalize_or_zero();
+        out.quad([bottom[i], bottom[j], top[j], top[i]], outward, SLIDER);
+    }
+}
+
+/// Dientes a lo largo de `path` (punto, hacia dónde sale el diente y hacia
+/// dónde mira), empezando `phase` metros dentro del primer paso.
+fn teeth(path: &[Option<(Vec3, Vec3, Vec3)>], phase: f32, out: &mut SeamMesh) {
+    let mut phase = phase % TOOTH_PITCH;
+    for pair in path.windows(2) {
+        let (Some((p0, a0, n0)), Some((p1, a1, n1))) = (pair[0], pair[1]) else { continue };
+        let length = p0.distance(p1);
+        if length < 1e-6 {
+            continue;
+        }
+        let up = (n0 + n1).normalize_or_zero();
+        let mut t = 0.0;
+        while t < length {
+            let tooth = TOOTH_PITCH * TOOTH_FILL;
+            let in_tooth = phase < tooth;
+            let step = if in_tooth { tooth - phase } else { TOOTH_PITCH - phase }.min(length - t);
+            if in_tooth {
+                let (s0, s1) = (t / length, (t + step) / length);
+                let (a, b) = (p0.lerp(p1, s0), p0.lerp(p1, s1));
+                let (da, db) = (a0.lerp(a1, s0), a0.lerp(a1, s1));
+                // El diente sale hacia el otro lado de la cinta.
+                out.quad([a, b, b - db, a - da], up, TEETH);
+            }
+            t += step;
+            phase = (phase + step) % TOOTH_PITCH;
+        }
+    }
+}
+
 /// Puntadas a lo largo de `path` (punto y hacia dónde mira la tela).
 fn dashes(path: &[Option<(Vec3, Vec3)>], out: &mut SeamMesh) {
     // Distancia recorrida dentro del ciclo puntada + hueco.
@@ -202,7 +330,7 @@ mod tests {
             right_color: [1.0, 0.0, 0.0],
             wrong_color: [0.5, 0.5, 0.5],
         };
-        let draw = SeamDraw { index: 0, kind, topstitch, pressed: None, sides: vec![side(1), side(2)] };
+        let draw = SeamDraw { index: 0, kind, topstitch, pressed: None, sides: vec![side(1), side(2)], slider: None };
         (draw, positions, normals)
     }
 

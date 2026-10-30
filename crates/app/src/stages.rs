@@ -120,6 +120,23 @@ pub fn checks(pattern: &Pattern, scene: &SceneReport) -> Vec<Check> {
                 format!("Dos líneas interiores de «{}» se cruzan", piece_name(piece)),
                 line_target(pattern, piece, line),
             ),
+            Issue::FoldNotAcross { piece, line } => push(
+                Stage::Pattern,
+                format!(
+                    "Un doblez de «{}» no cruza la pieza: tiene que ir por dentro de la tela, de un punto del \
+                     contorno a otro",
+                    piece_name(piece)
+                ),
+                line_target(pattern, piece, line),
+            ),
+            Issue::FastenerOutside { fastener } => push(
+                Stage::Assembly,
+                format!(
+                    "Un punto de «{}» se ha quedado fuera de la tela: muévelo o vuelve a ponerlo",
+                    pattern.fastener(fastener).map_or("?", |f| f.name.as_str())
+                ),
+                Some(Selection::Fastener(fastener)),
+            ),
             Issue::HoleOutside { hole } => push(
                 Stage::Pattern,
                 format!(

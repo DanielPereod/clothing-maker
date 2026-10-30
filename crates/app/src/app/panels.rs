@@ -5,7 +5,8 @@
 
 use eframe::egui::{self, Color32, RichText, Ui};
 use pattern::{
-    Arrangement, BodyZone, EdgeKind, Pattern, Point, SeamFit, SeamId, SeamKind, SeamSide, StepId, Topstitch,
+    Arrangement, BodyZone, EdgeKind, FastenerId, FastenerKind, Pattern, Point, SeamFit, SeamId, SeamKind, SeamSide,
+    StepId, Topstitch,
 };
 
 use super::ClothingMakerApp;
@@ -101,6 +102,7 @@ enum TreeAction {
     Duplicate(pattern::PieceId),
     DeletePiece(pattern::PieceId),
     DeleteSeam(SeamId),
+    DeleteFastener(FastenerId),
 }
 
 impl ClothingMakerApp {
@@ -202,6 +204,34 @@ impl ClothingMakerApp {
                     ui.weak("Aún no hay costuras. Usa la herramienta Costura (S).");
                 }
             });
+
+            if !self.pattern.fasteners.is_empty() {
+                widgets::section(ui, "Broches y presillas", Some(self.pattern.fasteners.len()), |ui| {
+                    for fastener in &self.pattern.fasteners {
+                        let detail = match (fastener.kind, fastener.open) {
+                            (FastenerKind::Snap, true) => "abierto",
+                            (kind, _) => kind.label(),
+                        };
+                        let color = canvas::piece_color(fastener.ends[0].piece);
+                        let response = widgets::tree_row(
+                            ui,
+                            color,
+                            &fastener.name,
+                            Some(detail),
+                            selected == Selection::Fastener(fastener.id),
+                            0,
+                        );
+                        if response.clicked() {
+                            action = Some(TreeAction::Select(Selection::Fastener(fastener.id)));
+                        }
+                        response.context_menu(|ui| {
+                            if ui.button("Borrar").clicked() {
+                                action = Some(TreeAction::DeleteFastener(fastener.id));
+                            }
+                        });
+                    }
+                });
+            }
         });
 
         match action {
@@ -223,6 +253,10 @@ impl ClothingMakerApp {
             }
             Some(TreeAction::DeleteSeam(id)) => {
                 self.pattern.remove_seam(id);
+                self.editor.selection = Selection::None;
+            }
+            Some(TreeAction::DeleteFastener(id)) => {
+                self.pattern.remove_fastener(id);
                 self.editor.selection = Selection::None;
             }
             None => {}
@@ -299,6 +333,10 @@ impl ClothingMakerApp {
         let selection = self.editor.selection;
         if let Selection::Seam(id) = selection {
             self.seam_details(ui, id);
+            return;
+        }
+        if let Selection::Fastener(id) = selection {
+            self.fastener_details(ui, id);
             return;
         }
         let on_avatar = self.pattern.on_avatar;
@@ -537,6 +575,68 @@ impl ClothingMakerApp {
         let mut edited = line;
         let mut delete = false;
         let mut go_to = None;
+        if let Some(fold) = line.fold {
+            let mut fold_edit = fold;
+            widgets::section(ui, "Doblez", None, |ui| {
+                widgets::properties(ui, "fold", |ui| {
+                    widgets::prop_label(ui, "Longitud");
+                    ui.label(format!("{:.1} cm", line.length() / 10.0));
+                    ui.end_row();
+                    widgets::prop_label(ui, "Ángulo");
+                    ui.add(egui::DragValue::new(&mut fold_edit.angle).range(0.0..=180.0).speed(1.0).suffix("°"))
+                        .on_hover_text(
+                            "Cuánto se dobla la solapa: 180° la deja encima de la otra parte. Desde \
+                             90° la pieza se coloca ya doblada.",
+                        );
+                    ui.end_row();
+                    widgets::prop_label(ui, "Hacia");
+                    egui::ComboBox::from_id_salt("fold_side")
+                        .selected_text(if fold_edit.toward_right_side { "El derecho" } else { "El revés" })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut fold_edit.toward_right_side, false, "El revés")
+                                .on_hover_text("Revés con revés: el derecho queda fuera, como un puño o un dobladillo");
+                            ui.selectable_value(&mut fold_edit.toward_right_side, true, "El derecho")
+                                .on_hover_text("Derecho con derecho: el revés queda fuera, como antes de volver");
+                        });
+                    ui.end_row();
+                });
+                ui.checkbox(&mut fold_edit.pressed, "Planchado").on_hover_text(
+                    "Se queda en su ángulo. Sin planchar es una bisagra libre: dobla sin resistencia, como una \
+                     tapa",
+                );
+                if shape
+                    && ui
+                        .button("Cambiar solapa")
+                        .on_hover_text("Dobla la otra parte de la pieza en vez de esta")
+                        .clicked()
+                {
+                    fold_edit.flip = !fold_edit.flip;
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "La flecha del lienzo lleva la solapa al otro lado de la línea. Sus extremos siguen a los \
+                         vértices del contorno.",
+                    )
+                    .size(11.0)
+                    .color(theme::TEXT_WEAK),
+                );
+                if shape {
+                    ui.add_space(6.0);
+                    delete = ui.button("Borrar doblez").clicked();
+                }
+            });
+            if fold_edit != fold
+                && let Some(slot) = self.pattern.piece_mut(id).and_then(|p| p.lines.get_mut(k))
+            {
+                slot.fold = Some(fold_edit);
+            }
+            if delete {
+                self.pattern.remove_line(id, line.id);
+                self.editor.selection = Selection::Piece(id);
+            }
+            return;
+        }
         widgets::section(ui, "Línea interior", None, |ui| {
             widgets::properties(ui, "line", |ui| {
                 widgets::prop_label(ui, "Longitud");
@@ -587,6 +687,64 @@ impl ClothingMakerApp {
         }
     }
 
+    fn fastener_details(&mut self, ui: &mut Ui, id: FastenerId) {
+        let Some(fastener) = self.pattern.fastener(id) else { return };
+        let ends: Vec<String> = fastener
+            .ends
+            .iter()
+            .map(|e| self.pattern.piece(e.piece).map_or("?".to_owned(), |p| p.name.clone()))
+            .collect();
+        let mut delete = false;
+        let editable = self.stage == Stage::Assembly;
+        let Some(fastener) = self.pattern.fastener_mut(id) else { return };
+        widgets::section(ui, fastener.kind.label(), None, |ui| {
+            widgets::properties(ui, "fastener", |ui| {
+                widgets::prop_label(ui, "Nombre");
+                ui.text_edit_singleline(&mut fastener.name);
+                ui.end_row();
+                widgets::prop_label(ui, "Tipo");
+                let mut kind = fastener.kind;
+                egui::ComboBox::from_id_salt("fastener_kind").selected_text(kind.label()).show_ui(ui, |ui| {
+                    for option in FastenerKind::ALL {
+                        ui.selectable_value(&mut kind, option, option.label()).on_hover_text(option.hint());
+                    }
+                });
+                // El nombre puesto al crearlo («Broche 2») cambia con el tipo.
+                if kind != fastener.kind {
+                    if let Some(n) = fastener.name.strip_prefix(fastener.kind.label()).and_then(|r| r.strip_prefix(' '))
+                        && n.parse::<u32>().is_ok()
+                    {
+                        fastener.name = format!("{} {n}", kind.label());
+                    }
+                    fastener.kind = kind;
+                }
+                ui.end_row();
+                if fastener.kind == FastenerKind::Snap {
+                    widgets::prop_label(ui, "Abierto");
+                    ui.checkbox(&mut fastener.open, "").on_hover_text(
+                        "Un broche abierto no une nada: en vivo se ve soltarse y, al cerrarlo, juntarse",
+                    );
+                    ui.end_row();
+                }
+                for (k, name) in ends.iter().enumerate() {
+                    widgets::prop_label(ui, if k == 0 { "Une" } else { "con" });
+                    ui.label(name);
+                    ui.end_row();
+                }
+            });
+            ui.add_space(6.0);
+            ui.label(RichText::new(fastener.kind.hint()).size(11.0).color(theme::TEXT_WEAK));
+            if editable {
+                ui.add_space(6.0);
+                delete = ui.button(format!("Borrar {}", fastener.kind.label().to_lowercase())).clicked();
+            }
+        });
+        if delete {
+            self.pattern.remove_fastener(id);
+            self.editor.selection = Selection::None;
+        }
+    }
+
     fn seam_details(&mut self, ui: &mut Ui, id: SeamId) {
         let Some(k) = self.pattern.seams.iter().position(|s| s.id == id) else { return };
         let sides = self.pattern.seams[k].sides.clone();
@@ -625,6 +783,21 @@ impl ClothingMakerApp {
                     seam.set_kind(kind);
                 }
                 ui.end_row();
+                if seam.kind == SeamKind::Zipper {
+                    widgets::prop_label(ui, "Abierta");
+                    let mut percent = seam.open * 100.0;
+                    if ui
+                        .add(egui::Slider::new(&mut percent, 0.0..=100.0).suffix(" %").fixed_decimals(0))
+                        .on_hover_text(
+                            "Cuánto se abre la cremallera desde el principio de la costura, donde está el tirador. \
+                             En vivo se ve abrirse y cerrarse.",
+                        )
+                        .changed()
+                    {
+                        seam.open = percent / 100.0;
+                    }
+                    ui.end_row();
+                }
                 widgets::prop_label(ui, "Ajuste");
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("seam_fit")

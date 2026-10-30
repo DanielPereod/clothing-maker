@@ -152,6 +152,18 @@ pub struct Scene {
     /// Etapa de montaje de cada turno (0 = sin etapa; `k` = la etapa `k`
     /// de la línea de montaje, contando desde 1).
     pub turn_stages: Vec<usize>,
+    /// Broches y presillas que se dibujan en 3D.
+    pub fasteners: Vec<FastenerDraw>,
+}
+
+/// Un broche o una presilla en la tela: sus dos partículas.
+#[derive(Clone, Copy, Debug)]
+pub struct FastenerDraw {
+    pub kind: pattern::FastenerKind,
+    pub particles: [u32; 2],
+    /// Hacia qué cara de los triángulos queda el derecho de cada pieza (ver
+    /// [`right_sign`]).
+    pub right_sign: [f32; 2],
 }
 
 /// Una costura tal y como se dibuja en 3D.
@@ -164,6 +176,10 @@ pub struct SeamDraw {
     /// Lado (en `sides`) hacia el que va planchado el margen.
     pub pressed: Option<usize>,
     pub sides: Vec<SeamSideDraw>,
+    /// En una cremallera, el punto (en `sides[k].particles`) donde está el
+    /// tirador: el primero cerrado, o uno más allá del final si está toda
+    /// abierta.
+    pub slider: Option<usize>,
 }
 
 /// Un lado de una costura en la tela.
@@ -217,6 +233,32 @@ const FIRM_FABRIC: f32 = 2e-5;
 /// El pliegue preferido es una tendencia, no una bisagra rígida: cede
 /// bastante más que la rigidez a lo largo de la costura.
 const FOLD_SOFTNESS: f32 = 4.0;
+
+/// Flexibilidad de un doblez planchado: se queda doblado, pero cede algo.
+const FOLD_COMPLIANCE: f32 = 1e-6;
+
+/// Si un doblez lleva la solapa hacia la cara de atrás de los triángulos de
+/// la tela (la contraria a la que mira hacia fuera al colocar la pieza).
+fn toward_back(pattern: &Pattern, piece: &Piece, fold: &pattern::Fold) -> bool {
+    (right_sign(pattern, piece) > 0.0) != fold.toward_right_side
+}
+
+/// Dónde empieza un punto (mm) de una pieza con dobleces que se colocan ya
+/// doblados: reflejado en cada doblez cuya solapa lo contiene y, por cada
+/// uno, una capa (m) por delante (positivo) o por detrás de la pieza.
+fn folded(pattern: &Pattern, piece: &Piece, p: [f64; 2]) -> ([f64; 2], f32) {
+    let sep = 2.0 * piece_fabric(pattern, piece).thickness + 0.002;
+    let mut q = pattern::Point::new(p[0], p[1]);
+    let mut offset = 0.0;
+    for line in &piece.lines {
+        let Some(fold) = line.fold.filter(|f| f.starts_folded()) else { continue };
+        if line.in_flap(q) {
+            q = line.reflect(q);
+            offset += if toward_back(pattern, piece, &fold) { -sep } else { sep };
+        }
+    }
+    ([q.x, q.y], offset)
+}
 
 /// Hasta dónde (mm) se nota el frunce de una costura dentro de la tela.
 const GATHER_DEPTH: f64 = 40.0;
@@ -364,9 +406,13 @@ pub fn build(
     }
     .then(|| AroundLayout::new(&free, &pattern.seams, settings.obstacle.top(), avatar.as_deref()));
     let flat = (settings.placement == Placement::Drop && sewn && !on_body).then(|| FlatLayout::new(&free));
+    // Los dobleces que empiezan doblados: la solapa va reflejada sobre el
+    // resto de la pieza, una capa por delante o por detrás.
+    let fold = |index: usize, p: [f64; 2]| folded(pattern, &pattern.pieces[index], p);
     let place_around = |layout: &AroundLayout, index: usize, p: [f64; 2]| {
+        let (p, extra) = fold(index, p);
         let (root, p, offset) = resolve_mount(&mounts, index, p);
-        layout.place(&pattern.pieces[root], p, offset)
+        layout.place(&pattern.pieces[root], p, offset + extra)
     };
     let root = |index: usize| &pattern.pieces[resolve_mount(&mounts, index, [0.0, 0.0]).0];
     let hang_z = settings.obstacle.front() + if settings.obstacle == Obstacle::None { 0.0 } else { 0.1 };
@@ -384,6 +430,26 @@ pub fn build(
         _ => Vec3::ZERO,
     };
 
+    // Al soltarla sobre la mesa, lo que cuelga por debajo de las piezas de
+    // detrás (un asa en arco) también empieza por encima de la mesa.
+    let flat_lift = match &flat {
+        Some(layout) => {
+            let mounts = &mounts;
+            let lowest = meshes
+                .iter()
+                .flat_map(|&(index, _, mesh)| {
+                    mesh.positions.iter().map(move |&p| {
+                        let (p, extra) = fold(index, p);
+                        let (root, p, offset) = resolve_mount(mounts, index, p);
+                        layout.place(&pattern.pieces[root], p, drop_height, offset + extra).y
+                    })
+                })
+                .fold(f32::INFINITY, f32::min);
+            Vec3::Y * (drop_height - lowest).max(0.0)
+        }
+        None => Vec3::ZERO,
+    };
+
     let mut cloth = Cloth::new();
     let mut colors = Vec::new();
     let mut back_colors = Vec::new();
@@ -395,8 +461,9 @@ pub fn build(
             cloth.add_piece(mesh, &fabric, |p| place_around(layout, index, p) + lift, layout.front(root(index)))
         } else if let Some(layout) = &flat {
             let place = |p| {
+                let (p, extra) = fold(index, p);
                 let (root, p, offset) = resolve_mount(&mounts, index, p);
-                layout.place(&pattern.pieces[root], p, drop_height, offset)
+                layout.place(&pattern.pieces[root], p, drop_height, offset + extra) + flat_lift
             };
             cloth.add_piece(mesh, &fabric, place, layout.front(root(index)))
         } else if settings.placement == Placement::Hang {
@@ -404,7 +471,12 @@ pub fn build(
                 mesh,
                 &fabric,
                 |p| {
-                    Vec3::new(((p[0] - center[0]) * 1e-3) as f32, HANG_HEIGHT - ((p[1] - min[1]) * 1e-3) as f32, hang_z)
+                    let (p, extra) = fold(index, p);
+                    Vec3::new(
+                        ((p[0] - center[0]) * 1e-3) as f32,
+                        HANG_HEIGHT - ((p[1] - min[1]) * 1e-3) as f32,
+                        hang_z + extra,
+                    )
                 },
                 Vec3::Z,
             )
@@ -412,7 +484,14 @@ pub fn build(
             cloth.add_piece(
                 mesh,
                 &fabric,
-                |p| Vec3::new(((p[0] - center[0]) * 1e-3) as f32, drop_height, ((p[1] - center[1]) * 1e-3) as f32),
+                |p| {
+                    let (p, extra) = fold(index, p);
+                    Vec3::new(
+                        ((p[0] - center[0]) * 1e-3) as f32,
+                        drop_height + extra,
+                        ((p[1] - center[1]) * 1e-3) as f32,
+                    )
+                },
                 Vec3::Y,
             )
         };
@@ -433,6 +512,23 @@ pub fn build(
         };
         colors.extend(std::iter::repeat_n(front, mesh.positions.len()));
         back_colors.extend(std::iter::repeat_n(back, mesh.positions.len()));
+    }
+
+    // Dobleces: bisagras libres o planchados a su ángulo y hacia su lado.
+    for &(index, piece, mesh) in &meshes {
+        for meshed_line in &mesh.lines {
+            let Some(line) = piece.lines.iter().find(|l| l.id == meshed_line.line) else { continue };
+            let Some(fold) = line.fold else { continue };
+            let crease = simulator::Crease {
+                angle: fold.pressed.then_some(fold.angle.to_radians() as f32),
+                toward_back: toward_back(pattern, piece, &fold),
+                compliance: FOLD_COMPLIANCE,
+            };
+            let base = first_particle[index];
+            for w in meshed_line.vertices.windows(2) {
+                cloth.crease(base + w[0], base + w[1], crease);
+            }
+        }
     }
 
     if settings.placement == Placement::Hang {
@@ -491,15 +587,6 @@ pub fn build(
                     crossed.push(seam.id);
                 }
             }
-            // Cada punto se une con el mismo punto de todos los demás lados.
-            for (i, a) in seam_mesh.sides.iter().enumerate() {
-                for b in &seam_mesh.sides[i + 1..] {
-                    for (&va, &vb) in a.vertices.iter().zip(&b.vertices) {
-                        seam_pairs.push(([first_particle[a.piece] + va, first_particle[b.piece] + vb], turn));
-                    }
-                }
-            }
-
             // Separación en el patrón (mm) entre cada punto de un lado y el
             // siguiente. En una costura fruncida o embebida, el lado largo
             // se encoge en la línea de costura hasta lo que mide el corto, y
@@ -514,6 +601,32 @@ pub fn build(
                     side.vertices.windows(2).map(|w| at(w[0]).distance(at(w[1]))).collect()
                 })
                 .collect();
+            // Qué puntos quedan cerrados: todos, salvo en una cremallera
+            // abierta lo que va del principio al tirador.
+            let closed: Vec<bool> = {
+                let first = gaps.first().map_or(&[][..], |g| g.as_slice());
+                let total: f64 = first.iter().sum();
+                let mut along = 0.0;
+                let count = seam_mesh.sides.iter().map(|s| s.vertices.len()).min().unwrap_or(0);
+                (0..count)
+                    .map(|k| {
+                        if k > 0 {
+                            along += first.get(k - 1).copied().unwrap_or(0.0);
+                        }
+                        !seam.is_open_at(if total > 0.0 { along / total } else { 0.0 })
+                    })
+                    .collect()
+            };
+            // Cada punto se une con el mismo punto de todos los demás lados.
+            for (i, a) in seam_mesh.sides.iter().enumerate() {
+                for b in &seam_mesh.sides[i + 1..] {
+                    for (k, (&va, &vb)) in a.vertices.iter().zip(&b.vertices).enumerate() {
+                        if closed[k] {
+                            seam_pairs.push(([first_particle[a.piece] + va, first_particle[b.piece] + vb], turn));
+                        }
+                    }
+                }
+            }
             let shortest = match seam.fit {
                 SeamFit::Gathered | SeamFit::Eased => gaps
                     .iter()
@@ -607,13 +720,11 @@ pub fn build(
             };
             if fold != SeamFold::Free {
                 for (i, a) in sides.iter().enumerate() {
-                    for b in &sides[i + 1..] {
-                        for k in 0..a.particles.len().min(b.particles.len()) {
-                            if a.firm || b.firm {
-                                continue;
-                            }
-                            let (Some(na), Some(nb)) = (a.inward[k], b.inward[k]) else { continue };
-                            let (da, db) = (a.inward_rest[k], b.inward_rest[k]);
+                    for b in sides[i + 1..].iter().filter(|b| !a.firm && !b.firm) {
+                        let inward = a.inward.iter().zip(&b.inward);
+                        let rests = a.inward_rest.iter().zip(&b.inward_rest);
+                        for (((&na, &nb), (&da, &db)), &closed) in inward.zip(rests).zip(&closed) {
+                            let (true, Some(na), Some(nb)) = (closed, na, nb) else { continue };
                             let rest = match fold {
                                 SeamFold::Flat => da + db,
                                 _ => (da - db).abs() + a.thickness + b.thickness,
@@ -623,8 +734,35 @@ pub fn build(
                     }
                 }
             }
-            seam_draws.push(SeamDraw { index, kind, topstitch: seam.topstitch, pressed: seam.pressed_side(), sides });
+            let slider = (kind == SeamKind::Zipper).then(|| closed.iter().position(|&c| c).unwrap_or(closed.len()));
+            seam_draws.push(SeamDraw {
+                index,
+                kind,
+                topstitch: seam.topstitch,
+                pressed: seam.pressed_side(),
+                sides,
+                slider,
+            });
         }
+    }
+    // Broches y presillas: unen su par de puntos con la última etapa, como
+    // al terminar la prenda.
+    let mut fasteners = Vec::new();
+    let last_turn = pattern.sewing_turns(settings.sew_in_order).into_iter().max().unwrap_or(0);
+    for fastener in &pattern.fasteners {
+        let particle = |end: pattern::MarkRef| {
+            let index = pattern.pieces.iter().position(|p| p.id == end.piece)?;
+            let mesh = meshed.pieces[index].as_ref().ok()?;
+            let &(_, v) = mesh.marks.iter().find(|(id, _)| *id == end.mark)?;
+            Some((first_particle[index] + v, right_sign(pattern, &pattern.pieces[index])))
+        };
+        let (Some((a, sa)), Some((b, sb))) = (particle(fastener.ends[0]), particle(fastener.ends[1])) else {
+            continue;
+        };
+        if settings.sew && fastener.joins() {
+            seam_pairs.push(([a, b], last_turn));
+        }
+        fasteners.push(FastenerDraw { kind: fastener.kind, particles: [a, b], right_sign: [sa, sb] });
     }
     for &([a, b], turn) in &seam_pairs {
         cloth.add_seam_in_turn(a, b, turn);
@@ -632,7 +770,20 @@ pub fn build(
 
     let mut colliders = vec![Collider::ground(0.0)];
     colliders.extend(settings.obstacle.collider());
-    Scene { cloth, colliders, colors, back_colors, seam_draws, failed, crossed, seams, pieces, seam_pairs, turn_stages }
+    Scene {
+        cloth,
+        colliders,
+        colors,
+        back_colors,
+        seam_draws,
+        failed,
+        crossed,
+        seams,
+        pieces,
+        seam_pairs,
+        turn_stages,
+        fasteners,
+    }
 }
 
 /// Si dos lados de una costura, tal como quedan colocados, corren en
@@ -760,13 +911,73 @@ struct MountPlace {
     to: [f64; 2],
     /// 1 si va hacia fuera de la de debajo, −1 si hacia dentro.
     outward: f32,
+    /// Si la pieza es más larga que lo que separa sus costuras (un asa),
+    /// el arco en el que empieza entre ellas.
+    arch: Option<Arch>,
+}
+
+/// Un asa (o lo que se cose por sus dos extremos y mide más que lo que los
+/// separa) empieza en un arco de circunferencia que sale de la pieza de
+/// debajo: de largo, el de la pieza, y de cuerda, lo que separa sus
+/// costuras.
+#[derive(Clone, Copy, Debug)]
+struct Arch {
+    /// Eje de la pieza (unitario, en su patrón) y dónde empieza y acaba lo
+    /// cosido a lo largo de él, desde `MountPlace::from`.
+    axis: [f64; 2],
+    start: f64,
+    /// Radio del arco (mm) y ángulo que abarca (rad).
+    radius: f64,
+    angle: f64,
+}
+
+impl Arch {
+    /// Busca el arco de largo `length` cuya cuerda mide `chord`: el ángulo
+    /// θ con 2·sen(θ/2)/θ = chord/length.
+    fn new(axis: [f64; 2], start: f64, length: f64, chord: f64) -> Option<Self> {
+        let ratio = chord / length;
+        if !(0.0..0.95).contains(&ratio) {
+            return None;
+        }
+        let (mut lo, mut hi) = (1e-6, 2.0 * std::f64::consts::PI - 1e-6);
+        for _ in 0..60 {
+            let mid = (lo + hi) / 2.0;
+            if 2.0 * (mid / 2.0).sin() / mid > ratio { lo = mid } else { hi = mid }
+        }
+        let angle = (lo + hi) / 2.0;
+        Some(Self { axis, start, radius: length / angle, angle })
+    }
+
+    /// Para un punto a `u` mm del principio de lo cosido, a lo largo del
+    /// eje: dónde cae a lo largo de la cuerda (desde su centro) y a qué
+    /// altura sobre la pieza de debajo.
+    fn at(&self, u: f64) -> (f64, f64) {
+        let half = self.angle / 2.0;
+        let phi = (-half + u / self.radius).clamp(-half, half);
+        (self.radius * phi.sin(), self.radius * (phi.cos() - half.cos()))
+    }
 }
 
 impl MountPlace {
-    fn apply(&self, p: [f64; 2]) -> [f64; 2] {
+    /// Dónde cae un punto de la pieza sobre la de debajo (mm) y a qué
+    /// altura de más (m) por el arco.
+    fn apply(&self, p: [f64; 2]) -> ([f64; 2], f32) {
         let [c, s] = self.rotation;
-        let (x, y) = (p[0] - self.from[0], p[1] - self.from[1]);
-        [self.to[0] + c * x - s * y, self.to[1] + s * x + c * y]
+        let (mut x, mut y) = (p[0] - self.from[0], p[1] - self.from[1]);
+        let mut lift = 0.0;
+        if let Some(arch) = &self.arch {
+            // A lo largo del eje, el arco; de través, igual.
+            let [ax, ay] = arch.axis;
+            let (along, across) = (x * ax + y * ay, -x * ay + y * ax);
+            let u = along - arch.start;
+            let length = arch.radius * arch.angle;
+            let (on_chord, height) = arch.at(u.clamp(0.0, length));
+            // Lo que pase de los extremos cosidos sigue recto por la cuerda.
+            let along = on_chord + u.min(0.0) + (u - length).max(0.0);
+            (x, y) = (along * ax - across * ay, along * ay + across * ax);
+            lift = (height * 1e-3) as f32;
+        }
+        ([self.to[0] + c * x - s * y, self.to[1] + s * x + c * y], lift)
     }
 }
 
@@ -797,7 +1008,8 @@ fn mount_places(
         }
         let (rotation, from, to) = rigid_fit(&pairs);
         let outward = if pattern.pieces[host].right_side_in == mount.wrong_side { 1.0 } else { -1.0 };
-        out.insert(index, MountPlace { host, rotation, from, to, outward });
+        let arch = arch_of(&pairs, rotation, from, to);
+        out.insert(index, MountPlace { host, rotation, from, to, outward, arch });
     }
     // Fuera las cadenas que vuelven sobre sí mismas.
     let looping: Vec<usize> = out
@@ -819,6 +1031,32 @@ fn mount_places(
         out.remove(&i);
     }
     out
+}
+
+/// El arco de una pieza cosida por dos sitios que mide bastante más que lo
+/// que los separa (ver [`Arch`]): a lo largo de la dirección en la que más
+/// se reparten sus puntos cosidos.
+fn arch_of(pairs: &[([f64; 2], [f64; 2])], rotation: [f64; 2], from: [f64; 2], to: [f64; 2]) -> Option<Arch> {
+    let (mut xx, mut yy, mut xy) = (0.0, 0.0, 0.0);
+    for (a, _) in pairs {
+        let (x, y) = (a[0] - from[0], a[1] - from[1]);
+        (xx, yy, xy) = (xx + x * x, yy + y * y, xy + x * y);
+    }
+    let theta = 0.5 * (2.0 * xy).atan2(xx - yy);
+    let axis = [theta.cos(), theta.sin()];
+    let [c, s] = rotation;
+    let host_axis = [c * axis[0] - s * axis[1], s * axis[0] + c * axis[1]];
+    let span = |points: &mut dyn Iterator<Item = f64>| {
+        points.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| (lo.min(v), hi.max(v)))
+    };
+    let (start, end) = span(&mut pairs.iter().map(|(a, _)| (a[0] - from[0]) * axis[0] + (a[1] - from[1]) * axis[1]));
+    let (h0, h1) = span(&mut pairs.iter().map(|(_, b)| (b[0] - to[0]) * host_axis[0] + (b[1] - to[1]) * host_axis[1]));
+    let (length, chord) = (end - start, h1 - h0);
+    // Solo si sobra bastante: un bolsillo algo embebido sigue plano.
+    if chord < 10.0 || length < 1.2 * chord {
+        return None;
+    }
+    Arch::new(axis, start, length, chord)
 }
 
 /// Giro y traslación que mejor llevan los primeros puntos de cada par sobre
@@ -849,8 +1087,9 @@ fn rigid_fit(pairs: &[([f64; 2], [f64; 2])]) -> ([f64; 2], [f64; 2], [f64; 2]) {
 fn resolve_mount(mounts: &HashMap<usize, MountPlace>, index: usize, p: [f64; 2]) -> (usize, [f64; 2], f32) {
     let (mut index, mut p, mut offset) = (index, p, 0.0);
     while let Some(m) = mounts.get(&index) {
-        p = m.apply(p);
-        offset += m.outward * MOUNT_GAP;
+        let (q, lift) = m.apply(p);
+        p = q;
+        offset += m.outward * (MOUNT_GAP + lift);
         index = m.host;
     }
     (index, p, offset)
@@ -1320,7 +1559,7 @@ fn run(rx: Receiver<Command>, shared: Arc<Mutex<Shared>>) {
 mod tests {
     use super::*;
     use crate::examples;
-    use pattern::{PieceId, Point, SeamSide};
+    use pattern::{FastenerKind, PieceId, Point, SeamSide};
 
     /// Dos paneles tumbados y cosidos por un borde con una costura de tipo
     /// `kind`: el de la izquierda (20 cm) se fija y el de la derecha (`width`
@@ -1406,6 +1645,40 @@ mod tests {
         eprintln!("cinturilla: {gathered:.3} m fruncida, {stretched:.3} m estirada");
         assert!(gathered < 0.22, "fruncida: la cinturilla mide {gathered} m");
         assert!(stretched > gathered + 0.02, "estirada: {stretched} m, fruncida {gathered} m");
+    }
+
+    /// Un puño con un doblez planchado a 180° empieza doblado por la mitad y
+    /// así se queda al caer en la mesa, sin atravesarse; con una bisagra
+    /// libre, cae desdoblándose.
+    #[test]
+    fn pressed_folds_start_folded_and_stay() {
+        let depth = |pressed: bool| {
+            let mut pattern = Pattern::new("puño");
+            let cuff = pattern.add_rect("puño", Point::ZERO, 300.0, 120.0);
+            let fold = pattern.add_fold(cuff, Point::new(0.0, 60.0), Point::new(300.0, 60.0)).unwrap();
+            let piece = pattern.piece_mut(cuff).unwrap();
+            let k = piece.line_index(fold).unwrap();
+            piece.lines[k].fold.as_mut().unwrap().pressed = pressed;
+            let settings = SceneSettings { placement: Placement::Drop, ..Default::default() };
+            let mut scene = build(&pattern, &settings, |_| egui::Color32::WHITE);
+            let colliders = scene.colliders.clone();
+            let span = |scene: &Scene| {
+                let z = scene.cloth.positions.iter().map(|p| p.z);
+                z.clone().fold(f32::NEG_INFINITY, f32::max) - z.fold(f32::INFINITY, f32::min)
+            };
+            let start = span(&scene);
+            for _ in 0..240 {
+                scene.cloth.step(FRAME, &settings.params(), &colliders);
+            }
+            assert!(scene.cloth.positions.iter().all(|p| p.is_finite()));
+            let crossings = scene.cloth.count_crossings();
+            (start, span(&scene), crossings)
+        };
+        let (start, end, crossings) = depth(true);
+        eprintln!("planchado: de {start:.3} m a {end:.3} m de fondo, {crossings} cruces");
+        assert!(start < 0.07, "empieza doblado: {start}");
+        assert!(end < 0.075, "sigue doblado: {end}");
+        assert_eq!(crossings, 0);
     }
 
     /// Una costura simple hace de bisagra y el panel suelto cuelga junto a
@@ -1740,6 +2013,68 @@ mod tests {
             let crossings = cloth.count_crossings();
             assert!(crossings < 5, "{name}: {crossings} aristas cruzadas");
         }
+    }
+
+    /// Abierta a medias, la cremallera del bolso se queda abierta del
+    /// tirador al principio y cerrada del tirador al final (con un poco de
+    /// relleno, para que la parte abierta se separe); las asas, que
+    /// empiezan en arco, se cosen a sus líneas.
+    #[test]
+    fn zippers_open_and_close() {
+        let mut pattern = examples::zipper_bag();
+        let teeth = pattern.seams.iter().position(|s| s.kind == SeamKind::Zipper).unwrap();
+        pattern.seams[teeth].open = 0.5;
+        let settings = SceneSettings { mesh_size: 30.0, ..Default::default() };
+        let mut scene = build(&pattern, &settings, |_| egui::Color32::GRAY);
+        let params = SimParams { pressure: 10.0, ..settings.params() };
+        for _ in 0..360 {
+            scene.cloth.step(FRAME, &params, &scene.colliders);
+        }
+        let draw = scene.seam_draws.iter().find(|d| d.index == teeth).unwrap();
+        let (a, b) = (&draw.sides[0].particles, &draw.sides[1].particles);
+        let at = |v: u32| scene.cloth.positions[v as usize];
+        let gaps: Vec<f32> = a.iter().zip(b).map(|(&p, &q)| at(p).distance(at(q))).collect();
+        let slider = draw.slider.unwrap();
+        assert!(slider > 0 && slider < gaps.len(), "tirador en {slider} de {}", gaps.len());
+        let open = gaps[..slider - 1].iter().copied().fold(0.0, f32::max);
+        let closed = gaps[slider..].iter().copied().fold(0.0, f32::max);
+        assert!(closed < 5e-3, "la parte cerrada se separa {closed} m");
+        assert!(open > 0.01, "la parte abierta no se abre ({open} m)");
+        assert!(!scene.cloth.is_sewing(), "sigue cosiendo");
+        assert!(scene.cloth.max_seam_gap() < 5e-3, "costura abierta {}", scene.cloth.max_seam_gap());
+    }
+
+    /// Un broche cerrado junta sus dos puntos (aquí, una solapa que cae
+    /// sobre el panel); abierto, los deja sueltos.
+    #[test]
+    fn closed_snaps_join_their_points() {
+        let mut pattern = Pattern::new("Solapa con broche");
+        let panel = pattern.add_rect("Panel", Point::ZERO, 200.0, 200.0);
+        let flap = pattern.add_rect("Solapa", Point::new(250.0, 0.0), 200.0, 100.0);
+        let edge = |p: &Pattern, id: PieceId, i: usize| p.piece(id).unwrap().edges()[i].id;
+        let sides = vec![
+            SeamSide::new(panel, edge(&pattern, panel, 0), false),
+            SeamSide::new(flap, edge(&pattern, flap, 0), false),
+        ];
+        pattern.add_seam("Arriba", sides).unwrap();
+        let snap = pattern
+            .add_fastener(FastenerKind::Snap, (panel, Point::new(100.0, 160.0)), (flap, Point::new(350.0, 80.0)))
+            .unwrap();
+        let settings = SceneSettings { mesh_size: 20.0, ..Default::default() };
+        let gap = |pattern: &Pattern| {
+            let mut scene = build(pattern, &settings, |_| egui::Color32::GRAY);
+            assert_eq!(scene.fasteners.len(), 1);
+            for _ in 0..240 {
+                scene.cloth.step(FRAME, &settings.params(), &scene.colliders);
+            }
+            let [a, b] = scene.fasteners[0].particles;
+            scene.cloth.positions[a as usize].distance(scene.cloth.positions[b as usize])
+        };
+        let closed = gap(&pattern);
+        assert!(closed < 5e-3, "el broche cerrado deja {closed} m");
+        pattern.fastener_mut(snap).unwrap().open = true;
+        let open = gap(&pattern);
+        assert!(open > 0.03, "el broche abierto se ha cerrado ({open} m)");
     }
 
     /// Sin coser, cada pieza cuelga por separado de su borde de arriba.

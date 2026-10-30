@@ -111,6 +111,7 @@ struct Loaded {
     seams: usize,
     pieces: Vec<ScenePiece>,
     turn_stages: Vec<usize>,
+    fasteners: Vec<scene::FastenerDraw>,
 }
 
 pub struct View3D {
@@ -231,6 +232,7 @@ impl View3D {
             seams: scene.seams,
             pieces: scene.pieces,
             turn_stages: scene.turn_stages,
+            fasteners: scene.fasteners,
         });
         let params = simulator::SimParams { pressure: pattern.pressure as f32, ..self.settings.params() };
         self.runner.load(scene.cloth, scene.colliders, params, live);
@@ -585,6 +587,7 @@ impl View3D {
                     seam_color,
                     &mut mesh,
                 );
+                seams::fasteners(&loaded.fasteners, &self.positions, &normals, &mut mesh);
                 renderer.set_seams(&mesh.vertices, &mesh.indices);
                 self.version = version;
                 self.drawn_highlight = self.highlight_seams;

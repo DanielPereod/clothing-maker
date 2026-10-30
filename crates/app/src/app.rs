@@ -2,6 +2,7 @@
 //! inspector, vistas 2D y 3D, ficheros y deshacer.
 
 mod assembly;
+mod notions;
 mod panels;
 mod textiles;
 
@@ -57,6 +58,8 @@ pub struct ClothingMakerApp {
     title: String,
     /// Tela de la biblioteca que hay que desplegar en el inspector.
     open_textile: Option<pattern::TextileId>,
+    /// La fornitura que se va a crear, con la ventana de sus medidas abierta.
+    notion_dialog: Option<notions::NotionDialog>,
 }
 
 impl ClothingMakerApp {
@@ -79,6 +82,7 @@ impl ClothingMakerApp {
             allow_close: false,
             title: String::new(),
             open_textile: None,
+            notion_dialog: None,
         };
         if let Some(path) = file {
             app.load_from(path);
@@ -234,8 +238,8 @@ impl ClothingMakerApp {
         }
         let tool_fits = match self.editor.tool {
             Tool::Select => true,
-            Tool::Pen | Tool::Rect | Tool::Line => stage == Stage::Pattern,
-            Tool::Seam | Tool::Notch => stage == Stage::Assembly,
+            Tool::Pen | Tool::Rect | Tool::Line | Tool::Fold => stage == Stage::Pattern,
+            Tool::Seam | Tool::Notch | Tool::Fastener => stage == Stage::Assembly,
         };
         if !tool_fits {
             self.editor.set_tool(Tool::Select);
@@ -258,8 +262,8 @@ impl ClothingMakerApp {
     /// Montaje, se elijan desde donde se elijan (también con su tecla).
     fn follow_tool(&mut self) {
         let stage = match self.editor.tool {
-            Tool::Pen | Tool::Rect | Tool::Line => Stage::Pattern,
-            Tool::Seam | Tool::Notch => Stage::Assembly,
+            Tool::Pen | Tool::Rect | Tool::Line | Tool::Fold => Stage::Pattern,
+            Tool::Seam | Tool::Notch | Tool::Fastener => Stage::Assembly,
             Tool::Select => return,
         };
         if self.stage != stage {
@@ -446,6 +450,7 @@ impl ClothingMakerApp {
                 self.tool_button(ui, Tool::Pen, Icon::Pen, "Pluma", "P");
                 self.tool_button(ui, Tool::Rect, Icon::Rect, "Rectángulo", "R");
                 self.tool_button(ui, Tool::Line, Icon::InnerLine, "Línea", "I");
+                self.tool_button(ui, Tool::Fold, Icon::Fold, "Doblez", "D");
             }
             Part::Menu => {
                 if ui.button("Rectángulo de 30 × 40 cm en el centro").clicked() {
@@ -733,7 +738,9 @@ impl ClothingMakerApp {
             self.tool_button(ui, Tool::Select, Icon::Select, "Seleccionar", "V");
             self.tool_button(ui, Tool::Seam, Icon::Seam, "Costura", "S");
             self.tool_button(ui, Tool::Notch, Icon::Notch, "Piquete", "N");
+            self.tool_button(ui, Tool::Fastener, Icon::Snap, "Broche", "B");
         });
+        self.notions_ribbon(ui);
         let selected = match self.editor.selection {
             Selection::Seam(id) => self.pattern.seams.iter().position(|s| s.id == id),
             _ => None,
@@ -762,7 +769,8 @@ impl ClothingMakerApp {
                 });
             }
             Part::Menu => {
-                let kind = selected.map(|k| self.pattern.seams[k].kind);
+                // Una cremallera es cosa de sus cintas, no de todas las costuras.
+                let kind = selected.map(|k| self.pattern.seams[k].kind).filter(|&k| k != SeamKind::Zipper);
                 let label = kind.map_or("Aplica un tipo a todas las costuras".to_owned(), |k| {
                     format!("Hacer todas las costuras de tipo «{}»", k.label())
                 });
@@ -1090,6 +1098,7 @@ impl eframe::App for ClothingMakerApp {
         });
 
         self.unsaved_dialog(&ctx);
+        self.notion_window(&ctx);
 
         let busy = ctx.input(|i| i.pointer.any_down()) || ctx.memory(|m| m.focused().is_some());
         if !busy {

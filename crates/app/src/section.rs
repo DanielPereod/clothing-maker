@@ -76,6 +76,10 @@ fn plies(kind: SeamKind, open: bool) -> (Vec<Ply>, Vec<(f32, f32, f32)>) {
             ],
             vec![(34.0, -2.0, 4.0)],
         ),
+        // Las dos cintas a tope; los dientes se dibujan aparte.
+        SeamKind::Zipper => {
+            (vec![ply(0, 1.0, &[(-90.0, 0.0), (-4.0, 0.0)]), ply(1, -1.0, &[(90.0, 0.0), (4.0, 0.0)])], vec![])
+        }
     }
 }
 
@@ -131,6 +135,15 @@ pub fn show(ui: &mut Ui, kind: SeamKind, pressed: Option<usize>, topstitch: Tops
         let x = side * (6.0 + 8.0 * k as f32);
         let pts = [at((x, -2.0)), at((x, depth + 2.0))];
         painter.extend(Shape::dashed_line(&pts, Stroke::new(1.6, thread), 3.0, 2.0));
+    }
+    if kind == SeamKind::Zipper {
+        // Los dientes, que encajan unos en otros entre las cintas.
+        let teeth = Color32::from_gray(190);
+        for k in 0..2 {
+            let x = if k == 0 { -10.0 } else { 0.0 };
+            let r = egui::Rect::from_two_pos(at((x, -4.0)), at((x + 10.0, 4.0)));
+            painter.rect_filled(r, 1.5, teeth.gamma_multiply(if k == 0 { 1.0 } else { 0.8 }));
+        }
     }
     if kind == SeamKind::Overlocked {
         // El remallado: zigzag sobre los cantos del margen.

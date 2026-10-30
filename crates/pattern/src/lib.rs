@@ -9,6 +9,7 @@
 //! eje Y hacia abajo (igual que la pantalla).
 
 mod io;
+mod notions;
 mod piece;
 mod seam;
 pub mod textile;
@@ -16,8 +17,10 @@ pub mod textile;
 pub use io::{FORMAT_ID, FORMAT_VERSION, PatternFile, PatternIoError};
 use kurbo::{ParamCurve, ParamCurveArclen};
 pub use kurbo::{Point, Vec2};
+pub use notions::{ELASTIC_RATIO, Notion, NotionParts, ZIPPER_TAPE_WIDTH};
 pub use piece::{
-    Arrangement, BodyZone, Edge, EdgeKind, InnerLine, Mount, Notch, Piece, layer_label, polygon_self_intersects,
+    Arrangement, BodyZone, Edge, EdgeKind, FOLD_SNAP, Fold, InnerLine, Mark, Mount, Notch, Piece, layer_label,
+    polygon_self_intersects,
 };
 pub use seam::{AllowanceSide, DEFAULT_SEAM_ALLOWANCE, DEFAULT_STITCH_LENGTH, SeamFit, SeamFold, SeamKind, Topstitch};
 pub use textile::{Textile, TextileId};
@@ -45,6 +48,82 @@ pub struct SeamId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct StepId(pub u64);
+
+/// Identificador estable de un punto marcado en una pieza.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MarkId(pub u64);
+
+/// Identificador estable de un broche o una presilla.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FastenerId(pub u64);
+
+/// Qué une dos puntos de la prenda.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FastenerKind {
+    /// Un broche de presión: se abre y se cierra.
+    #[default]
+    Snap,
+    /// Una presilla: unas puntadas apretadas que fijan dos capas en un
+    /// punto (los extremos de un asa, el forro al fondo del exterior).
+    BarTack,
+}
+
+impl FastenerKind {
+    pub const ALL: [FastenerKind; 2] = [FastenerKind::Snap, FastenerKind::BarTack];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FastenerKind::Snap => "Broche",
+            FastenerKind::BarTack => "Presilla",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            FastenerKind::Snap => "Un broche de presión entre dos puntos: se abre y se cierra (una solapa, un cierre).",
+            FastenerKind::BarTack => {
+                "Puntadas que fijan dos puntos para siempre: el forro al exterior, el extremo de un asa, una \
+                 trabilla."
+            }
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        *self == FastenerKind::default()
+    }
+}
+
+/// Un extremo de un broche o una presilla: un punto marcado de una pieza.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkRef {
+    pub piece: PieceId,
+    pub mark: MarkId,
+}
+
+/// Un broche o una presilla: une dos puntos marcados (de dos piezas o de
+/// la misma) en uno solo al montar la prenda.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Fastener {
+    pub id: FastenerId,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "FastenerKind::is_default")]
+    pub kind: FastenerKind,
+    pub ends: [MarkRef; 2],
+    /// Un broche abierto no une nada. Una presilla siempre une.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open: bool,
+}
+
+impl Fastener {
+    /// Si une sus dos puntos ahora.
+    pub fn joins(&self) -> bool {
+        self.kind == FastenerKind::BarTack || !self.open
+    }
+}
 
 /// Un lado de una costura: una arista de una pieza (o una línea interior),
 /// varias seguidas del contorno, o un tramo de ellas.
@@ -126,6 +205,10 @@ pub struct Seam {
     /// Etapa de montaje en la que se cose. Sin etapa, va con las primeras.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<StepId>,
+    /// En una cremallera, la parte abierta (0..1 de su largo) desde el
+    /// principio de la costura, donde queda el tirador: 0 = cerrada.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub open: f64,
 }
 
 /// Una etapa de montaje: costuras que se cosen a la vez («Exterior»,
@@ -168,7 +251,14 @@ impl Seam {
             stitch_length: DEFAULT_STITCH_LENGTH,
             fit: SeamFit::default(),
             step: None,
+            open: 0.0,
         }
+    }
+
+    /// Si el punto a `t` (0..1) de su largo está abierto: en una cremallera,
+    /// lo que queda entre el principio y el tirador.
+    pub fn is_open_at(&self, t: f64) -> bool {
+        self.kind == SeamKind::Zipper && self.open > 0.0 && t <= self.open + 1e-9
     }
 
     /// Cambia el tipo de costura y pone los pespuntes y el planchado que
@@ -200,6 +290,9 @@ pub struct Pattern {
     /// Etapas de montaje, en el orden en que se cosen.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<AssemblyStep>,
+    /// Broches y presillas: se cierran con la última etapa.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fasteners: Vec<Fastener>,
     /// Es una prenda que se viste sobre el maniquí (si no, un objeto suelto
     /// como una bolsa). La vista 3D pone o quita el maniquí según esto.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -268,9 +361,15 @@ pub enum Issue {
     LineOutside { piece: PieceId, line: EdgeId },
     /// Dos líneas interiores de la pieza se cruzan.
     LinesCross { piece: PieceId, line: EdgeId },
+    /// Un doblez no va de un vértice del contorno a otro por dentro de la
+    /// tela, así que no parte la pieza en dos.
+    FoldNotAcross { piece: PieceId, line: EdgeId },
     /// Un agujero no está del todo dentro de su pieza (o su pieza no existe
     /// o es otro agujero), o se cruza con otro agujero.
     HoleOutside { hole: PieceId },
+    /// Un extremo de un broche o una presilla no está en la tela de su
+    /// pieza (o ya no existe).
+    FastenerOutside { fastener: FastenerId },
 }
 
 /// Distancia mínima (mm) de una línea interior al borde de la tela.
@@ -290,6 +389,7 @@ impl Pattern {
             pieces: Vec::new(),
             seams: Vec::new(),
             steps: Vec::new(),
+            fasteners: Vec::new(),
             on_avatar: false,
             pressure: 0.0,
             textiles: Textile::library(),
@@ -313,11 +413,15 @@ impl Pattern {
 
     fn max_used_id(&self) -> u64 {
         let pieces = self.pieces.iter().flat_map(|p| {
-            std::iter::once(p.id.0).chain(p.edges().iter().map(|e| e.id.0)).chain(p.lines.iter().map(|l| l.id.0))
+            std::iter::once(p.id.0)
+                .chain(p.edges().iter().map(|e| e.id.0))
+                .chain(p.lines.iter().map(|l| l.id.0))
+                .chain(p.marks.iter().map(|m| m.id.0))
         });
         let seams = self.seams.iter().map(|s| s.id.0);
         let steps = self.steps.iter().map(|s| s.id.0);
-        pieces.chain(seams).chain(steps).max().unwrap_or(0)
+        let fasteners = self.fasteners.iter().map(|f| f.id.0);
+        pieces.chain(seams).chain(steps).chain(fasteners).max().unwrap_or(0)
     }
 
     /// Añade una pieza poligonal (todas las aristas rectas).
@@ -466,6 +570,72 @@ impl Pattern {
         Some(id)
     }
 
+    /// Añade un doblez recto a una pieza, de un punto de su contorno a otro
+    /// (los más cercanos a `from` y `to`, o el vértice que haya a menos de
+    /// 1 mm): parte las aristas por ahí si hace falta. La solapa es la parte
+    /// más pequeña. `None` (y el patrón sin tocar) si los dos puntos caen en
+    /// la misma arista o en vértices contiguos.
+    pub fn add_fold(&mut self, piece: PieceId, from: Point, to: Point) -> Option<EdgeId> {
+        let mut draft = self.clone();
+        let id = draft.add_fold_in_place(piece, from, to)?;
+        *self = draft;
+        Some(id)
+    }
+
+    fn add_fold_in_place(&mut self, piece: PieceId, from: Point, to: Point) -> Option<EdgeId> {
+        let (ia, ..) = self.piece(piece)?.nearest_edge(from)?;
+        let (ib, ..) = self.piece(piece)?.nearest_edge(to)?;
+        if ia == ib {
+            return None;
+        }
+        let a = self.outline_point(piece, from)?;
+        let b = self.outline_point(piece, to)?;
+        let p = self.piece(piece)?;
+        let n = p.len();
+        let index = |q: Point| p.vertices().iter().position(|v| v.distance(q) < FOLD_SNAP);
+        let (ia, ib) = (index(a)?, index(b)?);
+        if ia == ib || (ia + 1) % n == ib || (ib + 1) % n == ia {
+            return None;
+        }
+        // Las dos partes del contorno, de a a b y de b a a.
+        let part = |from: usize, to: usize| -> Vec<Point> {
+            let count = (to + n - from) % n + 1;
+            (0..count).map(|k| p.vertices()[(from + k) % n]).collect()
+        };
+        let area = |ring: &[Point]| {
+            (0..ring.len()).map(|k| ring[k].to_vec2().cross(ring[(k + 1) % ring.len()].to_vec2())).sum::<f64>().abs()
+        };
+        let (one, other) = (part(ia, ib), part(ib, ia));
+        let small = if area(&one) <= area(&other) { one } else { other };
+        // El punto de la parte pequeña más lejos de la línea.
+        let off_line = |q: &Point| (b - a).cross(*q - a).abs();
+        let probe = *small[1..small.len() - 1].iter().max_by(|x, y| off_line(x).total_cmp(&off_line(y)))?;
+        let id = EdgeId(self.alloc_id());
+        let mut line = InnerLine { fold: Some(Fold::default()), ..InnerLine::line(id, a, b) };
+        if !line.in_flap(probe) {
+            line.fold = Some(Fold { flip: true, ..Fold::default() });
+        }
+        self.piece_mut(piece)?.lines.push(line);
+        Some(id)
+    }
+
+    /// El punto del contorno de una pieza más cercano a `p`: un vértice si
+    /// hay uno a menos de 1 mm, o uno nuevo partiendo la arista.
+    fn outline_point(&mut self, piece: PieceId, p: Point) -> Option<Point> {
+        const SNAP: f64 = 1.0;
+        let shape = self.piece(piece)?;
+        let (i, t, _) = shape.nearest_edge(p)?;
+        let at = shape.segment(i).eval(t);
+        let (a, b) = shape.edge_endpoints(i);
+        for v in [shape.vertices()[a], shape.vertices()[b]] {
+            if v.distance(at) < SNAP {
+                return Some(v);
+            }
+        }
+        let v = self.split_edge(piece, i, t)?;
+        Some(self.piece(piece)?.vertices()[v])
+    }
+
     /// Quita una línea interior y los lados de costura que la usaban.
     pub fn remove_line(&mut self, piece: PieceId, line: EdgeId) -> bool {
         let Some(p) = self.piece_mut(piece) else { return false };
@@ -512,7 +682,55 @@ impl Pattern {
                 other.on = None;
             }
         }
+        self.fasteners.retain(|f| f.ends.iter().all(|e| !gone.contains(&e.piece)));
         Some(piece)
+    }
+
+    /// Un broche o una presilla entre dos puntos (de la misma pieza o de
+    /// dos): marca los puntos en sus piezas. `None` si no caen en la tela.
+    pub fn add_fastener(&mut self, kind: FastenerKind, a: (PieceId, Point), b: (PieceId, Point)) -> Option<FastenerId> {
+        for (piece, at) in [a, b] {
+            let p = self.piece(piece)?;
+            if p.is_hole() || !self.in_fabric(p, at, 0.0) {
+                return None;
+            }
+        }
+        let ends = [a, b].map(|(piece, at)| {
+            let mark = MarkId(self.alloc_id());
+            if let Some(p) = self.piece_mut(piece) {
+                p.marks.push(Mark { id: mark, at });
+            }
+            MarkRef { piece, mark }
+        });
+        let id = FastenerId(self.alloc_id());
+        let name = format!("{} {}", kind.label(), self.fasteners.len() + 1);
+        self.fasteners.push(Fastener { id, name, kind, ends, open: false });
+        Some(id)
+    }
+
+    pub fn fastener(&self, id: FastenerId) -> Option<&Fastener> {
+        self.fasteners.iter().find(|f| f.id == id)
+    }
+
+    pub fn fastener_mut(&mut self, id: FastenerId) -> Option<&mut Fastener> {
+        self.fasteners.iter_mut().find(|f| f.id == id)
+    }
+
+    /// Quita un broche o una presilla y sus puntos marcados.
+    pub fn remove_fastener(&mut self, id: FastenerId) -> Option<Fastener> {
+        let idx = self.fasteners.iter().position(|f| f.id == id)?;
+        let fastener = self.fasteners.remove(idx);
+        for end in fastener.ends {
+            if let Some(p) = self.piece_mut(end.piece) {
+                p.marks.retain(|m| m.id != end.mark);
+            }
+        }
+        Some(fastener)
+    }
+
+    /// Dónde está un extremo de un broche o una presilla.
+    pub fn mark_point(&self, end: MarkRef) -> Option<Point> {
+        self.piece(end.piece)?.marks.iter().find(|m| m.id == end.mark).map(|m| m.at)
     }
 
     /// Parte la arista `edge_index` de la pieza en el parámetro `t` (0..1),
@@ -796,7 +1014,15 @@ impl Pattern {
             }
             let samples: Vec<Vec<Point>> = piece.lines.iter().map(line_samples).collect();
             for (k, line) in piece.lines.iter().enumerate() {
-                if !samples[k].iter().all(|&p| self.in_fabric(piece, p, LINE_MARGIN)) {
+                if line.fold.is_some() {
+                    // Va de borde a borde: por dentro tiene que ir por la tela.
+                    let inner = &samples[k][1..samples[k].len() - 1];
+                    if !piece.fold_spans(line) || !inner.iter().all(|&p| self.in_fabric(piece, p, 0.0)) {
+                        issues.push(Issue::FoldNotAcross { piece: piece.id, line: line.id });
+                    } else if samples[..k].iter().any(|other| polylines_cross(&samples[k], other)) {
+                        issues.push(Issue::LinesCross { piece: piece.id, line: line.id });
+                    }
+                } else if !samples[k].iter().all(|&p| self.in_fabric(piece, p, LINE_MARGIN)) {
                     issues.push(Issue::LineOutside { piece: piece.id, line: line.id });
                 } else if samples[..k].iter().any(|other| polylines_cross(&samples[k], other)) {
                     issues.push(Issue::LinesCross { piece: piece.id, line: line.id });
@@ -829,6 +1055,15 @@ impl Pattern {
                     }
                 }
                 Some(_) => {}
+            }
+        }
+        for fastener in &self.fasteners {
+            let inside = fastener.ends.iter().all(|&end| {
+                let (Some(piece), Some(at)) = (self.piece(end.piece), self.mark_point(end)) else { return false };
+                self.in_fabric(piece, at, 0.0)
+            });
+            if !inside {
+                issues.push(Issue::FastenerOutside { fastener: fastener.id });
             }
         }
         issues
@@ -1277,6 +1512,87 @@ mod tests {
 
     /// Las etapas se cosen en orden; sin etapa, primero. Coser de una en
     /// una separa las costuras de cada etapa.
+    /// Un doblez parte las aristas por donde empieza y acaba, dobla la parte
+    /// pequeña, sigue a sus vértices y cambia de lado al reflejar la pieza.
+    #[test]
+    fn folds_go_across_the_piece() {
+        let mut p = Pattern::new("t");
+        let cuff = p.add_rect("puño", Point::ZERO, 300.0, 120.0);
+        // Un poco por encima de la mitad: la parte de arriba es más pequeña.
+        let fold = p.add_fold(cuff, Point::new(-2.0, 50.0), Point::new(303.0, 50.0)).unwrap();
+        let piece = p.piece(cuff).unwrap();
+        assert_eq!(piece.len(), 6, "parte las dos aristas de los lados");
+        let line = piece.lines[piece.line_index(fold).unwrap()];
+        assert!(piece.fold_spans(&line));
+        assert!(line.in_flap(Point::new(150.0, 10.0)) && !line.in_flap(Point::new(150.0, 100.0)));
+        assert!(p.validate().is_empty(), "{:?}", p.validate());
+        // En la misma arista no hay doblez.
+        assert!(p.add_fold(cuff, Point::new(10.0, -1.0), Point::new(200.0, 1.0)).is_none());
+        // Ni hasta la esquina de al lado, y sin dejar la arista partida.
+        let before = p.clone();
+        assert!(p.add_fold(cuff, Point::new(150.0, 0.0), Point::new(0.0, 0.0)).is_none());
+        assert_eq!(p, before);
+
+        // Al mover el vértice, el doblez lo sigue.
+        let piece = p.piece_mut(cuff).unwrap();
+        let v = piece.vertices().iter().position(|v| v.distance(Point::new(300.0, 50.0)) < 1e-6).unwrap();
+        piece.set_vertex(v, Point::new(310.0, 60.0));
+        let line = piece.lines[0];
+        assert_eq!(line.to, Point::new(310.0, 60.0));
+        assert!(p.validate().is_empty(), "{:?}", p.validate());
+
+        // Reflejada, la solapa sigue siendo la parte de arriba.
+        let mirrored = p.mirror_piece(cuff).unwrap();
+        let line = p.piece(mirrored).unwrap().lines[0];
+        let top = p.piece(mirrored).unwrap().vertices().iter().map(|v| v.y).fold(f64::INFINITY, f64::min);
+        let center_x = (line.from.x + line.to.x) / 2.0;
+        assert!(line.in_flap(Point::new(center_x, top + 5.0)));
+
+        // Un doblez suelto por dentro de la pieza no vale.
+        let piece = p.piece_mut(cuff).unwrap();
+        piece.lines[0].from = Point::new(20.0, 50.0);
+        assert!(p.validate().contains(&Issue::FoldNotAcross { piece: cuff, line: fold }), "{:?}", p.validate());
+    }
+
+    #[test]
+    fn fasteners_mark_their_points_and_move_with_the_piece() {
+        let mut p = Pattern::new("t");
+        let flap = p.add_rect("solapa", Point::ZERO, 200.0, 100.0);
+        let body = p.add_rect("cuerpo", Point::new(0.0, 150.0), 200.0, 200.0);
+        // Fuera de la tela no se puede.
+        assert!(
+            p.add_fastener(FastenerKind::Snap, (flap, Point::new(-5.0, 50.0)), (body, Point::new(100.0, 200.0)))
+                .is_none()
+        );
+        assert!(p.pieces.iter().all(|piece| piece.marks.is_empty()));
+        let snap = p
+            .add_fastener(FastenerKind::Snap, (flap, Point::new(100.0, 80.0)), (body, Point::new(100.0, 200.0)))
+            .unwrap();
+        assert!(p.validate().is_empty(), "{:?}", p.validate());
+        assert!(p.fastener(snap).unwrap().joins());
+        p.fastener_mut(snap).unwrap().open = true;
+        assert!(!p.fastener(snap).unwrap().joins());
+        // Se mueve con su pieza.
+        p.piece_mut(flap).unwrap().translate(Vec2::new(10.0, 0.0));
+        let end = p.fastener(snap).unwrap().ends[0];
+        assert_eq!(p.mark_point(end), Some(Point::new(110.0, 80.0)));
+        // Si la pieza encoge y el punto queda fuera, se avisa.
+        let piece = p.piece_mut(flap).unwrap();
+        for v in 2..4 {
+            let at = piece.vertices()[v];
+            piece.set_vertex(v, Point::new(at.x, 50.0));
+        }
+        assert_eq!(p.validate(), [Issue::FastenerOutside { fastener: snap }]);
+        // Al quitarlo, se van sus puntos; al quitar una pieza, sus broches.
+        p.remove_fastener(snap);
+        assert!(p.pieces.iter().all(|piece| piece.marks.is_empty()));
+        let tack =
+            p.add_fastener(FastenerKind::BarTack, (body, Point::new(50.0, 200.0)), (body, Point::new(150.0, 200.0)));
+        assert!(tack.is_some());
+        p.remove_piece(body);
+        assert!(p.fasteners.is_empty());
+    }
+
     #[test]
     fn steps_set_the_sewing_turns() {
         let mut p = Pattern::new("t");

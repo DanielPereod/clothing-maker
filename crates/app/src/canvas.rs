@@ -9,7 +9,9 @@ use eframe::egui::{
 };
 use kurbo::{ParamCurve, ParamCurveArclen, ParamCurveDeriv, ParamCurveNearest, PathSeg};
 use mesher::{Mesh2D, MeshOptions};
-use pattern::{EdgeId, InnerLine, Pattern, Piece, PieceId, Point, SeamId, SeamSide, TextileId, Vec2};
+use pattern::{
+    EdgeId, FastenerId, FastenerKind, InnerLine, Pattern, Piece, PieceId, Point, SeamId, SeamSide, TextileId, Vec2,
+};
 
 /// Distancia (px) a la que se "engancha" el cursor a puntos y aristas.
 const HIT_PX: f64 = 8.0;
@@ -26,6 +28,10 @@ pub enum Tool {
     Seam,
     /// Piquete: una marca en el borde para casar los lados de una costura.
     Notch,
+    /// Doblez: una línea de un borde a otro por la que se dobla la tela.
+    Fold,
+    /// Broche o presilla: une dos puntos de la tela.
+    Fastener,
 }
 
 impl Tool {
@@ -46,6 +52,12 @@ impl Tool {
             }
             Tool::Notch => {
                 "Clic en el borde para poner un piquete, o quitar el que hay · los lados de una costura con los mismos piquetes casan por ellos"
+            }
+            Tool::Fold => {
+                "Arrastra de un borde de la pieza a otro: la tela se dobla por ahí (un puño, un dobladillo, una solapa) · se dobla la parte más pequeña"
+            }
+            Tool::Fastener => {
+                "Clic en un punto de la tela y luego en el punto con el que se une: un broche que se abre y se cierra o una presilla fija · Esc: cancelar"
             }
         }
     }
@@ -89,12 +101,14 @@ pub enum Selection {
     /// Una línea interior (pieza, índice en `Piece::lines`).
     Line(PieceId, usize),
     Seam(SeamId),
+    /// Un broche o una presilla.
+    Fastener(FastenerId),
 }
 
 impl Selection {
     pub fn piece(self) -> Option<PieceId> {
         match self {
-            Selection::None | Selection::Seam(_) => None,
+            Selection::None | Selection::Seam(_) | Selection::Fastener(_) => None,
             Selection::Piece(id) | Selection::Vertex(id, _) | Selection::Edge(id, _) | Selection::Line(id, _) => {
                 Some(id)
             }
@@ -105,6 +119,9 @@ impl Selection {
     fn sanitize(self, pattern: &Pattern) -> Self {
         if let Selection::Seam(id) = self {
             return if pattern.seam(id).is_some() { self } else { Selection::None };
+        }
+        if let Selection::Fastener(id) = self {
+            return if pattern.fastener(id).is_some() { self } else { Selection::None };
         }
         let Some(piece) = self.piece().and_then(|id| pattern.piece(id)) else {
             return Selection::None;
@@ -126,6 +143,8 @@ enum Hit {
     LineEnd(PieceId, usize, usize),
     Line(PieceId, usize),
     Interior(PieceId),
+    /// Uno de los dos puntos de un broche o una presilla.
+    Fastener(FastenerId),
 }
 
 enum Drag {
@@ -151,6 +170,12 @@ enum Drag {
     },
     /// Línea interior nueva en `piece`.
     NewLine {
+        piece: PieceId,
+        start: Point,
+        current: Point,
+    },
+    /// Doblez nuevo en `piece`, entre dos puntos de su contorno.
+    NewFold {
         piece: PieceId,
         start: Point,
         current: Point,
@@ -205,6 +230,8 @@ pub struct Editor {
     pen_points: Vec<Point>,
     /// Lados elegidos para la costura que se está creando.
     seam_sides: Vec<SeamSide>,
+    /// Primer punto del broche que se está creando.
+    fastener_start: Option<(PieceId, Point)>,
     drag: Drag,
     fill_cache: HashMap<PieceId, CachedMesh>,
     mesh_cache: HashMap<PieceId, CachedMesh>,
@@ -227,6 +254,7 @@ impl Default for Editor {
             canvas_rect: Rect::NOTHING,
             pen_points: Vec::new(),
             seam_sides: Vec::new(),
+            fastener_start: None,
             drag: Drag::None,
             fill_cache: HashMap::new(),
             mesh_cache: HashMap::new(),
@@ -280,6 +308,7 @@ impl Editor {
         self.tool = tool;
         self.pen_points.clear();
         self.seam_sides.clear();
+        self.fastener_start = None;
         self.drag = Drag::None;
     }
 
@@ -379,6 +408,12 @@ impl Editor {
         if pressed(Key::N) {
             self.set_tool(Tool::Notch);
         }
+        if pressed(Key::D) {
+            self.set_tool(Tool::Fold);
+        }
+        if pressed(Key::B) {
+            self.set_tool(Tool::Fastener);
+        }
         if pressed(Key::F) {
             self.fit_view();
         }
@@ -400,6 +435,12 @@ impl Editor {
                 self.set_tool(Tool::Select);
             }
             self.seam_sides.clear();
+            return;
+        }
+        if self.tool == Tool::Fastener && pressed(Key::Escape) {
+            if self.fastener_start.take().is_none() {
+                self.set_tool(Tool::Select);
+            }
             return;
         }
 
@@ -435,6 +476,10 @@ impl Editor {
             }
             Selection::Seam(id) => {
                 pattern.remove_seam(id);
+                self.selection = Selection::None;
+            }
+            Selection::Fastener(id) => {
+                pattern.remove_fastener(id);
                 self.selection = Selection::None;
             }
             Selection::Line(id, i) => {
@@ -505,9 +550,55 @@ impl Editor {
         edges.chain(lines).filter(|h| h.3 < tol).min_by(|a, b| a.3.total_cmp(&b.3)).map(|(id, e, t, _)| (id, e, t))
     }
 
+    /// Pone el primer punto de un broche o, si ya lo hay, el segundo y lo
+    /// crea.
+    fn fastener_click(&mut self, ui: &Ui, pattern: &mut Pattern, pos: Pos2) {
+        let w = self.snap_point(self.view.to_world(self.canvas_rect, pos), ui);
+        let Some(piece) = Self::fabric_at(pattern, w) else { return };
+        match self.fastener_start {
+            None => self.fastener_start = Some((piece, w)),
+            Some((first, at)) if first == piece && at.distance(w) < 1.0 => {}
+            Some(start) => {
+                if let Some(id) = pattern.add_fastener(FastenerKind::default(), start, (piece, w)) {
+                    self.selection = Selection::Fastener(id);
+                }
+                self.fastener_start = None;
+            }
+        }
+    }
+
+    /// El broche (o presilla) con un punto bajo el cursor.
+    fn fastener_hit(&self, pattern: &Pattern, w: Point) -> Option<FastenerId> {
+        let tol = HIT_PX / self.view.zoom as f64;
+        pattern
+            .fasteners
+            .iter()
+            .flat_map(|f| f.ends.iter().filter_map(move |&end| Some((f.id, pattern.mark_point(end)?.distance(w)))))
+            .filter(|&(_, d)| d < tol)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(id, _)| id)
+    }
+
     /// Pieza de tela (no agujero) en la que cae un punto, la de más arriba.
     fn fabric_at(pattern: &Pattern, w: Point) -> Option<PieceId> {
         pattern.pieces.iter().rev().find(|p| !p.is_hole() && pattern.in_fabric(p, w, 0.0)).map(|p| p.id)
+    }
+
+    /// El punto del contorno de una pieza más cercano a `w` (ya ajustado a
+    /// la rejilla, así cae en ella en las aristas rectas), o su vértice si
+    /// está dentro del margen de enganche.
+    fn outline_point(&self, pattern: &Pattern, piece: PieceId, w: Point) -> Point {
+        let Some(piece) = pattern.piece(piece) else { return w };
+        let tol = HIT_PX / self.view.zoom as f64;
+        if let Some(v) = piece
+            .vertices()
+            .iter()
+            .filter(|v| v.distance(w) < tol)
+            .min_by(|a, b| a.distance(w).total_cmp(&b.distance(w)))
+        {
+            return *v;
+        }
+        piece.nearest_edge(w).map_or(w, |(i, t, _)| piece.segment(i).eval(t))
     }
 
     fn finish_pen(&mut self, pattern: &mut Pattern) {
@@ -528,6 +619,10 @@ impl Editor {
         let selected = self.selection.piece();
         let (shape, edges) = (self.mode.edits_shape(), self.mode.picks_edges());
 
+        // Los broches, encima de todo: son puntos pequeños dentro de la tela.
+        if let Some(id) = self.fastener_hit(pattern, w) {
+            return Some(Hit::Fastener(id));
+        }
         if shape && let Some(piece) = selected.and_then(|id| pattern.piece(id)) {
             for i in 0..piece.len() {
                 if let Some((c1, c2)) = piece.control_points(i) {
@@ -554,7 +649,7 @@ impl Editor {
             }
         }
         for piece in order.iter().filter(|_| shape) {
-            for (k, line) in piece.lines.iter().enumerate() {
+            for (k, line) in piece.lines.iter().enumerate().filter(|(_, l)| l.fold.is_none()) {
                 if line.from.distance(w) < tol {
                     return Some(Hit::LineEnd(piece.id, k, 0));
                 }
@@ -589,6 +684,7 @@ impl Editor {
             Some(Hit::Vertex(id, i)) => Selection::Vertex(id, i),
             Some(Hit::LineEnd(id, k, _)) | Some(Hit::Line(id, k)) => Selection::Line(id, k),
             Some(Hit::Interior(id)) => Selection::Piece(id),
+            Some(Hit::Fastener(id)) => Selection::Fastener(id),
         };
     }
 
@@ -637,6 +733,14 @@ impl Editor {
                         self.tool = Tool::Select;
                     }
                 }
+                Drag::NewFold { piece, start, current } => {
+                    if let Some(line) = pattern.add_fold(piece, start, current)
+                        && let Some(k) = pattern.piece(piece).and_then(|p| p.line_index(line))
+                    {
+                        self.selection = Selection::Line(piece, k);
+                        self.tool = Tool::Select;
+                    }
+                }
                 _ => {}
             }
             self.drag = Drag::None;
@@ -659,7 +763,7 @@ impl Editor {
                         }
                     }
                 }
-                Tool::Rect | Tool::Line => {}
+                Tool::Rect | Tool::Line | Tool::Fold => {}
                 Tool::Notch => {
                     if let Some((piece, edge, t)) = self.edge_hit(pattern, pos)
                         && let Some(piece) = pattern.piece_mut(piece)
@@ -671,6 +775,7 @@ impl Editor {
                     let (shift, ctrl) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
                     self.seam_click(pattern, pos, shift, ctrl);
                 }
+                Tool::Fastener => self.fastener_click(ui, pattern, pos),
             }
         }
 
@@ -700,11 +805,28 @@ impl Editor {
                 let p = self.snap_point(w, ui);
                 Drag::Rect { start: p, current: p }
             }
-            Tool::Pen | Tool::Seam | Tool::Notch => Drag::Pan,
+            Tool::Pen | Tool::Seam | Tool::Notch | Tool::Fastener => Drag::Pan,
             Tool::Line => {
                 let p = self.snap_point(w, ui);
                 match Self::fabric_at(pattern, w) {
                     Some(piece) => Drag::NewLine { piece, start: p, current: p },
+                    None => Drag::Pan,
+                }
+            }
+            Tool::Fold => {
+                let tol = HIT_PX / self.view.zoom as f64;
+                let on_edge = pattern
+                    .pieces
+                    .iter()
+                    .rev()
+                    .filter(|p| !p.is_hole())
+                    .find(|p| p.nearest_edge(w).is_some_and(|(_, _, d)| d < tol))
+                    .map(|p| p.id);
+                match on_edge.or_else(|| Self::fabric_at(pattern, w)) {
+                    Some(piece) => {
+                        let p = self.outline_point(pattern, piece, self.snap_point(w, ui));
+                        Drag::NewFold { piece, start: p, current: p }
+                    }
                     None => Drag::Pan,
                 }
             }
@@ -717,7 +839,8 @@ impl Editor {
                     Some(Hit::Handle(id, e, h)) => Drag::Handle(id, e, h),
                     Some(Hit::Vertex(id, i)) => Drag::Vertex(id, i),
                     Some(Hit::LineEnd(id, k, end)) => Drag::LineEnd(id, k, end),
-                    Some(Hit::Line(id, k)) if self.mode.edits_shape() => {
+                    // Un doblez va de vértice a vértice: se mueve con ellos.
+                    Some(Hit::Line(id, k)) if self.mode.edits_shape() && !is_fold(pattern, id, k) => {
                         Drag::Line { piece: id, original: pattern.piece(id).unwrap().lines[k], start: w }
                     }
                     Some(Hit::Edge(id, ..)) | Some(Hit::Interior(id)) | Some(Hit::Line(id, _)) if moves => {
@@ -731,6 +854,13 @@ impl Editor {
     }
 
     fn update_drag(&mut self, ui: &Ui, pattern: &mut Pattern, w: Point, delta_px: egui::Vec2) {
+        if let Drag::NewFold { piece, .. } = self.drag {
+            let p = self.outline_point(pattern, piece, self.snap_point(w, ui));
+            if let Drag::NewFold { current, .. } = &mut self.drag {
+                *current = p;
+            }
+            return;
+        }
         match &mut self.drag {
             Drag::None => {}
             Drag::Pan => self.view.pan += delta_px,
@@ -781,6 +911,7 @@ impl Editor {
                     *line = moved;
                 }
             }
+            Drag::NewFold { .. } => {}
             Drag::NewLine { current, .. } => {
                 *current = if self.snap && !ui.input(|i| i.modifiers.alt) {
                     let s = self.snap_step;
@@ -849,6 +980,17 @@ impl Editor {
                     self.delete_selection(pattern);
                 }
             }
+            Selection::Fastener(id) => {
+                if let Some(f) = pattern.fastener_mut(id)
+                    && f.kind == FastenerKind::Snap
+                    && ui.button(if f.open { "Cerrar broche" } else { "Abrir broche" }).clicked()
+                {
+                    f.open = !f.open;
+                }
+                if ui.button("Borrar (Supr)").clicked() {
+                    self.delete_selection(pattern);
+                }
+            }
             Selection::Piece(id) => {
                 if ui.button("Duplicar (Ctrl+D)").clicked()
                     && let Some(new) = pattern.duplicate_piece(id, Vec2::new(20.0, 20.0))
@@ -872,14 +1014,14 @@ impl Editor {
             (Drag::Pan, _) => CursorIcon::Grabbing,
             (Drag::Piece { .. } | Drag::Line { .. }, _) => CursorIcon::Move,
             (Drag::Vertex(..) | Drag::Handle(..) | Drag::LineEnd(..), _) => CursorIcon::Grabbing,
-            (_, Tool::Pen | Tool::Rect | Tool::Line) => CursorIcon::Crosshair,
+            (_, Tool::Pen | Tool::Rect | Tool::Line | Tool::Fold | Tool::Fastener) => CursorIcon::Crosshair,
             (_, Tool::Seam | Tool::Notch) => match response.hover_pos().and_then(|p| self.edge_hit(pattern, p)) {
                 Some(_) => CursorIcon::PointingHand,
                 None => CursorIcon::Default,
             },
             (_, Tool::Select) => match response.hover_pos().and_then(|p| self.hit_test(pattern, p)) {
                 Some(Hit::Vertex(..) | Hit::Handle(..) | Hit::LineEnd(..)) => CursorIcon::Grab,
-                Some(Hit::Edge(..) | Hit::Line(..) | Hit::Interior(..)) => CursorIcon::PointingHand,
+                Some(Hit::Edge(..) | Hit::Line(..) | Hit::Interior(..) | Hit::Fastener(..)) => CursorIcon::PointingHand,
                 None => CursorIcon::Default,
             },
         };
@@ -974,6 +1116,7 @@ impl Editor {
 
         self.draw_seams(painter, pattern);
         self.draw_seam_tool(painter, ui, pattern);
+        self.draw_fasteners(painter, ui, pattern);
 
         // Nombres encima de todo lo demás y, debajo, lo que importa en la
         // etapa: las telas de la pieza o dónde va en 3D.
@@ -1017,12 +1160,43 @@ impl Editor {
     fn draw_lines(&self, painter: &Painter, piece: &Piece, color: Color32, accent: Color32) {
         for (k, line) in piece.lines.iter().enumerate() {
             let selected = self.selection == Selection::Line(piece.id, k);
-            let (width, color) = if selected { (3.5, accent) } else { (2.0, color) };
+            let (width, color): (f32, _) = if selected { (3.5, accent) } else { (2.0, color) };
+            if let Some(fold) = line.fold {
+                self.draw_fold(painter, line, fold, Stroke::new(width.min(2.5), color), selected);
+                continue;
+            }
             self.draw_segment(painter, line.segment(), Stroke::new(width, color));
             for end in [line.from, line.to] {
                 let r = if selected && self.mode.edits_shape() { 5.0 } else { 3.0 };
                 painter.circle_stroke(self.view.to_screen(self.canvas_rect, end), r, Stroke::new(1.5, color));
             }
+        }
+    }
+
+    /// Un doblez: discontinuo, con una flecha que lleva la solapa al otro
+    /// lado de la línea, y el ángulo si está elegido.
+    fn draw_fold(&self, painter: &Painter, line: &InnerLine, fold: pattern::Fold, stroke: Stroke, selected: bool) {
+        let rect = self.canvas_rect;
+        let (a, b) = (self.view.to_screen(rect, line.from), self.view.to_screen(rect, line.to));
+        painter.extend(Shape::dashed_line(&[a, b], stroke, 10.0, 4.0));
+        if a.distance(b) < 1.0 {
+            return;
+        }
+        let dir = (b - a).normalized();
+        let mid = a + (b - a) * 0.5;
+        let mut normal = egui::vec2(-dir.y, dir.x);
+        let probe = self.view.to_world(rect, mid + normal * 4.0);
+        if !line.in_flap(probe) {
+            normal = -normal;
+        }
+        let tail = mid + normal * 22.0;
+        painter.arrow(tail, -normal * 32.0, Stroke::new(1.5, stroke.color));
+        if selected {
+            let mut text = format!("{:.0}°", fold.angle);
+            if !fold.pressed {
+                text.push_str(" libre");
+            }
+            painter.text(tail + normal * 4.0, Align2::CENTER_CENTER, text, FontId::monospace(11.0), stroke.color);
         }
     }
 
@@ -1258,6 +1432,64 @@ impl Editor {
 
     /// Lados ya elegidos de la costura en curso y, bajo el cursor, la arista
     /// que se añadiría.
+    /// Broches y presillas: sus dos puntos y, entre ellos, una línea de
+    /// trazos; con la herramienta, el que se está poniendo.
+    fn draw_fasteners(&self, painter: &Painter, ui: &Ui, pattern: &Pattern) {
+        let rect = self.canvas_rect;
+        let accent = ui.visuals().selection.stroke.color;
+        let ink = ui.visuals().text_color();
+        let mark = |at: Pos2, kind: FastenerKind, color: Color32, open: bool| match kind {
+            // Un broche: un círculo con el macho (o la hembra) en el centro.
+            FastenerKind::Snap => {
+                painter.circle_stroke(at, 5.5, Stroke::new(1.5, color));
+                if !open {
+                    painter.circle_filled(at, 2.0, color);
+                }
+            }
+            // Una presilla: unas puntadas en zigzag.
+            FastenerKind::BarTack => {
+                let zigzag: Vec<Pos2> = (0..=4)
+                    .map(|k| at + egui::vec2(-6.0 + 3.0 * k as f32, if k % 2 == 0 { -3.0 } else { 3.0 }))
+                    .collect();
+                painter.add(Shape::line(zigzag, Stroke::new(1.5, color)));
+            }
+        };
+        let focus = self.mode == Mode::Seams;
+        for fastener in &pattern.fasteners {
+            let Some(ends) = fastener.ends.map(|e| pattern.mark_point(e)).into_iter().collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            let ends: Vec<Pos2> = ends.into_iter().map(|p| self.view.to_screen(rect, p)).collect();
+            let selected = self.selection == Selection::Fastener(fastener.id);
+            let color = if selected { accent } else { ink.gamma_multiply(if focus { 0.9 } else { 0.6 }) };
+            if focus || selected {
+                let width = if selected { 1.5 } else { 1.0 };
+                painter.extend(Shape::dashed_line(&ends, Stroke::new(width, color.gamma_multiply(0.7)), 4.0, 3.0));
+            }
+            for &at in &ends {
+                mark(at, fastener.kind, color, fastener.open && fastener.kind == FastenerKind::Snap);
+            }
+        }
+        if self.tool != Tool::Fastener {
+            return;
+        }
+        // El punto que se pondría y, si ya hay uno, la línea hasta él.
+        let hover = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p));
+        let next = hover.map(|p| self.snap_point(self.view.to_world(rect, p), ui));
+        let next = next.filter(|&w| Self::fabric_at(pattern, w).is_some()).map(|w| self.view.to_screen(rect, w));
+        if let Some((_, start)) = self.fastener_start {
+            let start = self.view.to_screen(rect, start);
+            mark(start, FastenerKind::Snap, accent, false);
+            if let Some(next) = next {
+                painter.extend(Shape::dashed_line(&[start, next], Stroke::new(1.5, accent), 4.0, 3.0));
+            }
+        }
+        if let Some(next) = next {
+            mark(next, FastenerKind::Snap, accent.gamma_multiply(0.6), false);
+        }
+    }
+
     fn draw_seam_tool(&self, painter: &Painter, ui: &Ui, pattern: &Pattern) {
         if self.tool == Tool::Notch {
             // Dónde caería el piquete.
@@ -1352,6 +1584,12 @@ impl Editor {
                     accent,
                 );
             }
+            (Drag::NewFold { start, current, .. }, _) => {
+                let (a, b) = (self.view.to_screen(rect, *start), self.view.to_screen(rect, *current));
+                painter.extend(Shape::dashed_line(&[a, b], Stroke::new(2.0, accent), 8.0, 4.0));
+                painter.circle_filled(a, 3.5, accent);
+                painter.circle_filled(b, 3.5, accent);
+            }
             (_, Tool::Pen) if !self.pen_points.is_empty() => {
                 let mut pts: Vec<Pos2> = self.pen_points.iter().map(|p| self.view.to_screen(rect, *p)).collect();
                 if let Some(c) = self.cursor {
@@ -1440,6 +1678,11 @@ fn inward_normal(piece: &Piece, seg: &PathSeg, t: f64) -> Vec2 {
 }
 
 /// Las telas de una pieza, de fuera a dentro («Lona + Entretela»).
+/// Si la línea `k` de una pieza es un doblez.
+fn is_fold(pattern: &Pattern, piece: PieceId, k: usize) -> bool {
+    pattern.piece(piece).and_then(|p| p.lines.get(k)).is_some_and(|l| l.fold.is_some())
+}
+
 fn textile_names(pattern: &Pattern, piece: &Piece) -> String {
     let names: Vec<&str> = piece.textiles().map(|t| pattern.textile(t).map_or("?", |t| t.name.as_str())).collect();
     names.join(" + ")
