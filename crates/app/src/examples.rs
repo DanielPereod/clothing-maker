@@ -128,6 +128,69 @@ pub fn tote_bag() -> Pattern {
     p
 }
 
+/// Bolsa tote con forro aparte: el exterior de lona y un forro de algodón
+/// cosidos como dos bolsas, una dentro de otra, unidos por la boca, y un
+/// bolsillo de parche por dentro, cosido a tres líneas del forro delantero.
+/// El forro va en la capa 1 (dentro) y con el derecho hacia dentro.
+pub fn lined_tote_bag() -> Pattern {
+    let (w, h) = (380.0, 420.0);
+    let mut p = Pattern::new("Bolsa tote con forro");
+    let named = |p: &Pattern, name: &str| p.textiles.iter().find(|t| t.name == name).expect("tela genérica").id;
+    let canvas = named(&p, "Lona");
+    let front = p.add_rect("Delantero", Point::ZERO, w, h);
+    let back = p.add_rect("Trasero", Point::new(w + 70.0, 0.0), w, h);
+    // El forro, algo más estrecho abajo y más corto: dentro del exterior
+    // tiene menos sitio (la tela tiene grosor), y así sus dobleces de los
+    // lados y del fondo no caen justo encima de los del exterior.
+    let (taper, lh) = (10.0, h - 10.0);
+    let lining = |p: &mut Pattern, name: &str, x: f64| {
+        let pts = [(0.0, 0.0), (w, 0.0), (w - taper, lh), (taper, lh)];
+        p.add_polygon(name, pts.map(|(px, py)| Point::new(x + px, h + 80.0 + py)).to_vec())
+    };
+    let lining_front = lining(&mut p, "Forro delantero", 0.0);
+    let lining_back = lining(&mut p, "Forro trasero", w + 70.0);
+    for id in [front, back] {
+        p.piece_mut(id).unwrap().fabric = canvas;
+    }
+    for id in [back, lining_back] {
+        p.piece_mut(id).unwrap().arrangement = Arrangement::Back;
+    }
+    for id in [lining_front, lining_back] {
+        let piece = p.piece_mut(id).unwrap();
+        piece.layer = 1;
+        piece.right_side_in = true;
+    }
+    for (outer, inner, name) in [(front, back, ""), (lining_front, lining_back, " del forro")] {
+        sew(&mut p, &format!("Fondo{name}"), &[(outer, BOTTOM, false), (inner, BOTTOM, true)]);
+        sew(&mut p, &format!("Lateral dcho.{name}"), &[(outer, RIGHT, false), (inner, LEFT, true)]);
+        sew(&mut p, &format!("Lateral izdo.{name}"), &[(outer, LEFT, false), (inner, RIGHT, true)]);
+    }
+    // La boca: cada pieza del exterior con su forro, embolsadas.
+    sew(&mut p, "Boca delantera", &[(front, TOP, false), (lining_front, TOP, false)]);
+    sew(&mut p, "Boca trasera", &[(back, TOP, false), (lining_back, TOP, false)]);
+    for seam in p.seams.iter_mut().filter(|s| s.name.starts_with("Boca")) {
+        seam.set_kind(SeamKind::Bagged);
+    }
+
+    // Bolsillo por dentro del forro delantero: sus lados y su fondo van
+    // cosidos a una U de líneas interiores; la boca queda abierta.
+    let (x, y, pw, ph) = (110.0, h + 80.0 + 110.0, 160.0, 160.0);
+    let corner = |dx: f64, dy: f64| Point::new(x + dx, y + dy);
+    let left = p.add_line(lining_front, corner(0.0, 0.0), corner(0.0, ph)).unwrap();
+    let bottom = p.add_line(lining_front, corner(0.0, ph), corner(pw, ph)).unwrap();
+    let right = p.add_line(lining_front, corner(pw, ph), corner(pw, 0.0)).unwrap();
+    let pocket = p.add_rect("Bolsillo", Point::new(2.0 * w + 140.0, h + 80.0), pw, ph);
+    let piece = p.piece_mut(pocket).unwrap();
+    piece.layer = 1;
+    piece.right_side_in = true;
+    let edge = |p: &Pattern, i: usize| p.piece(pocket).unwrap().edges()[i].id;
+    for (name, i, line) in [("izdo.", LEFT, left), ("fondo", BOTTOM, bottom), ("dcho.", RIGHT, right)] {
+        let sides = vec![SeamSide::new(pocket, edge(&p, i), true), SeamSide::new(lining_front, line, false)];
+        p.add_seam(format!("Bolsillo {name}"), sides).expect("costura válida");
+    }
+    p
+}
+
 /// Cojín: dos cuadrados cosidos por los cuatro lados y con relleno, para
 /// ver la presión interior.
 pub fn cushion() -> Pattern {
@@ -297,10 +360,11 @@ fn sew(p: &mut Pattern, name: &str, sides: &[(PieceId, usize, bool)]) {
 pub type Example = (&'static str, &'static str, fn() -> Pattern);
 
 /// Todos los ejemplos.
-pub const ALL: [Example; 7] = [
+pub const ALL: [Example; 8] = [
     ("Camiseta básica", "camiseta-basica", t_shirt),
     ("Camiseta con mangas", "camiseta-con-mangas", t_shirt_with_sleeves),
     ("Bolsa tote", "bolsa-tote", tote_bag),
+    ("Bolsa tote con forro", "bolsa-tote-con-forro", lined_tote_bag),
     ("Bolsa con fondo", "bolsa-con-fondo", box_bag),
     ("Bolso de cuero con forro", "bolso-de-cuero", leather_bag),
     ("Cojín", "cojin", cushion),

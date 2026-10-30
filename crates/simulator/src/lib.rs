@@ -204,6 +204,8 @@ pub struct Cloth {
     pub pieces: Vec<PieceRange>,
     friction: Vec<f32>,
     thickness: Vec<f32>,
+    /// Capa de cada partícula: 0 la de fuera, y más hacia dentro.
+    layer: Vec<u8>,
     prev_positions: Vec<Vec3>,
     /// Restricciones de distancia ordenadas por color.
     constraints: Vec<DistanceConstraint>,
@@ -315,6 +317,7 @@ impl Cloth {
         self.inv_mass.extend(mass.iter().map(|&m| if m > 0.0 { 1.0 / m } else { 0.0 }));
         self.friction.extend(std::iter::repeat_n(fabric.friction, n));
         self.thickness.extend(std::iter::repeat_n(fabric.thickness, n));
+        self.layer.extend(std::iter::repeat_n(0, n));
         let piece = self.pieces.len() as u32;
         self.rest.extend(rest.iter().map(|&r| (r, piece)));
         self.triangles.extend(triangles.iter().map(|t| t.map(|i| i + base)));
@@ -393,6 +396,16 @@ impl Cloth {
     /// la hace más fina de lo que ya es.
     pub fn thicken(&mut self, i: usize, thickness: f32) {
         self.thickness[i] = self.thickness[i].max(thickness);
+    }
+
+    /// Pone una pieza en una capa: 0 la de fuera (el exterior), 1 la
+    /// siguiente hacia dentro (el forro), etc. Donde dos capas distintas
+    /// van en paralelo (sus normales miran hacia el mismo lado), la de
+    /// fuera se queda siempre por el lado de la normal de la otra: si se
+    /// cruzan, vuelven a su sitio en vez de seguir cruzadas.
+    pub fn set_layer(&mut self, piece: &PieceRange, layer: u8) {
+        let start = piece.first_particle as usize;
+        self.layer[start..start + piece.particle_count as usize].fill(layer);
     }
 
     /// Quita todas las costuras.
@@ -495,6 +508,7 @@ impl Cloth {
             self.solve_seams(h);
             if params.self_collision {
                 self.self_collision.solve(&mut self.positions, &self.prev_positions, &self.inv_mass, &self.triangles);
+                self.self_collision.solve_edges(&mut self.positions, &self.prev_positions, &self.inv_mass);
             }
             self.apply_friction(parallel);
             let update = |(v, x, prev): (&mut Vec3, &Vec3, &Vec3)| *v = (*x - *prev) / h * damping;
@@ -560,12 +574,20 @@ impl Cloth {
         // búsqueda, con holgura.
         let travel: Vec<f32> =
             self.velocities.iter().map(|v| ((v.length() * dt + gravity * dt * dt) * 1.5).min(0.1)).collect();
-        self.self_collision.gather(&self.positions, &travel, &self.inv_mass, &self.thickness, &self.triangles);
+        let normals = vertex_normals(&self.positions, &self.triangles);
+        self.self_collision.gather(
+            &self.positions,
+            &travel,
+            &self.inv_mass,
+            &self_collision::Particles { thickness: &self.thickness, layer: &self.layer, normal: &normals },
+            &self.triangles,
+        );
+        self.self_collision.gather_edges(&self.positions, &travel, &self.inv_mass, &self.thickness, &self.mesh_edges);
     }
 
     /// Número de pares partícula-triángulo vigilados en el último paso.
     pub fn self_contact_count(&self) -> usize {
-        self.self_collision.contacts.len()
+        self.self_collision.contacts.len() + self.self_collision.edge_contacts.len()
     }
 
     /// Cuántas aristas de la malla atraviesan un triángulo que no es vecino

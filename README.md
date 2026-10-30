@@ -158,7 +158,8 @@ sus propiedades y sus comprobaciones:
    biblioteca de telas está a mano.
 3. **Montaje**: las costuras, su tipo, el margen, el orden y voltear.
 4. **Colocación**: dónde empieza cada pieza en 3D antes de coser (lado, zona
-   del cuerpo, cara), el modo de colocación y el maniquí. *Colocación* en la
+   del cuerpo, cara, capa y si va encima de otra), el modo de colocación y
+   el maniquí. *Colocación* en la
    cinta vuelve a colocar las piezas y para, para verlas antes de coser.
 5. **Simulación**: coser y asentar la prenda (obstáculo, relleno, precisión).
 
@@ -194,6 +195,28 @@ falta para piezas de verdad (bolsillos, ventanas, piezas simétricas).
   que se salen de la pieza. Una pieza cosida sobre una línea de otra puede
   solaparse con ella sin aviso.
 
+**Capas y colocación:** para lo que lleva varias telas cosidas entre sí
+(un bolso con forro suelto, un bolsillo por dentro, una vista).
+
+- *Capa* (Colocación): 0 es el exterior, 1 el forro y así hacia dentro.
+  Cada capa se coloca aparte, dentro de la anterior (en *Alrededor*, en un
+  cilindro más estrecho; soltadas o colgadas, en otro nivel), así que el
+  forro empieza dentro del exterior y no hay que dibujarlo en otro sitio.
+  Lo que va pegado a toda la pieza (una entretela) sigue yendo en las capas
+  de su tela, en *Telas*.
+- *Sobre*: una pieza puede empezar encima de otra, en su sitio y pegada a
+  ella (un bolsillo de parche, un asa, un refuerzo), por su derecho o por su
+  revés. Si va cosida a las líneas interiores de una sola pieza, va encima
+  de ella sin decir nada.
+- La auto-colisión mira también arista contra arista, además de punto
+  contra triángulo: dos capas que se pliegan juntas ya no se atraviesan por
+  las aristas. Una tote con forro aparte (`bolsa-tote-con-forro`) se cose y
+  se asienta sin aristas cruzadas.
+- Comprobaciones: las piezas de capas distintas, o encima de otra, pueden
+  solaparse en el patrón sin aviso. Un consejo de patronaje: el forro suele
+  cortarse un poco más pequeño que el exterior, para que no sobre tela
+  dentro.
+
 **Interfaz:** inspirada en los programas de CAD como Fusion 360, con tema
 oscuro.
 
@@ -205,7 +228,7 @@ oscuro.
   modificar, inspeccionar (rejilla, malla) y encuadrar. *Telas*: tela de la
   selección (o de todas), añadir capa y tela nueva. *Montaje*: costura, tipo,
   margen, orden, voltear y resaltar. *Colocación*: lado, zona y cara de la
-  pieza, maniquí, modo de colocación y coser. *Simulación*: simular / pausa,
+  pieza, su capa y sobre qué pieza va, maniquí, modo de colocación y coser. *Simulación*: simular / pausa,
   reiniciar, en vivo, entorno (obstáculo), precisión, inicio de cámara y
   relleno. Los grupos con ⏷ despliegan más órdenes.
 - Navegador a la izquierda: las comprobaciones de cada etapa y el árbol con
@@ -296,6 +319,10 @@ Líneas interiores y agujeros (también opcionales): cada pieza puede llevar
 (o `"type": "cubic"` con `h1` y `h2`, relativos a cada extremo). Su `id` es
 un id de arista más, así que un lado de costura puede apuntar a él. Una
 pieza con `"hole_in": <id de pieza>` es un agujero en esa pieza.
+
+Capas (opcional): cada pieza puede llevar `"layer"` (0 si falta: el
+exterior; 1, el forro...) y `"on": { "piece": <id de pieza> }` para ir
+encima de otra pieza, con `"wrong_side": true` si va por su revés.
 
 ## Desarrollo
 
