@@ -109,12 +109,12 @@ desplazar, F para encuadrar todo.
   se llena; con 30, un cojín queda firme. Mucha más presión la pone redonda
   como un globo.
 - Cada triángulo se empuja hacia fuera (el derecho de la tela) con
-  `presión × área`. Las bocas sin coser (la de una bolsa, el cuello de una
+  `presión × área` (ver *Física* para las prendas con forro). Las bocas sin coser (la de una bolsa, el cuello de una
   camiseta) se cierran con una tapa imaginaria que también empuja, así que la
   boca se abre en vez de vaciarse y la suma de fuerzas es cero: la prenda no
   sale disparada.
-- La presión empieza cuando la prenda, ya cosida, se ha parado, y sube en un
-  segundo: si se hinchara mientras cae, llegaría redonda y rodaría. Cambiar
+- La presión empieza cuando la prenda, ya cosida, se ha parado, y sube en dos
+  segundos: si se hinchara mientras cae, llegaría redonda y rodaría. Cambiar
   el relleno en vivo no la deshincha.
 - La vista 3D muestra la presión aplicada y el volumen que encierra la tela.
 - Ejemplo nuevo: *Cojín* (dos cuadrados de 40 cm cosidos por los cuatro
@@ -279,8 +279,9 @@ elásticos, broches y presillas.
     por la mitad, que envuelve el canto.
   - *Vivo* (con una costura elegida): una tira doblada que asoma entre los
     lados de la costura.
-  - *Elástico* (con una arista elegida): una cinta un 20 % más corta, cosida
-    estirada a lo largo del borde, que frunce la tela.
+  - *Elástico* (con una arista elegida): una cinta un 20 % más corta cosida
+    a lo largo del borde; la tela se frunce hasta su largo, como al soltar
+    un elástico cosido estirado.
 - *Broche* (B, en *Montaje*): clic en un punto de la tela y luego en el
   punto con el que se une. Puede ser un *broche* (se abre y se cierra, en
   vivo también) o una *presilla* (unas puntadas que fijan los dos puntos
@@ -289,6 +290,34 @@ elásticos, broches y presillas.
 - Ejemplo nuevo: *Bolso con cremallera y asas* (`bolso-con-cremallera`):
   dos paneles de lona, una cremallera en la boca y dos asas de cincha, en
   tres etapas (asas, cremallera, bolsa).
+
+**Física:** cada tela se comporta como la de verdad.
+
+- Cada tela estira lo que le toca: la lona y el cuero casi nada, el punto
+  bastante y el elástico mucho. Antes el paso de tiempo ponía un tope a la
+  rigidez y todas cedían parecido.
+- Las telas tejidas llevan *tirantes*: uniones entre puntos lejanos de la
+  misma pieza que no la dejan alargarse más de un 1 o 2 %, pese lo que pese
+  lo que cuelga y sea como sea de fina la malla. Un asa que sostiene el
+  bolso ya no se alarga un 30 %. Solo frenan al estirar: la tela se dobla y
+  se arruga igual.
+- En una costura *estirada*, cada lado cede según lo que estira su tela: el
+  puño de punto del chalk bag (341 mm) se estira hasta los 381 mm de la boca
+  y la boca de lona no se encoge para salirle al encuentro.
+- Las costuras dan rigidez y grosor también en telas firmes (lona, cuero,
+  vaquero), y en ellas la tela decide sola hacia dónde se tumba la costura.
+  Ningún ejemplo deja aristas cruzadas, tampoco el bolso de cuero.
+- El relleno va por compartimentos: empuja la tela que forma la prenda (en
+  una bolsa con forro, el forro hacia el exterior, sin hinchar el hueco
+  entre los dos), y no las piezas montadas encima (un bolsillo) ni las que
+  casi no van cosidas. Empieza medio segundo después de que la prenda,
+  cosida, se haya parado.
+- *Fijar* (en *Simulación*): con el botón activo, clic en la tela en 3D
+  sujeta ese punto donde quede al terminar de coser, por ejemplo para
+  colgar un bolso de sus asas. Las fijaciones se guardan en el patrón y
+  salen en el navegador junto a los broches; *Quitar* las borra todas.
+- Clic en una pieza en la vista 3D la selecciona, también en el patrón, y
+  se resalta en 3D.
 
 **Interfaz:** inspirada en los programas de CAD como Fusion 360, con tema
 oscuro.
@@ -415,7 +444,8 @@ cara se dobla; `flip` cambia qué lado es la solapa). Una costura de tipo
 1). Cada pieza puede llevar `"marks"`, puntos marcados
 `{ "id": 50, "at": { "x": 120, "y": 40 } }`, y el patrón, `"fasteners"`:
 `[{ "id": 52, "name": "Broche 1", "kind": "snap", "ends": [{ "piece": 1, "mark": 50 }, { "piece": 10, "mark": 51 }], "open": false }]`
-(`kind`: `snap` o `bar_tack`; un broche abierto no une nada). Las
+(`kind`: `snap`, `bar_tack` o `pin`; un broche abierto no une nada; una
+fijación, `pin`, lleva sus dos extremos en el mismo punto y lo sujeta). Las
 fornituras no tienen formato propio: son piezas y costuras normales.
 
 ## Desarrollo

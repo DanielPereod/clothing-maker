@@ -95,6 +95,52 @@ impl Camera {
     fn zoom(&mut self, scroll: f32) {
         self.distance = (self.distance * (-scroll * 0.002).exp()).clamp(0.2, 20.0);
     }
+
+    /// El rayo (origen y dirección) que sale del ojo por el punto `pos` de
+    /// la vista `rect`.
+    fn ray(&self, rect: egui::Rect, pos: egui::Pos2) -> (Vec3, Vec3) {
+        let eye = self.eye();
+        let forward = (self.target - eye).normalize();
+        let right = forward.cross(Vec3::Y).normalize();
+        let up = right.cross(forward);
+        // El campo de visión vertical es de 40°, como en `view_proj`.
+        let scale = 20f32.to_radians().tan() / (rect.height() / 2.0).max(1.0);
+        let offset = pos - rect.center();
+        (eye, (forward + right * (offset.x * scale) - up * (offset.y * scale)).normalize())
+    }
+}
+
+/// Lo que se ha pinchado en la tela en 3D: la pieza y el punto del patrón
+/// (mm) que hay bajo el puntero.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Picked {
+    pub piece: PieceId,
+    pub at: pattern::Point,
+}
+
+/// El triángulo más cercano que corta el rayo y las coordenadas
+/// baricéntricas del punto de corte (Möller y Trumbore, por las dos caras).
+fn pick(positions: &[Vec3], triangles: &[[u32; 3]], origin: Vec3, dir: Vec3) -> Option<(usize, [f32; 3])> {
+    let mut best: Option<(f32, usize, [f32; 3])> = None;
+    for (k, t) in triangles.iter().enumerate() {
+        let [a, b, c] = t.map(|i| positions[i as usize]);
+        let (e1, e2) = (b - a, c - a);
+        let q = dir.cross(e2);
+        let det = e1.dot(q);
+        if det.abs() < 1e-12 {
+            continue;
+        }
+        let s = (origin - a) / det;
+        let u = s.dot(q);
+        let r = s.cross(e1);
+        let v = dir.dot(r);
+        let distance = e2.dot(r);
+        if u < 0.0 || v < 0.0 || u + v > 1.0 || distance <= 0.0 || best.is_some_and(|(d, ..)| d <= distance) {
+            continue;
+        }
+        best = Some((distance, k, [1.0 - u - v, u, v]));
+    }
+    best.map(|(_, k, bary)| (k, bary))
 }
 
 /// Lo que hay cargado ahora mismo en la simulación.
@@ -145,6 +191,14 @@ pub struct View3D {
     pub highlight_seams: bool,
     /// Si las costuras dibujadas ahora llevan el cordón.
     drawn_highlight: bool,
+    /// La pieza elegida en el editor, que se resalta en 3D.
+    pub highlight_piece: Option<PieceId>,
+    /// La pieza resaltada en la tela dibujada ahora.
+    drawn_piece: Option<PieceId>,
+    /// Modo fijar: un clic en la tela pone ahí una fijación.
+    pub pinning: bool,
+    /// Lo último que se ha pinchado en la tela, hasta que se recoge.
+    picked: Option<Picked>,
 }
 
 impl View3D {
@@ -171,7 +225,17 @@ impl View3D {
             rejected: None,
             highlight_seams: false,
             drawn_highlight: false,
+            highlight_piece: None,
+            drawn_piece: None,
+            pinning: false,
+            picked: None,
         }
+    }
+
+    /// Lo que se ha pinchado en la tela desde la última vez (un clic, sin
+    /// arrastrar).
+    pub fn take_pick(&mut self) -> Option<Picked> {
+        self.picked.take()
     }
 
     /// Vuelve a montar la escena con el patrón actual, manteniendo si estaba
@@ -562,15 +626,29 @@ impl View3D {
                 self.obstacle = Some(loaded.settings.obstacle);
             }
             let version = self.runner.read(self.version, &mut self.positions);
-            let changed = version != self.version || self.drawn_highlight != self.highlight_seams;
+            let changed = version != self.version
+                || self.drawn_highlight != self.highlight_seams
+                || self.drawn_piece != self.highlight_piece;
             if changed && self.positions.len() == loaded.colors.len() {
                 let normals = simulator::vertex_normals(&self.positions, &loaded.triangles);
+                // La pieza elegida en el editor, teñida del color de selección.
+                let chosen = loaded.pieces.iter().find(|p| Some(p.id) == self.highlight_piece);
+                let range = chosen
+                    .map_or(0..0, |p| p.first_particle as usize..p.first_particle as usize + p.mesh.positions.len());
+                let accent = egui::Rgba::from(theme::ACCENT);
+                let tint = |c: [f32; 3], i: usize| {
+                    if range.contains(&i) {
+                        [0.5 * c[0] + 0.5 * accent.r(), 0.5 * c[1] + 0.5 * accent.g(), 0.5 * c[2] + 0.5 * accent.b()]
+                    } else {
+                        c
+                    }
+                };
                 let vertices: Vec<Vertex> = (0..self.positions.len())
                     .map(|i| Vertex {
                         position: self.positions[i].to_array(),
                         normal: normals[i].to_array(),
-                        color: loaded.colors[i],
-                        back: loaded.back_colors[i],
+                        color: tint(loaded.colors[i], i),
+                        back: tint(loaded.back_colors[i], i),
                     })
                     .collect();
                 renderer.set_cloth(&vertices, &loaded.indices);
@@ -591,7 +669,26 @@ impl View3D {
                 renderer.set_seams(&mesh.vertices, &mesh.indices);
                 self.version = version;
                 self.drawn_highlight = self.highlight_seams;
+                self.drawn_piece = self.highlight_piece;
             }
+            // Un clic en la tela: la pieza y el punto del patrón que hay debajo.
+            if response.clicked_by(PointerButton::Primary)
+                && let Some(pos) = response.interact_pointer_pos()
+                && self.positions.len() == loaded.colors.len()
+            {
+                let (origin, dir) = self.camera.ray(rect, pos);
+                self.picked = pick(&self.positions, &loaded.triangles, origin, dir).and_then(|(k, bary)| {
+                    let triangle = loaded.triangles[k];
+                    let piece = loaded.pieces.iter().rev().find(|p| p.first_particle <= triangle[0])?;
+                    let at = triangle.iter().zip(bary).fold(glam::DVec2::ZERO, |sum, (&i, w)| {
+                        sum + glam::DVec2::from(piece.mesh.positions[(i - piece.first_particle) as usize]) * w as f64
+                    });
+                    Some(Picked { piece: piece.id, at: pattern::Point::new(at.x, at.y) })
+                });
+            }
+        }
+        if self.pinning && response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
 
         let ppp = ui.ctx().pixels_per_point();
@@ -616,6 +713,16 @@ impl View3D {
         }
 
         widgets::viewport_label(ui, rect, "Vista 3D");
+        if self.pinning {
+            ui.painter_at(rect).text(
+                rect.center_bottom() - egui::vec2(0.0, 40.0),
+                egui::Align2::CENTER_BOTTOM,
+                // En dos líneas: en una no cabe con la vista 3D estrecha.
+                "Clic en la tela para fijarla ahí\nPulsa Fijar otra vez para terminar",
+                egui::FontId::proportional(13.0),
+                ui.visuals().strong_text_color(),
+            );
+        }
         if let Some((yaw, pitch)) = viewcube::show(ui, rect, &self.camera) {
             self.fly_to(Camera { yaw, pitch, ..self.camera });
         }
@@ -636,5 +743,29 @@ impl View3D {
                 self.live = !self.live;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// El rayo se queda con el triángulo más cercano de los que corta, por
+    /// cualquiera de sus caras, y da el punto de corte en baricéntricas.
+    #[test]
+    fn picks_the_nearest_triangle() {
+        let square = |z: f32| [Vec3::new(0.0, 0.0, z), Vec3::new(1.0, 0.0, z), Vec3::new(0.0, 1.0, z)];
+        let positions: Vec<Vec3> = [square(-1.0), square(1.0)].concat();
+        // El de delante mira hacia atrás: también cuenta.
+        let triangles = [[0, 1, 2], [3, 5, 4]];
+        let origin = Vec3::new(0.25, 0.25, 5.0);
+        let (k, bary) = pick(&positions, &triangles, origin, Vec3::NEG_Z).unwrap();
+        assert_eq!(k, 1);
+        let at = positions[3] * bary[0] + positions[5] * bary[1] + positions[4] * bary[2];
+        assert!(at.distance(Vec3::new(0.25, 0.25, 1.0)) < 1e-6, "{at}");
+        // Desde detrás, el otro; y fuera de los triángulos, nada.
+        assert_eq!(pick(&positions, &triangles, Vec3::new(0.25, 0.25, -5.0), Vec3::Z).unwrap().0, 0);
+        assert!(pick(&positions, &triangles, Vec3::new(0.9, 0.9, 5.0), Vec3::NEG_Z).is_none());
+        assert!(pick(&positions, &triangles, origin, Vec3::Z).is_none(), "hacia el otro lado");
     }
 }

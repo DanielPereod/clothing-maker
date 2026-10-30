@@ -59,7 +59,7 @@ pub struct MarkId(pub u64);
 #[serde(transparent)]
 pub struct FastenerId(pub u64);
 
-/// Qué une dos puntos de la prenda.
+/// Qué une dos puntos de la prenda, o de dónde se sujeta.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FastenerKind {
@@ -69,15 +69,21 @@ pub enum FastenerKind {
     /// Una presilla: unas puntadas apretadas que fijan dos capas en un
     /// punto (los extremos de un asa, el forro al fondo del exterior).
     BarTack,
+    /// Una fijación: un solo punto que se queda quieto en 3D al terminar de
+    /// coser, del que cuelga la prenda (las asas de un bolso). Sus dos
+    /// extremos son el mismo punto.
+    Pin,
 }
 
 impl FastenerKind {
+    /// Los que unen dos puntos (entre los que se puede cambiar).
     pub const ALL: [FastenerKind; 2] = [FastenerKind::Snap, FastenerKind::BarTack];
 
     pub fn label(self) -> &'static str {
         match self {
             FastenerKind::Snap => "Broche",
             FastenerKind::BarTack => "Presilla",
+            FastenerKind::Pin => "Fijación",
         }
     }
 
@@ -87,6 +93,10 @@ impl FastenerKind {
             FastenerKind::BarTack => {
                 "Puntadas que fijan dos puntos para siempre: el forro al exterior, el extremo de un asa, una \
                  trabilla."
+            }
+            FastenerKind::Pin => {
+                "Un punto que se queda quieto en 3D al terminar de coser: la prenda cuelga de él (las asas de \
+                 un bolso, una percha)."
             }
         }
     }
@@ -104,7 +114,8 @@ pub struct MarkRef {
 }
 
 /// Un broche o una presilla: une dos puntos marcados (de dos piezas o de
-/// la misma) en uno solo al montar la prenda.
+/// la misma) en uno solo al montar la prenda. Una fijación sujeta uno solo
+/// (sus dos extremos son el mismo).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Fastener {
     pub id: FastenerId,
@@ -121,7 +132,16 @@ pub struct Fastener {
 impl Fastener {
     /// Si une sus dos puntos ahora.
     pub fn joins(&self) -> bool {
-        self.kind == FastenerKind::BarTack || !self.open
+        match self.kind {
+            FastenerKind::Snap => !self.open,
+            FastenerKind::BarTack => true,
+            FastenerKind::Pin => false,
+        }
+    }
+
+    /// Si es una fijación (un punto quieto en 3D).
+    pub fn is_pin(&self) -> bool {
+        self.kind == FastenerKind::Pin
     }
 }
 
@@ -705,6 +725,23 @@ impl Pattern {
         let id = FastenerId(self.alloc_id());
         let name = format!("{} {}", kind.label(), self.fasteners.len() + 1);
         self.fasteners.push(Fastener { id, name, kind, ends, open: false });
+        Some(id)
+    }
+
+    /// Una fijación en un punto de la tela: ahí se sujeta la prenda en 3D.
+    /// `None` si no cae en la tela.
+    pub fn add_pin(&mut self, piece: PieceId, at: Point) -> Option<FastenerId> {
+        let p = self.piece(piece)?;
+        if p.is_hole() || !self.in_fabric(p, at, 0.0) {
+            return None;
+        }
+        let mark = MarkId(self.alloc_id());
+        self.piece_mut(piece)?.marks.push(Mark { id: mark, at });
+        let end = MarkRef { piece, mark };
+        let id = FastenerId(self.alloc_id());
+        let count = self.fasteners.iter().filter(|f| f.is_pin()).count();
+        let name = format!("{} {}", FastenerKind::Pin.label(), count + 1);
+        self.fasteners.push(Fastener { id, name, kind: FastenerKind::Pin, ends: [end, end], open: false });
         Some(id)
     }
 
@@ -1552,6 +1589,24 @@ mod tests {
         let piece = p.piece_mut(cuff).unwrap();
         piece.lines[0].from = Point::new(20.0, 50.0);
         assert!(p.validate().contains(&Issue::FoldNotAcross { piece: cuff, line: fold }), "{:?}", p.validate());
+    }
+
+    #[test]
+    fn pins_mark_one_point() {
+        let mut p = Pattern::new("t");
+        let body = p.add_rect("cuerpo", Point::ZERO, 200.0, 300.0);
+        assert!(p.add_pin(body, Point::new(-5.0, 50.0)).is_none());
+        let pin = p.add_pin(body, Point::new(100.0, 20.0)).unwrap();
+        let f = p.fastener(pin).unwrap();
+        assert!(f.is_pin() && !f.joins() && f.ends[0] == f.ends[1]);
+        assert_eq!(f.name, "Fijación 1");
+        assert_eq!(p.piece(body).unwrap().marks.len(), 1);
+        assert_eq!(p.mark_point(f.ends[0]), Some(Point::new(100.0, 20.0)));
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"pin\""));
+        assert_eq!(serde_json::from_str::<Pattern>(&json).unwrap(), p);
+        p.remove_fastener(pin);
+        assert!(p.piece(body).unwrap().marks.is_empty() && p.fasteners.is_empty());
     }
 
     #[test]

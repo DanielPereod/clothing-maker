@@ -428,6 +428,7 @@ impl ClothingMakerApp {
                 Stage::Simulation => {
                     self.view3d.ribbon(ui, &self.pattern, canvas::piece_color);
                     self.fill_group(ui);
+                    self.pins_group(ui);
                 }
             }
         });
@@ -909,6 +910,52 @@ impl ClothingMakerApp {
         });
     }
 
+    /// Fijaciones: puntos de la tela que se quedan quietos al terminar de
+    /// coser, para colgar la prenda de ellos.
+    fn pins_group(&mut self, ui: &mut Ui) {
+        widgets::ribbon_group(ui, "FIJACIONES", false, |ui, _| {
+            if widgets::ribbon_button(ui, Icon::Pin, "Fijar", self.view3d.pinning, true)
+                .on_hover_text(
+                    "Clic en la tela, en la vista 3D, para fijar ese punto: al terminar de coser se queda quieto \
+                     y la prenda cuelga de él (las asas de un bolso). Reinicia la simulación para verla colgar.",
+                )
+                .clicked()
+            {
+                self.view3d.pinning = !self.view3d.pinning;
+            }
+            let pins: Vec<_> = self.pattern.fasteners.iter().filter(|f| f.is_pin()).map(|f| f.id).collect();
+            if widgets::ribbon_button(ui, Icon::Delete, "Quitar", false, !pins.is_empty())
+                .on_hover_text("Quitar todas las fijaciones")
+                .clicked()
+            {
+                for id in pins {
+                    self.pattern.remove_fastener(id);
+                }
+                if matches!(self.editor.selection, Selection::Fastener(id) if self.pattern.fastener(id).is_none()) {
+                    self.editor.selection = Selection::None;
+                }
+            }
+        });
+    }
+
+    /// Lo que se ha pinchado en la tela en 3D: en modo fijar, una fijación
+    /// en ese punto; si no, se elige su pieza.
+    fn picked_in_3d(&mut self) {
+        let Some(picked) = self.view3d.take_pick() else { return };
+        if !self.view3d.pinning {
+            self.editor.selection = Selection::Piece(picked.piece);
+            return;
+        }
+        match self.pattern.add_pin(picked.piece, picked.at) {
+            Some(id) => {
+                self.editor.selection = Selection::Fastener(id);
+                let name = self.pattern.piece(picked.piece).map_or("", |p| p.name.as_str());
+                self.status = Some((format!("Fijación en «{name}»: reinicia la simulación para verla colgar"), false));
+            }
+            None => self.status = Some(("Ese punto no cae en la tela".to_owned(), true)),
+        }
+    }
+
     fn add_rect(&mut self) {
         let c = self.editor.view_center();
         let name = format!("Pieza {}", self.pattern.pieces.len() + 1);
@@ -1079,6 +1126,8 @@ impl eframe::App for ClothingMakerApp {
         }
 
         self.view3d.highlight_seams = self.stage == Stage::Assembly && self.highlight_seams;
+        self.view3d.highlight_piece = self.editor.selection.piece();
+        self.view3d.pinning &= self.stage == Stage::Simulation;
         if self.layout.shows_3d() {
             self.view3d.sync(&ctx, &self.pattern, canvas::piece_color);
         }
@@ -1097,6 +1146,7 @@ impl eframe::App for ClothingMakerApp {
             }
         });
 
+        self.picked_in_3d();
         self.unsaved_dialog(&ctx);
         self.notion_window(&ctx);
 
