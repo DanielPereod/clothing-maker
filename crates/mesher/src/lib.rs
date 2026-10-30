@@ -372,16 +372,14 @@ pub fn mesh_piece_with(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cdt.refine(parameters)))
         .map_err(|_| MeshError::Triangulation("spade no ha podido refinar la malla".into()))?;
     let excluded: std::collections::HashSet<_> = result.excluded_faces.into_iter().collect();
+    let fabric = if simple { None } else { Some(fabric_faces(&cdt, std::iter::once(&handles).chain(&hole_handles))) };
 
     // 4. Exportación, solo con los vértices que usan los triángulos de tela.
     let triangles: Vec<[u32; 3]> = cdt
         .inner_faces()
-        .filter(|f| !excluded.contains(&f.fix()))
-        .filter(|f| {
-            simple || {
-                let [a, b, c] = f.positions();
-                in_fabric(Point::new((a.x + b.x + c.x) / 3.0, (a.y + b.y + c.y) / 3.0))
-            }
+        .filter(|f| match &fabric {
+            None => !excluded.contains(&f.fix()),
+            Some(fabric) => fabric[f.fix().index()],
         })
         .map(|f| f.vertices().map(|v| v.fix().index() as u32))
         .collect();
@@ -434,6 +432,49 @@ fn resample(piece: &Piece, count: &impl Fn(EdgeId, &PathSeg) -> usize) -> Vec<(P
 
 /// Une los puntos de un contorno cerrado con aristas restringidas.
 /// Devuelve `false` si alguna se cruza con otra ya puesta.
+/// Qué caras (por índice) son tela: se recorren desde fuera y cada vez que
+/// se cruza el contorno o el borde de un agujero (no una línea interior) se
+/// pasa de fuera a dentro o al revés. Mirar si el centro de cada triángulo
+/// cae dentro no basta: en un lado inclinado quedan astillas planas entre
+/// puntos casi alineados del contorno, con el centro justo en el borde.
+fn fabric_faces<'a>(
+    cdt: &ConstrainedDelaunayTriangulation<Point2<f64>>,
+    rings: impl Iterator<Item = &'a Vec<spade::handles::FixedVertexHandle>>,
+) -> Vec<bool> {
+    let mut borders = std::collections::HashSet::new();
+    for ring in rings {
+        for i in 0..ring.len() {
+            let (a, b) = (ring[i].index(), ring[(i + 1) % ring.len()].index());
+            borders.insert((a.min(b), a.max(b)));
+        }
+    }
+    let crosses = |e: spade::handles::DirectedEdgeHandle<'_, Point2<f64>, (), spade::CdtEdge<()>, ()>| {
+        let (a, b) = (e.from().fix().index(), e.to().fix().index());
+        borders.contains(&(a.min(b), a.max(b)))
+    };
+    let mut inside: Vec<Option<bool>> = vec![None; cdt.num_all_faces()];
+    let mut queue = std::collections::VecDeque::new();
+    for face in cdt.inner_faces() {
+        for e in face.adjacent_edges() {
+            if e.rev().face().is_outer() && inside[face.fix().index()].is_none() {
+                inside[face.fix().index()] = Some(crosses(e));
+                queue.push_back(face);
+            }
+        }
+    }
+    while let Some(face) = queue.pop_front() {
+        let here = inside[face.fix().index()].unwrap_or(false);
+        for e in face.adjacent_edges() {
+            let Some(next) = e.rev().face().as_inner() else { continue };
+            if inside[next.fix().index()].is_none() {
+                inside[next.fix().index()] = Some(here != crosses(e));
+                queue.push_back(next);
+            }
+        }
+    }
+    inside.into_iter().map(|i| i.unwrap_or(false)).collect()
+}
+
 fn close_ring(
     cdt: &mut ConstrainedDelaunayTriangulation<Point2<f64>>,
     handles: &[spade::handles::FixedVertexHandle],
@@ -509,6 +550,17 @@ fn curve_min_divisions(seg: &PathSeg, tolerance: f64) -> usize {
 mod tests {
     use super::*;
     use pattern::Pattern;
+
+    /// El ángulo más pequeño (en grados) de un triángulo de la malla.
+    fn min_angle(mesh: &Mesh2D, t: [u32; 3]) -> f64 {
+        let p = t.map(|i| Point::new(mesh.positions[i as usize][0], mesh.positions[i as usize][1]));
+        (0..3)
+            .map(|i| {
+                let (u, v) = (p[(i + 1) % 3] - p[i], p[(i + 2) % 3] - p[i]);
+                (u.dot(v) / (u.hypot() * v.hypot())).clamp(-1.0, 1.0).acos().to_degrees()
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
 
     #[test]
     fn meshes_a_rectangle() {
@@ -667,7 +719,9 @@ mod tests {
     }
 
     /// Con líneas interiores también se mallan piezas de lados inclinados o
-    /// curvos (sus puntos no quedan del todo alineados) en cualquier tamaño.
+    /// curvos (sus puntos no quedan del todo alineados) en cualquier tamaño,
+    /// sin astillas planas a lo largo del lado inclinado (en la simulación,
+    /// un triángulo sin área hace explotar la tela).
     #[test]
     fn slanted_pieces_with_lines_mesh() {
         for size in [12.0, 15.0, 20.0, 25.0, 30.0, 40.0] {
@@ -683,6 +737,11 @@ mod tests {
                 let options = MeshOptions { target_edge_length: size, ..Default::default() };
                 let mesh = mesh_piece_in(&p, p.piece(piece).unwrap(), &options).unwrap();
                 assert_eq!(mesh.lines.len(), 3, "{size} {taper}");
+                let expected = p.piece(piece).unwrap().area().abs();
+                assert!((mesh.area() - expected).abs() < 5e-3 * expected, "{size} {taper}: {}", mesh.area());
+                for &t in &mesh.triangles {
+                    assert!(min_angle(&mesh, t) > 20.0, "{size} {taper}: astilla {t:?}");
+                }
             }
         }
     }
