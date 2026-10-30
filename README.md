@@ -254,6 +254,42 @@ que se cosen dando la vuelta (una base redonda, un puño, un volante).
   costado, base redonda en una sola costura con piquetes y puño de punto
   más corto que la boca, cosido estirado, en tres etapas.
 
+**Dobleces y fornituras:** lo que lleva un bolso de verdad además de
+tela: dobladillos y solapas, cremallera, asas de cincha, bies, vivos,
+elásticos, broches y presillas.
+
+- *Doblez* (D, en *Patrón*): arrastra de un borde de la pieza a otro y la
+  tela se dobla por esa línea; la parte pequeña es la solapa (*Cambiar
+  solapa* la cambia). En Propiedades: el ángulo (0 a 180°), hacia qué cara
+  se dobla y si va *planchado* (empieza ya doblado en 3D y se queda así,
+  como un dobladillo) o es una bisagra libre (una tapa que cae con su
+  peso). La malla parte la pieza por la línea y en 3D se pliega por ahí.
+- *Fornituras* (en *Montaje*): se generan como piezas y costuras normales,
+  con su tela (cinta de cremallera, cincha, bies, vivo, elástico), así que
+  se ven, se editan y se simulan como lo demás.
+  - *Cremallera*: con una costura de dos lados elegida, la sustituye por
+    dos cintas cosidas a cada lado y los dientes entre ellas (una costura
+    de tipo *cremallera*); sin nada elegido, crea una suelta. En
+    Propiedades, *Abierta* (0 a 100 %) la abre desde el tirador: en vivo se
+    ve abrirse y cerrarse.
+  - *Cincha*: una cinta del largo y ancho que digas, para asas y tirantes;
+    se cose a líneas interiores como cualquier otra pieza y empieza en arco,
+    fuera del panel.
+  - *Bies* (con una arista elegida): una tira del doble de ancho, doblada
+    por la mitad, que envuelve el canto.
+  - *Vivo* (con una costura elegida): una tira doblada que asoma entre los
+    lados de la costura.
+  - *Elástico* (con una arista elegida): una cinta un 20 % más corta, cosida
+    estirada a lo largo del borde, que frunce la tela.
+- *Broche* (B, en *Montaje*): clic en un punto de la tela y luego en el
+  punto con el que se une. Puede ser un *broche* (se abre y se cierra, en
+  vivo también) o una *presilla* (unas puntadas que fijan los dos puntos
+  para siempre: el forro al exterior, el extremo de un asa). Se unen al
+  final del montaje, como al rematar la prenda.
+- Ejemplo nuevo: *Bolso con cremallera y asas* (`bolso-con-cremallera`):
+  dos paneles de lona, una cremallera en la boca y dos asas de cincha, en
+  tres etapas (asas, cremallera, bolsa).
+
 **Interfaz:** inspirada en los programas de CAD como Fusion 360, con tema
 oscuro.
 
@@ -261,10 +297,11 @@ oscuro.
   rehacer), el documento abierto (con un punto si hay cambios sin guardar) y
   la disposición de las vistas.
 - Cinta de herramientas con las cinco etapas numeradas y *Siguiente* para
-  pasar a la próxima. *Patrón*: seleccionar, crear (pluma, rectángulo),
-  modificar, inspeccionar (rejilla, malla) y encuadrar. *Telas*: tela de la
-  selección (o de todas), añadir capa y tela nueva. *Montaje*: costura,
-  piquete, tipo, margen, orden, voltear y resaltar. *Colocación*: lado, zona y cara de la
+  pasar a la próxima. *Patrón*: seleccionar, crear (pluma, rectángulo,
+  línea, doblez), modificar, inspeccionar (rejilla, malla) y encuadrar.
+  *Telas*: tela de la selección (o de todas), añadir capa y tela nueva.
+  *Montaje*: costura, piquete, broche, fornituras, tipo, margen, orden,
+  voltear y resaltar. *Colocación*: lado, zona y cara de la
   pieza, su capa y sobre qué pieza va, maniquí, modo de colocación y coser. *Simulación*: simular / pausa,
   reiniciar, en vivo, entorno (obstáculo), precisión, inicio de cámara y
   relleno. Los grupos con ⏷ despliegan más órdenes.
@@ -343,7 +380,7 @@ principio), y cada pieza un `"arrangement"` (`front`, `back`, `left`,
 
 Costuras y márgenes (todo opcional; si falta, lo de antes): cada costura
 puede llevar `"kind"` (`plain`, `overlocked`, `exposed`, `french`,
-`flat_felled`, `lapped` o `bagged`), `"pressed_to"` (índice del lado hacia el
+`flat_felled`, `lapped`, `bagged` o `zipper`), `"pressed_to"` (índice del lado hacia el
 que va el margen), `"topstitch"` (`none`, `single` o `double`) y
 `"stitch_length"` (mm, 2,5 por defecto). El orden de `seams` es el de
 montaje. Cada arista puede llevar `"allowance"` (margen en mm); el patrón,
@@ -369,6 +406,17 @@ piquetes `{ "edge": 3, "t": 0.5 }` (`t` es el parámetro de la arista, de 0 a
 1). Cada costura, `"fit"` (`exact`, `eased`, `gathered` o `stretched`; si
 falta, `exact`) y `"step"` (id de su etapa). El patrón lleva sus etapas en
 orden en `"steps"`: `[{ "id": 40, "name": "Costados" }, ...]`.
+
+Dobleces, cremalleras y broches (opcionales): una línea interior con
+`"fold": { "angle": 180, "pressed": true, "toward_right_side": false, "flip": false }`
+es un doblez (ángulo en grados; `pressed`, si empieza doblado; hacia qué
+cara se dobla; `flip` cambia qué lado es la solapa). Una costura de tipo
+`zipper` puede llevar `"open"` (fracción abierta desde su principio, de 0 a
+1). Cada pieza puede llevar `"marks"`, puntos marcados
+`{ "id": 50, "at": { "x": 120, "y": 40 } }`, y el patrón, `"fasteners"`:
+`[{ "id": 52, "name": "Broche 1", "kind": "snap", "ends": [{ "piece": 1, "mark": 50 }, { "piece": 10, "mark": 51 }], "open": false }]`
+(`kind`: `snap` o `bar_tack`; un broche abierto no une nada). Las
+fornituras no tienen formato propio: son piezas y costuras normales.
 
 ## Desarrollo
 

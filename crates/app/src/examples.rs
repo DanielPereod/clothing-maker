@@ -194,6 +194,61 @@ pub fn lined_tote_bag() -> Pattern {
     p
 }
 
+/// Bolso con cremallera y asas: dos paneles de lona cosidos por el fondo y
+/// los lados, una cremallera en la boca (sus dos cintas, cosidas cada una a
+/// un panel, y los dientes, que se abren desde la izquierda del delantero
+/// con «Abierta» en la costura «Boca») y un asa de cincha en cada
+/// panel, cosida por sus extremos a dos líneas interiores. Como al coserlo
+/// de verdad, primero van las asas y la cremallera sobre los paneles
+/// planos, y al final se cierra la bolsa.
+pub fn zipper_bag() -> Pattern {
+    let (w, h) = (360.0, 280.0);
+    let mut p = Pattern::new("Bolso con cremallera y asas");
+    let canvas = p.textiles.iter().find(|t| t.name == "Lona").expect("tela genérica").id;
+    let front = p.add_rect("Delantero", Point::ZERO, w, h);
+    let back = p.add_rect("Trasero", Point::new(w + 70.0, 0.0), w, h);
+    p.piece_mut(back).unwrap().arrangement = Arrangement::Back;
+    for id in [front, back] {
+        p.piece_mut(id).unwrap().fabric = canvas;
+    }
+    let handles = p.add_step("Asas");
+    let zipper = p.add_step("Cremallera");
+    let body = p.add_step("Bolsa");
+    sew(&mut p, "Fondo", &[(front, BOTTOM, false), (back, BOTTOM, true)]);
+    sew(&mut p, "Lado dcho.", &[(front, RIGHT, false), (back, LEFT, true)]);
+    sew(&mut p, "Lado izdo.", &[(front, LEFT, false), (back, RIGHT, true)]);
+    for seam in &mut p.seams {
+        seam.step = Some(body);
+    }
+    sew(&mut p, "Boca", &[(front, TOP, false), (back, TOP, true)]);
+    let mouth = p.seams.last().unwrap().id;
+    p.seam_mut(mouth).unwrap().step = Some(zipper);
+    p.zip_seam(mouth, pattern::ZIPPER_TAPE_WIDTH).expect("la boca tiene dos lados");
+
+    // Las asas, cortas, de mano: cada extremo sobre una línea vertical cerca
+    // de la boca; el asa sale de una hacia la otra y empieza en arco, fuera
+    // del panel.
+    let (strap, width, gap) = (300.0, 25.0, 200.0);
+    for (k, (panel, name)) in [(front, "delantera"), (back, "trasera")].into_iter().enumerate() {
+        let x0 = p.piece(panel).unwrap().bounding_box().x0;
+        let lines = [(w - gap) / 2.0, (w + gap) / 2.0]
+            .map(|x| p.add_line(panel, Point::new(x0 + x, 30.0), Point::new(x0 + x, 30.0 + width)).unwrap());
+        let origin = Point::new(k as f64 * (strap + 40.0), h + 60.0);
+        let handle = p.add_strap(pattern::Notion::Webbing, strap, width, origin);
+        p.piece_mut(handle).unwrap().name = format!("Asa {name}");
+        let edge = |p: &Pattern, i: usize| p.piece(handle).unwrap().edges()[i].id;
+        // Los extremos, de arriba abajo como las líneas.
+        for (end, i, reversed, line) in [("izdo.", LEFT, true, lines[0]), ("dcho.", RIGHT, false, lines[1])] {
+            let sides = vec![SeamSide::new(handle, edge(&p, i), reversed), SeamSide::new(panel, line, false)];
+            let id = p.add_seam(format!("Asa {name} ({end})"), sides).expect("costura válida");
+            let seam = p.seam_mut(id).unwrap();
+            seam.set_kind(SeamKind::Lapped);
+            seam.step = Some(handles);
+        }
+    }
+    p
+}
+
 /// Cojín: dos cuadrados cosidos por los cuatro lados y con relleno, para
 /// ver la presión interior.
 pub fn cushion() -> Pattern {
@@ -375,13 +430,14 @@ fn sew(p: &mut Pattern, name: &str, sides: &[(PieceId, usize, bool)]) {
 pub type Example = (&'static str, &'static str, fn() -> Pattern);
 
 /// Todos los ejemplos.
-pub const ALL: [Example; 8] = [
+pub const ALL: [Example; 9] = [
     ("Camiseta básica", "camiseta-basica", t_shirt),
     ("Camiseta con mangas", "camiseta-con-mangas", t_shirt_with_sleeves),
     ("Bolsa tote", "bolsa-tote", tote_bag),
     ("Bolsa tote con forro", "bolsa-tote-con-forro", lined_tote_bag),
     ("Bolsa con fondo", "bolsa-con-fondo", box_bag),
     ("Bolso de cuero con forro", "bolso-de-cuero", leather_bag),
+    ("Bolso con cremallera y asas", "bolso-con-cremallera", zipper_bag),
     ("Cojín", "cojin", cushion),
     ("Chalk bag de escalada", "chalk-bag", chalk_bag),
 ];

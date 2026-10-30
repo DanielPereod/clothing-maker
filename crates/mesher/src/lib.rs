@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use kurbo::{ParamCurve, ParamCurveArclen, ParamCurveNearest, PathSeg, Point};
-use pattern::{EdgeId, Pattern, Piece, PieceId, SeamId, polygon_self_intersects};
+use pattern::{EdgeId, MarkId, Pattern, Piece, PieceId, SeamId, polygon_self_intersects};
 use spade::{ConstrainedDelaunayTriangulation, Point2, RefinementParameters, Triangulation};
 
 /// Distancia mínima (mm) de una línea interior al borde de la tela para
@@ -60,6 +60,9 @@ pub struct Mesh2D {
     pub holes: Vec<Vec<BoundaryVertex>>,
     /// Vértices de cada línea interior, del principio al final.
     pub lines: Vec<LineVertices>,
+    /// El vértice de cada punto marcado (donde va un broche o una presilla)
+    /// que cae en la tela.
+    pub marks: Vec<(MarkId, u32)>,
 }
 
 /// Los vértices de la malla que siguen una línea interior.
@@ -480,11 +483,24 @@ pub fn mesh_piece_with(
             continue;
         }
         let samples = count(line.id, &seg).samples();
-        let points: Vec<Point> = samples.iter().map(|&f| seg.eval(seg.inv_arclen(f * len, 1e-4))).collect();
+        let mut points: Vec<Point> = samples.iter().map(|&f| seg.eval(seg.inv_arclen(f * len, 1e-4))).collect();
         let clear = |p: Point| {
             in_fabric(p) && std::iter::once(&polygon).chain(&rings).all(|ring| ring_distance(p, ring) > LINE_GAP)
         };
-        if points.iter().all(|&p| clear(p)) && !lines.iter().any(|(_, other, _)| polylines_cross(&points, other)) {
+        // Un doblez va de un vértice del contorno a otro: sus extremos son
+        // esos puntos del contorno.
+        let fold = line.fold.is_some();
+        if fold && points.len() >= 2 {
+            let last = points.len() - 1;
+            (points[0], points[last]) = (line.from, line.to);
+        }
+        let on_outline = |p: Point| polygon.iter().any(|q| q.distance(p) < 1e-9);
+        let n = points.len();
+        let fits = points
+            .iter()
+            .enumerate()
+            .all(|(k, &p)| if fold && (k == 0 || k + 1 == n) { on_outline(p) } else { clear(p) });
+        if fits && !lines.iter().any(|(_, other, _)| polylines_cross(&points, other)) {
             lines.push((line.id, points, samples));
         }
     }
@@ -521,6 +537,14 @@ pub fn mesh_piece_with(
                 cdt.add_constraint(w[0], w[1]);
             }
             line_handles.push((*id, hs, samples));
+        }
+    }
+    // Los puntos marcados que caen en la tela, lejos del borde.
+    let mut mark_handles = Vec::new();
+    for mark in &piece.marks {
+        let clear = std::iter::once(&polygon).chain(&rings).all(|ring| ring_distance(mark.at, ring) > LINE_GAP);
+        if in_fabric(mark.at) && clear {
+            mark_handles.push((mark.id, insert(&mut cdt, mark.at)?));
         }
     }
     // Sin líneas interiores, spade sabe qué caras quedan fuera (el exterior
@@ -578,7 +602,8 @@ pub fn mesh_piece_with(
             s: samples.to_vec(),
         })
         .collect();
-    Ok(Mesh2D { positions, triangles, boundary, holes, lines })
+    let marks = mark_handles.iter().map(|&(id, h)| (id, at(h))).collect();
+    Ok(Mesh2D { positions, triangles, boundary, holes, lines, marks })
 }
 
 /// Puntos del contorno de una pieza repartidos por longitud de arco: cada
@@ -932,6 +957,39 @@ mod tests {
         assert_eq!(seam.sides[0].vertices.len(), seam.sides[1].vertices.len());
         let pos = all.pieces[0].as_ref().unwrap().positions[seam.sides[0].vertices[0] as usize];
         assert_eq!(pos, [50.0, 80.0]);
+    }
+
+    /// Un doblez va de borde a borde: sus extremos son puntos del contorno y
+    /// ningún triángulo lo cruza.
+    #[test]
+    fn marks_become_vertices() {
+        let mut p = Pattern::new("t");
+        let a = p.add_rect("a", Point::ZERO, 200.0, 100.0);
+        let b = p.add_rect("b", Point::new(0.0, 150.0), 200.0, 100.0);
+        let at = Point::new(73.3, 41.7);
+        p.add_fastener(pattern::FastenerKind::Snap, (a, at), (b, Point::new(20.0, 170.0))).unwrap();
+        let piece = p.piece(a).unwrap();
+        let mesh = mesh_piece_in(&p, piece, &MeshOptions::default()).unwrap();
+        let [(id, v)] = mesh.marks[..] else { panic!("{:?}", mesh.marks) };
+        assert_eq!(id, piece.marks[0].id);
+        assert_eq!(mesh.positions[v as usize], [at.x, at.y]);
+        assert!(mesh.triangles.iter().any(|t| t.contains(&v)));
+    }
+
+    #[test]
+    fn folds_split_the_mesh() {
+        let mut p = Pattern::new("t");
+        let id = p.add_rect("puño", Point::ZERO, 300.0, 120.0);
+        let fold = p.add_fold(id, Point::new(0.0, 60.0), Point::new(300.0, 60.0)).unwrap();
+        let mesh = mesh_piece_in(&p, p.piece(id).unwrap(), &MeshOptions::default()).unwrap();
+        assert!((mesh.area() - 300.0 * 120.0).abs() < 1.0, "área {}", mesh.area());
+        let line = mesh.lines.iter().find(|l| l.line == fold).expect("el doblez está en la malla");
+        let border: Vec<u32> = mesh.boundary.iter().map(|b| b.vertex).collect();
+        assert!(border.contains(&line.vertices[0]) && border.contains(line.vertices.last().unwrap()));
+        for t in &mesh.triangles {
+            let ys = t.map(|v| mesh.positions[v as usize][1]);
+            assert!(ys.iter().all(|&y| y <= 60.0 + 1e-6) || ys.iter().all(|&y| y >= 60.0 - 1e-6), "{ys:?}");
+        }
     }
 
     #[test]

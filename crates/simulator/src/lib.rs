@@ -151,6 +151,32 @@ struct BendConstraint {
     compliance: f32,
 }
 
+/// Un doblez sobre una bisagra (como en [`BendConstraint`]): la distancia
+/// entre los vértices opuestos `v[2]` y `v[3]` marca el ángulo, y `side`
+/// dice hacia qué lado del triángulo `v[0] v[1] v[3]` (según su normal)
+/// tiene que quedar `v[2]`: -1 detrás, 1 delante, 0 da igual.
+#[derive(Clone, Copy, Debug)]
+struct FoldConstraint {
+    v: [u32; 4],
+    rest_length: f32,
+    compliance: f32,
+    side: f32,
+}
+
+/// Cómo se dobla la tela por una arista de la malla (ver [`Cloth::crease`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crease {
+    /// Ángulo (rad) al que tiende: 0 = plana, π = doblada del todo.
+    /// `None` = bisagra libre, que dobla sin resistencia.
+    pub angle: Option<f32>,
+    /// La solapa se dobla hacia la cara de atrás de los triángulos (la
+    /// contraria a su normal, que en una pieza con el derecho fuera es el
+    /// revés); si no, hacia la de delante.
+    pub toward_back: bool,
+    /// Flexibilidad del doblez cuando tiene ángulo.
+    pub compliance: f32,
+}
+
 /// Las partículas y triángulos que aporta una pieza a la tela.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PieceRange {
@@ -215,6 +241,10 @@ pub struct Cloth {
     pending: Vec<DistanceConstraint>,
     /// Flexión, en serie (cada bisagra toca cuatro partículas).
     bends: Vec<BendConstraint>,
+    /// Bisagras de la malla (índices globales), para doblarlas.
+    hinges: Vec<[u32; 4]>,
+    /// Dobleces planchados, en serie.
+    folds: Vec<FoldConstraint>,
     /// Costuras: pocas comparadas con la tela, así que van en serie.
     seams: Vec<DistanceConstraint>,
     /// Turno de montaje de cada costura: solo se cierran las del turno más
@@ -299,6 +329,7 @@ impl Cloth {
             self.pending.push(c);
         }
         for hinge in hinges(&triangles) {
+            self.hinges.push(hinge.map(|i| i + base));
             // La distancia entre los vértices opuestos de cada bisagra apenas
             // frena la flexión mientras es suave, pero sujeta la cizalla (que
             // los triángulos se deformen dentro del plano).
@@ -399,6 +430,44 @@ impl Cloth {
                 *length = new;
             }
         }
+    }
+
+    /// Dobla la tela por la arista de la malla `a`–`b`: deja de resistirse a
+    /// doblar por ahí (una bisagra libre) o, con ángulo, tiende a quedarse
+    /// doblada a ese ángulo y hacia ese lado (un doblez planchado).
+    /// Devuelve `false` si `a`–`b` no es una arista interior de la malla.
+    pub fn crease(&mut self, a: u32, b: u32, crease: Crease) -> bool {
+        let on_edge = |h: &[u32; 4]| (h[0], h[1]) == (a.min(b), a.max(b));
+        let Some(&hinge) = self.hinges.iter().find(|h| on_edge(h)) else { return false };
+        self.bends.retain(|c| !(c.v[0] == hinge[0] && c.v[1] == hinge[1]));
+        // La distancia entre los vértices opuestos sujetaba la bisagra plana.
+        let wings = (hinge[2].min(hinge[3]), hinge[2].max(hinge[3]));
+        let mut all = std::mem::take(&mut self.constraints);
+        all.append(&mut self.pending);
+        all.retain(|c| (c.a.min(c.b), c.a.max(c.b)) != wings);
+        self.pending = all;
+        let Some(angle) = crease.angle else { return true };
+
+        let r = hinge.map(|i| self.rest[i as usize].0);
+        let axis = (r[1] - r[0]).normalize_or_zero();
+        let along = |p: Vec3| (p - r[0]).dot(axis);
+        let off = |p: Vec3| (p - r[0] - axis * along(p)).length();
+        let (h2, h3) = (off(r[2]), off(r[3]));
+        let gap = (along(r[2]) - along(r[3])).powi(2) + h2 * h2 + h3 * h3 + 2.0 * h2 * h3 * angle.cos();
+        let thick = self.thickness[hinge[2] as usize] + self.thickness[hinge[3] as usize];
+        let rest_length = gap.max(0.0).sqrt().max(thick);
+        let side = if crease.toward_back { -1.0 } else { 1.0 };
+        // La normal del triángulo v0 v1 v3 tal y como está en la tela.
+        let right_way =
+            self.triangles.iter().find(|t| [hinge[0], hinge[1], hinge[3]].iter().all(|v| t.contains(v))).is_none_or(
+                |t| {
+                    let i = t.iter().position(|&v| v == hinge[0]).unwrap_or(0);
+                    t[(i + 1) % 3] == hinge[1]
+                },
+            );
+        let side = if right_way { side } else { -side };
+        self.folds.push(FoldConstraint { v: hinge, rest_length, compliance: crease.compliance, side });
+        true
     }
 
     /// Suma masa (kg) a una partícula, como el margen de una costura. Las
@@ -533,6 +602,7 @@ impl Cloth {
             self.solve_collisions(colliders, parallel);
             self.solve_distances(h);
             self.solve_bending(h);
+            self.solve_folds(h);
             self.solve_seams(h);
             if params.self_collision {
                 self.self_collision.solve(&mut self.positions, &self.prev_positions, &self.inv_mass, &self.triangles);
@@ -622,22 +692,28 @@ impl Cloth {
     /// suyo: 0 si la tela no se cruza consigo misma. Es lento (compara todo
     /// con todo); sirve para las pruebas.
     pub fn count_crossings(&mut self) -> usize {
+        self.crossings().len()
+    }
+
+    /// Las aristas que atraviesan un triángulo (que no sea vecino suyo), con
+    /// ese triángulo.
+    pub fn crossings(&mut self) -> Vec<([u32; 2], [u32; 3])> {
         self.rebuild_self_collision();
-        let positions = &self.positions;
+        let (positions, triangles, collision) = (&self.positions, &self.triangles, &self.self_collision);
         self.mesh_edges
             .par_iter()
-            .map(|&[a, b]| {
+            .flat_map_iter(|&[a, b]| {
                 let (p, q) = (positions[a as usize], positions[b as usize]);
-                self.triangles
+                triangles
                     .iter()
-                    .filter(|t| {
-                        !self.self_collision.adjacent(a, t)
-                            && !self.self_collision.adjacent(b, t)
+                    .filter(move |t| {
+                        !collision.adjacent(a, t)
+                            && !collision.adjacent(b, t)
                             && self_collision::segment_hits_triangle(p, q, t.map(|v| positions[v as usize]))
                     })
-                    .count()
+                    .map(move |&t| ([a, b], t))
             })
-            .sum()
+            .collect()
     }
 
     /// Reparte las restricciones en grupos sin partículas compartidas
@@ -723,6 +799,33 @@ impl Cloth {
             let step = -curvature / denom;
             for ((&v, w), k) in c.v.iter().zip(w).zip(c.k) {
                 self.positions[v as usize] += step * (w * k);
+            }
+        }
+    }
+
+    fn solve_folds(&mut self, h: f32) {
+        let inv_h2 = 1.0 / (h * h);
+        for f in &self.folds {
+            let [a, b, c, d] = f.v.map(|i| i as usize);
+            let c2 =
+                DistanceConstraint { a: c as u32, b: d as u32, rest_length: f.rest_length, compliance: f.compliance };
+            let (dc, dd) = distance_correction(&c2, &self.positions, &self.inv_mass, inv_h2);
+            self.positions[c] += dc;
+            self.positions[d] += dd;
+            if f.side == 0.0 {
+                continue;
+            }
+            // La solapa no puede pasar al otro lado: `c` queda al menos a un
+            // grosor del triángulo `a b d`, por el lado del doblez. Así,
+            // aunque la tela empiece plana, ya sabe hacia dónde doblarse.
+            let x = |i: usize| self.positions[i];
+            let n = (x(b) - x(a)).cross(x(d) - x(a)).normalize_or_zero();
+            let depth = f.side * n.dot(x(c) - x(a)) - self.thickness[c];
+            let (wc, wd) = (self.inv_mass[c], self.inv_mass[d]);
+            if depth < 0.0 && wc + wd > 0.0 {
+                let push = n * (f.side * -depth / (wc + wd));
+                self.positions[c] += push * wc;
+                self.positions[d] -= push * wd;
             }
         }
     }
@@ -1012,6 +1115,44 @@ mod tests {
 
     /// Dos costuras en turnos distintos: la segunda no empieza a cerrarse
     /// hasta que la primera está cerrada.
+    /// Una tira con un doblez planchado a 180°: con la mitad de abajo fija,
+    /// la de arriba se dobla sobre ella hacia el lado que se pide.
+    #[test]
+    fn creases_fold_toward_their_side() {
+        let fold_to = |toward_back: bool| {
+            let mut p = Pattern::new("t");
+            let id = p.add_rect("tira", Point::ZERO, 300.0, 100.0);
+            let fold = p.add_fold(id, Point::new(0.0, 50.0), Point::new(300.0, 50.0)).unwrap();
+            let mesh = mesher::mesh_piece_in(&p, p.piece(id).unwrap(), &Default::default()).unwrap();
+            let mut cloth = Cloth::from_mesh(&mesh, &Fabric::COTTON);
+            let line = &mesh.lines.iter().find(|l| l.line == fold).unwrap().vertices;
+            for w in line.windows(2) {
+                let crease = Crease { angle: Some(std::f32::consts::PI), toward_back, compliance: 1e-6 };
+                assert!(cloth.crease(w[0], w[1], crease));
+            }
+            for (i, pos) in mesh.positions.iter().enumerate() {
+                if pos[1] > 60.0 {
+                    cloth.pin(i);
+                }
+            }
+            let params = SimParams { gravity: Vec3::ZERO, ..SimParams::default() };
+            for _ in 0..240 {
+                cloth.step(1.0 / 60.0, &params, &[]);
+            }
+            assert!(cloth.positions.iter().all(|p| p.is_finite()));
+            // La solapa (la mitad de arriba en el patrón: y > -0,05 en 3D)
+            // queda por debajo de la línea y apartada del plano.
+            let flap: Vec<Vec3> =
+                mesh.positions.iter().zip(&cloth.positions).filter(|(p, _)| p[1] < 40.0).map(|(_, &x)| x).collect();
+            let mean = flap.iter().sum::<Vec3>() / flap.len() as f32;
+            (mean.y, mean.z)
+        };
+        let (y, z) = fold_to(true);
+        assert!(y < -0.06 && z < 0.0, "hacia atrás: y {y}, z {z}");
+        let (y, z) = fold_to(false);
+        assert!(y < -0.06 && z > 0.0, "hacia delante: y {y}, z {z}");
+    }
+
     #[test]
     fn seams_close_in_turns() {
         let mesh = square_mesh(200.0);

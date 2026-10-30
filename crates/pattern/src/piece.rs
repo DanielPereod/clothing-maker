@@ -4,10 +4,12 @@ use kurbo::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{EdgeId, PieceId, TextileId};
+use crate::{EdgeId, MarkId, PieceId, TextileId};
 
 /// Precisión (mm) para longitudes y búsquedas sobre curvas.
 const ACCURACY: f64 = 1e-3;
+/// Distancia (mm) a la que el extremo de un doblez está en un vértice.
+pub const FOLD_SNAP: f64 = 0.01;
 
 /// Forma de una arista.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -57,11 +59,76 @@ pub struct InnerLine {
     pub to: Point,
     #[serde(flatten)]
     pub kind: EdgeKind,
+    /// Si la tela se dobla por esta línea. Entonces la línea va de un
+    /// vértice del contorno a otro y parte la pieza en dos.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fold: Option<Fold>,
+}
+
+/// Un doblez: la parte de la pieza a un lado de la línea (la solapa) se
+/// dobla sobre la otra, como un puño doblado por la mitad, un dobladillo o
+/// el bies.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Fold {
+    /// Cuánto se dobla (grados): 180 = la solapa queda sobre la otra
+    /// parte. Desde 90 la pieza se coloca ya doblada.
+    pub angle: f64,
+    /// Planchado: el doblez se queda en su ángulo. Si no, es una bisagra
+    /// libre: dobla sin resistencia.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pressed: bool,
+    /// La solapa se dobla hacia el derecho (derecho con derecho). Si no,
+    /// hacia el revés: revés con revés y el derecho queda fuera, como en un
+    /// puño o un dobladillo.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub toward_right_side: bool,
+    /// La solapa es la otra parte de la pieza: sin cambiar, es la que
+    /// queda a la izquierda de la línea en pantalla, mirando de `from` a
+    /// `to`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip: bool,
+}
+
+impl Default for Fold {
+    fn default() -> Self {
+        Self { angle: 180.0, pressed: true, toward_right_side: false, flip: false }
+    }
+}
+
+impl Fold {
+    /// Desde este ángulo (grados), la pieza se coloca ya doblada.
+    pub const PLACED_FOLDED: f64 = 90.0;
+
+    /// Si la pieza empieza ya doblada por aquí al colocarla en 3D.
+    pub fn starts_folded(&self) -> bool {
+        self.angle >= Self::PLACED_FOLDED
+    }
 }
 
 impl InnerLine {
     pub fn line(id: EdgeId, from: Point, to: Point) -> Self {
-        Self { id, from, to, kind: EdgeKind::Line }
+        Self { id, from, to, kind: EdgeKind::Line, fold: None }
+    }
+
+    /// Si el punto `p` cae en la solapa de este doblez (siempre `false`
+    /// si la línea no es un doblez). Se mira con la recta de un extremo a
+    /// otro.
+    pub fn in_flap(&self, p: Point) -> bool {
+        let Some(fold) = self.fold else { return false };
+        // Con Y hacia abajo, un producto vectorial negativo es la izquierda
+        // en pantalla.
+        let side = (self.to - self.from).cross(p - self.from);
+        if fold.flip { side > 0.0 } else { side < 0.0 }
+    }
+
+    /// El punto `p` reflejado en la recta del doblez: donde queda al doblar.
+    pub fn reflect(&self, p: Point) -> Point {
+        let axis = self.to - self.from;
+        if axis.hypot2() < 1e-12 {
+            return p;
+        }
+        let v = p - self.from;
+        self.from + axis * (2.0 * v.dot(axis) / axis.hypot2()) - v
     }
 
     pub fn segment(&self) -> PathSeg {
@@ -203,6 +270,17 @@ pub struct Piece {
     /// Piquetes: marcas en el borde para casar las piezas al coser.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notches: Vec<Notch>,
+    /// Puntos marcados dentro de la pieza: donde va un broche o una
+    /// presilla ([`crate::Fastener`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marks: Vec<Mark>,
+}
+
+/// Un punto marcado dentro de una pieza. Se mueve con ella.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Mark {
+    pub id: MarkId,
+    pub at: Point,
 }
 
 /// Un piquete: una marca en una arista. Al coser, los piquetes de los lados
@@ -267,6 +345,8 @@ struct RawPiece {
     on: Option<Mount>,
     #[serde(default)]
     notches: Vec<Notch>,
+    #[serde(default)]
+    marks: Vec<Mark>,
 }
 
 impl TryFrom<RawPiece> for Piece {
@@ -286,6 +366,7 @@ impl TryFrom<RawPiece> for Piece {
                 layer: raw.layer,
                 on: raw.on,
                 notches: raw.notches,
+                marks: raw.marks,
                 ..p
             })
             .ok_or_else(|| format!("la pieza {} no tiene el mismo número de vértices que de aristas", id.0))
@@ -311,6 +392,7 @@ impl Piece {
             layer: 0,
             on: None,
             notches: Vec::new(),
+            marks: Vec::new(),
         })
     }
 
@@ -387,8 +469,24 @@ impl Piece {
     }
 
     /// Mueve un vértice. Los manejadores de sus aristas le acompañan.
+    /// Mueve el vértice `i`. Los dobleces que salen de él lo siguen.
     pub fn set_vertex(&mut self, i: usize, p: Point) {
+        let old = self.vertices[i];
         self.vertices[i] = p;
+        for line in self.lines.iter_mut().filter(|l| l.fold.is_some()) {
+            if line.from.distance(old) < FOLD_SNAP {
+                line.from = p;
+            }
+            if line.to.distance(old) < FOLD_SNAP {
+                line.to = p;
+            }
+        }
+    }
+
+    /// Si los dos extremos de un doblez están en vértices del contorno.
+    pub fn fold_spans(&self, line: &InnerLine) -> bool {
+        let on_vertex = |q: Point| self.vertices.iter().any(|v| v.distance(q) < FOLD_SNAP);
+        on_vertex(line.from) && on_vertex(line.to) && line.from.distance(line.to) > FOLD_SNAP
     }
 
     pub fn translate(&mut self, delta: Vec2) {
@@ -398,6 +496,9 @@ impl Piece {
         for line in &mut self.lines {
             line.from += delta;
             line.to += delta;
+        }
+        for mark in &mut self.marks {
+            mark.at += delta;
         }
     }
 
@@ -416,6 +517,9 @@ impl Piece {
         }
         for line in &mut self.lines {
             (line.from, line.to, line.kind) = (point(line.from), point(line.to), kind(line.kind));
+        }
+        for mark in &mut self.marks {
+            mark.at = point(mark.at);
         }
     }
 
@@ -446,10 +550,17 @@ impl Piece {
             if let EdgeKind::Cubic { h1, h2 } = line.kind {
                 line.kind = EdgeKind::Cubic { h1: vector(h1), h2: vector(h2) };
             }
+            // Reflejada, la misma solapa queda al otro lado de la línea.
+            if let Some(fold) = &mut line.fold {
+                fold.flip = !fold.flip;
+            }
         }
         // Cada arista se recorre ahora al revés.
         for notch in &mut self.notches {
             notch.t = 1.0 - notch.t;
+        }
+        for mark in &mut self.marks {
+            mark.at = point(mark.at);
         }
     }
 
@@ -498,7 +609,8 @@ impl Piece {
                 EdgeKind::Line => EdgeKind::Line,
                 EdgeKind::Cubic { h1, h2 } => EdgeKind::Cubic { h1: reflect_vec(h1), h2: reflect_vec(h2) },
             };
-            lines.push(InnerLine { id, from: reflect(line.from), to: reflect(line.to), kind });
+            let fold = line.fold.map(|f| Fold { flip: !f.flip, ..f });
+            lines.push(InnerLine { id, from: reflect(line.from), to: reflect(line.to), kind, fold });
         }
         self.vertices = vertices;
         self.edges = edges;
