@@ -430,8 +430,6 @@ fn resample(piece: &Piece, count: &impl Fn(EdgeId, &PathSeg) -> usize) -> Vec<(P
     out
 }
 
-/// Une los puntos de un contorno cerrado con aristas restringidas.
-/// Devuelve `false` si alguna se cruza con otra ya puesta.
 /// Qué caras (por índice) son tela: se recorren desde fuera y cada vez que
 /// se cruza el contorno o el borde de un agujero (no una línea interior) se
 /// pasa de fuera a dentro o al revés. Mirar si el centro de cada triángulo
@@ -475,6 +473,8 @@ fn fabric_faces<'a>(
     inside.into_iter().map(|i| i.unwrap_or(false)).collect()
 }
 
+/// Une los puntos de un contorno cerrado con aristas restringidas.
+/// Devuelve `false` si alguna se cruza con otra ya puesta.
 fn close_ring(
     cdt: &mut ConstrainedDelaunayTriangulation<Point2<f64>>,
     handles: &[spade::handles::FixedVertexHandle],
