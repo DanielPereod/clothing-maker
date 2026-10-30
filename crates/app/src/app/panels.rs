@@ -14,6 +14,83 @@ use crate::stages::{self, Stage};
 use crate::theme;
 use crate::widgets;
 
+/// Filas de capa y de «encima de qué pieza» de una pieza, para el inspector
+/// y la cinta de Colocación. `hosts` son las piezas de tela sobre las que
+/// puede ir y `sewn_on` la que le tocaría sola (ver
+/// [`pattern::Pattern::sewn_on_lines`]).
+pub(super) fn layer_rows(
+    ui: &mut Ui,
+    id: &str,
+    piece: &mut pattern::Piece,
+    hosts: &[(pattern::PieceId, String)],
+    sewn_on: Option<pattern::PieceId>,
+    width: Option<f32>,
+) {
+    let combo = |salt: &str, text: String| {
+        let combo = egui::ComboBox::from_id_salt((id, salt)).selected_text(text);
+        match width {
+            Some(w) => combo.width(w),
+            None => combo,
+        }
+    };
+    widgets::prop_label(ui, "Capa").on_hover_text(
+        "Para un forro suelto o lo que vaya por dentro de otra pieza: cada capa se coloca aparte, dentro de la \
+         anterior, y no se cruzan. Lo que va pegado a toda la pieza (una entretela) va en las capas de su tela.",
+    );
+    combo("layer", pattern::layer_label(piece.layer)).show_ui(ui, |ui| {
+        for layer in 0..=3.max(piece.layer) {
+            ui.selectable_value(&mut piece.layer, layer, pattern::layer_label(layer));
+        }
+    });
+    ui.end_row();
+    let name = |id: pattern::PieceId| hosts.iter().find(|h| h.0 == id).map_or("?", |h| h.1.as_str());
+    let auto = match sewn_on {
+        Some(host) => format!("Automático: {}", name(host)),
+        None => "Ninguna".to_owned(),
+    };
+    widgets::prop_label(ui, "Sobre").on_hover_text(
+        "Encima de qué pieza empieza en 3D (un bolsillo de parche, un asa, un refuerzo): se coloca pegada a ella, \
+         en su sitio. Si va cosida a las líneas interiores de una pieza, va sobre ella sin decir nada.",
+    );
+    let host = |ui: &mut Ui, piece: &mut pattern::Piece| {
+        combo("on", piece.on.map_or(auto.clone(), |m| name(m.piece).to_owned())).show_ui(ui, |ui| {
+            if ui.selectable_label(piece.on.is_none(), &auto).clicked() {
+                piece.on = None;
+            }
+            for (host, label) in hosts {
+                let chosen = piece.on.is_some_and(|m| m.piece == *host);
+                if ui.selectable_label(chosen, label).clicked() && !chosen {
+                    piece.on = Some(pattern::Mount { piece: *host, wrong_side: false });
+                }
+            }
+        });
+    };
+    let wrong_side = |ui: &mut Ui, mount: &mut pattern::Mount, text: &str| {
+        ui.checkbox(&mut mount.wrong_side, text).on_hover_text(
+            "Por el revés de la pieza de debajo: por dentro en una pieza normal (un bolsillo interior) y hacia \
+             fuera en una con el derecho hacia dentro (un forro).",
+        );
+    };
+    // En la cinta, todo en una fila, para que no cambie de alto.
+    if width.is_some() {
+        ui.horizontal(|ui| {
+            host(ui, piece);
+            if let Some(mount) = &mut piece.on {
+                wrong_side(ui, mount, "Revés");
+            }
+        });
+        ui.end_row();
+    } else {
+        host(ui, piece);
+        ui.end_row();
+        if let Some(mount) = &mut piece.on {
+            ui.label("");
+            wrong_side(ui, mount, "Por su revés");
+            ui.end_row();
+        }
+    }
+}
+
 /// Algo que se puede hacer desde una fila del navegador.
 enum TreeAction {
     Select(Selection),
@@ -245,6 +322,7 @@ impl ClothingMakerApp {
         let parents: Vec<(pattern::PieceId, String)> =
             self.pattern.pieces.iter().filter(|p| p.id != id && !p.is_hole()).map(|p| (p.id, p.name.clone())).collect();
         let has_holes = self.pattern.holes_of(id).next().is_some();
+        let sewn_on = self.pattern.sewn_on_lines(id);
         let Some(piece) = self.pattern.piece_mut(id) else { return };
         let mut duplicate = false;
         let mut delete = false;
@@ -301,6 +379,9 @@ impl ClothingMakerApp {
                      fuera es el revés de la tela.",
                 );
                 ui.end_row();
+                if !piece.is_hole() {
+                    layer_rows(ui, "piece", piece, &parents, sewn_on, None);
+                }
                 if on_avatar {
                     widgets::prop_label(ui, "Zona del cuerpo").on_hover_text(
                         "Alrededor de qué parte del maniquí se coloca: el torso, un brazo (mangas) o una pierna. \

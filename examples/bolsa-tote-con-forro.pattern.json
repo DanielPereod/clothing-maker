@@ -1,0 +1,425 @@
+{
+  "format": "clothing-maker/pattern",
+  "version": 1,
+  "pattern": {
+    "name": "Bolsa tote con forro",
+    "pieces": [
+      {
+        "id": 1,
+        "name": "Delantero",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 0.0
+          },
+          {
+            "x": 380.0,
+            "y": 0.0
+          },
+          {
+            "x": 380.0,
+            "y": 420.0
+          },
+          {
+            "x": 0.0,
+            "y": 420.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 2,
+            "type": "line"
+          },
+          {
+            "id": 3,
+            "type": "line"
+          },
+          {
+            "id": 4,
+            "type": "line"
+          },
+          {
+            "id": 5,
+            "type": "line"
+          }
+        ],
+        "fabric": 6
+      },
+      {
+        "id": 6,
+        "name": "Trasero",
+        "vertices": [
+          {
+            "x": 450.0,
+            "y": 0.0
+          },
+          {
+            "x": 830.0,
+            "y": 0.0
+          },
+          {
+            "x": 830.0,
+            "y": 420.0
+          },
+          {
+            "x": 450.0,
+            "y": 420.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 7,
+            "type": "line"
+          },
+          {
+            "id": 8,
+            "type": "line"
+          },
+          {
+            "id": 9,
+            "type": "line"
+          },
+          {
+            "id": 10,
+            "type": "line"
+          }
+        ],
+        "arrangement": "back",
+        "fabric": 6
+      },
+      {
+        "id": 11,
+        "name": "Forro delantero",
+        "vertices": [
+          {
+            "x": 0.0,
+            "y": 500.0
+          },
+          {
+            "x": 380.0,
+            "y": 500.0
+          },
+          {
+            "x": 370.0,
+            "y": 910.0
+          },
+          {
+            "x": 10.0,
+            "y": 910.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 12,
+            "type": "line"
+          },
+          {
+            "id": 13,
+            "type": "line"
+          },
+          {
+            "id": 14,
+            "type": "line"
+          },
+          {
+            "id": 15,
+            "type": "line"
+          }
+        ],
+        "right_side_in": true,
+        "lines": [
+          {
+            "id": 29,
+            "from": {
+              "x": 110.0,
+              "y": 610.0
+            },
+            "to": {
+              "x": 110.0,
+              "y": 770.0
+            },
+            "type": "line"
+          },
+          {
+            "id": 30,
+            "from": {
+              "x": 110.0,
+              "y": 770.0
+            },
+            "to": {
+              "x": 270.0,
+              "y": 770.0
+            },
+            "type": "line"
+          },
+          {
+            "id": 31,
+            "from": {
+              "x": 270.0,
+              "y": 770.0
+            },
+            "to": {
+              "x": 270.0,
+              "y": 610.0
+            },
+            "type": "line"
+          }
+        ],
+        "layer": 1
+      },
+      {
+        "id": 16,
+        "name": "Forro trasero",
+        "vertices": [
+          {
+            "x": 450.0,
+            "y": 500.0
+          },
+          {
+            "x": 830.0,
+            "y": 500.0
+          },
+          {
+            "x": 820.0,
+            "y": 910.0
+          },
+          {
+            "x": 460.0,
+            "y": 910.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 17,
+            "type": "line"
+          },
+          {
+            "id": 18,
+            "type": "line"
+          },
+          {
+            "id": 19,
+            "type": "line"
+          },
+          {
+            "id": 20,
+            "type": "line"
+          }
+        ],
+        "arrangement": "back",
+        "right_side_in": true,
+        "layer": 1
+      },
+      {
+        "id": 32,
+        "name": "Bolsillo",
+        "vertices": [
+          {
+            "x": 900.0,
+            "y": 500.0
+          },
+          {
+            "x": 1060.0,
+            "y": 500.0
+          },
+          {
+            "x": 1060.0,
+            "y": 660.0
+          },
+          {
+            "x": 900.0,
+            "y": 660.0
+          }
+        ],
+        "edges": [
+          {
+            "id": 33,
+            "type": "line"
+          },
+          {
+            "id": 34,
+            "type": "line"
+          },
+          {
+            "id": 35,
+            "type": "line"
+          },
+          {
+            "id": 36,
+            "type": "line"
+          }
+        ],
+        "right_side_in": true,
+        "layer": 1
+      }
+    ],
+    "seams": [
+      {
+        "id": 21,
+        "name": "Fondo",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 4
+          },
+          {
+            "piece": 6,
+            "edge": 9,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 22,
+        "name": "Lateral dcho.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 3
+          },
+          {
+            "piece": 6,
+            "edge": 10,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 23,
+        "name": "Lateral izdo.",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 5
+          },
+          {
+            "piece": 6,
+            "edge": 8,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 24,
+        "name": "Fondo del forro",
+        "sides": [
+          {
+            "piece": 11,
+            "edge": 14
+          },
+          {
+            "piece": 16,
+            "edge": 19,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 25,
+        "name": "Lateral dcho. del forro",
+        "sides": [
+          {
+            "piece": 11,
+            "edge": 13
+          },
+          {
+            "piece": 16,
+            "edge": 20,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 26,
+        "name": "Lateral izdo. del forro",
+        "sides": [
+          {
+            "piece": 11,
+            "edge": 15
+          },
+          {
+            "piece": 16,
+            "edge": 18,
+            "reversed": true
+          }
+        ]
+      },
+      {
+        "id": 27,
+        "name": "Boca delantera",
+        "sides": [
+          {
+            "piece": 1,
+            "edge": 2
+          },
+          {
+            "piece": 11,
+            "edge": 12
+          }
+        ],
+        "kind": "bagged"
+      },
+      {
+        "id": 28,
+        "name": "Boca trasera",
+        "sides": [
+          {
+            "piece": 6,
+            "edge": 7
+          },
+          {
+            "piece": 16,
+            "edge": 17
+          }
+        ],
+        "kind": "bagged"
+      },
+      {
+        "id": 37,
+        "name": "Bolsillo izdo.",
+        "sides": [
+          {
+            "piece": 32,
+            "edge": 36,
+            "reversed": true
+          },
+          {
+            "piece": 11,
+            "edge": 29
+          }
+        ]
+      },
+      {
+        "id": 38,
+        "name": "Bolsillo fondo",
+        "sides": [
+          {
+            "piece": 32,
+            "edge": 35,
+            "reversed": true
+          },
+          {
+            "piece": 11,
+            "edge": 30
+          }
+        ]
+      },
+      {
+        "id": 39,
+        "name": "Bolsillo dcho.",
+        "sides": [
+          {
+            "piece": 32,
+            "edge": 34,
+            "reversed": true
+          },
+          {
+            "piece": 11,
+            "edge": 31
+          }
+        ]
+      }
+    ],
+    "next_id": 40
+  }
+}

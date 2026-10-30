@@ -654,6 +654,14 @@ impl ClothingMakerApp {
         });
         let on_avatar = self.pattern.on_avatar;
         let piece = self.editor.selection.piece();
+        let hosts: Vec<(pattern::PieceId, String)> = self
+            .pattern
+            .pieces
+            .iter()
+            .filter(|p| Some(p.id) != piece && !p.is_hole())
+            .map(|p| (p.id, p.name.clone()))
+            .collect();
+        let sewn_on = piece.and_then(|id| self.pattern.sewn_on_lines(id));
         widgets::ribbon_group(ui, "PIEZA", false, |ui, _| {
             let Some(piece) = piece.and_then(|id| self.pattern.piece_mut(id)) else {
                 ui.vertical(|ui| {
@@ -696,6 +704,13 @@ impl ClothingMakerApp {
                 ui.end_row();
             });
         });
+        if let Some(piece) = piece.and_then(|id| self.pattern.piece_mut(id)).filter(|p| !p.is_hole()) {
+            widgets::ribbon_group(ui, "CAPAS", false, |ui, _| {
+                egui::Grid::new("ribbon_layers").num_columns(2).spacing(egui::vec2(6.0, 2.0)).show(ui, |ui| {
+                    panels::layer_rows(ui, "ribbon", piece, &hosts, sewn_on, Some(130.0));
+                });
+            });
+        }
         widgets::ribbon_group(ui, "PRENDA", false, |ui, _| {
             if widgets::ribbon_button(ui, Icon::Mannequin, "Maniquí", self.pattern.on_avatar, true)
                 .on_hover_text(

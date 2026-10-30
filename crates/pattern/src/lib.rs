@@ -16,7 +16,7 @@ pub mod textile;
 pub use io::{FORMAT_ID, FORMAT_VERSION, PatternFile, PatternIoError};
 use kurbo::{ParamCurve, ParamCurveArclen};
 pub use kurbo::{Point, Vec2};
-pub use piece::{Arrangement, BodyZone, Edge, EdgeKind, InnerLine, Piece, polygon_self_intersects};
+pub use piece::{Arrangement, BodyZone, Edge, EdgeKind, InnerLine, Mount, Piece, layer_label, polygon_self_intersects};
 pub use seam::{AllowanceSide, DEFAULT_SEAM_ALLOWANCE, DEFAULT_STITCH_LENGTH, SeamFold, SeamKind, Topstitch};
 pub use textile::{Textile, TextileId};
 
@@ -301,6 +301,8 @@ impl Pattern {
         piece.fabric = src.fabric;
         piece.layers = src.layers.clone();
         piece.right_side_in = src.right_side_in;
+        piece.layer = src.layer;
+        piece.on = src.on;
         piece.lines = src.lines.iter().map(|l| InnerLine { id: EdgeId(self.alloc_id()), ..*l }).collect();
         shape(&mut piece);
         self.pieces.push(piece);
@@ -342,6 +344,37 @@ impl Pattern {
     /// Los agujeros de una pieza.
     pub fn holes_of(&self, id: PieceId) -> impl Iterator<Item = &Piece> {
         self.pieces.iter().filter(move |p| p.hole_in == Some(id))
+    }
+
+    /// Encima de qué pieza se coloca una pieza en 3D: la que diga la pieza
+    /// (`on`) o, si no dice nada, la única a cuyas líneas interiores va
+    /// cosida, por su derecho (un bolsillo de parche, un asa). Los agujeros
+    /// y las piezas que no van encima de otra devuelven `None`.
+    pub fn mount(&self, id: PieceId) -> Option<Mount> {
+        let piece = self.piece(id)?;
+        if piece.is_hole() {
+            return None;
+        }
+        let host_ok = |host: PieceId| host != id && self.piece(host).is_some_and(|h| !h.is_hole());
+        if let Some(mount) = piece.on {
+            return host_ok(mount.piece).then_some(mount);
+        }
+        self.sewn_on_lines(id).map(|piece| Mount { piece, wrong_side: false })
+    }
+
+    /// La única pieza a cuyas líneas interiores va cosida esta: encima de
+    /// ella va si la pieza no dice otra cosa (ver [`Self::mount`]).
+    pub fn sewn_on_lines(&self, id: PieceId) -> Option<PieceId> {
+        let host_ok = |host: PieceId| host != id && self.piece(host).is_some_and(|h| !h.is_hole());
+        let mut hosts = self
+            .seams
+            .iter()
+            .filter(|seam| seam.sides.iter().any(|s| s.piece == id))
+            .flat_map(|seam| &seam.sides)
+            .filter(|s| s.piece != id && self.piece(s.piece).is_some_and(|p| p.line_index(s.edge).is_some()))
+            .map(|s| s.piece);
+        let first = hosts.next()?;
+        (host_ok(first) && hosts.all(|h| h == first)).then_some(first)
     }
 
     /// Añade una línea interior recta a una pieza.
@@ -393,6 +426,11 @@ impl Pattern {
             seam.sides.retain(|s| !gone.contains(&s.piece));
         }
         self.seams.retain(|s| s.sides.len() >= 2);
+        for other in &mut self.pieces {
+            if other.on.is_some_and(|m| gone.contains(&m.piece)) {
+                other.on = None;
+            }
+        }
         Some(piece)
     }
 
@@ -800,6 +838,40 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].from, Point::new(250.0, 450.0));
         assert!(lines.iter().all(|l| l.id != out && l.id != cross));
+    }
+
+    #[test]
+    fn pieces_sewn_on_lines_go_on_top() {
+        let mut p = Pattern::new("bolso");
+        let front = p.add_rect("delantero", Point::ZERO, 300.0, 300.0);
+        let lining = p.add_rect("forro", Point::new(400.0, 0.0), 300.0, 300.0);
+        let pocket = p.add_rect("bolsillo", Point::new(0.0, 400.0), 150.0, 150.0);
+        let piece = p.piece_mut(lining).unwrap();
+        piece.layer = 1;
+        piece.right_side_in = true;
+        assert_eq!(p.mount(pocket), None);
+
+        // Cosido a una línea del delantero, va encima, por el derecho.
+        let line = p.add_line(front, Point::new(75.0, 100.0), Point::new(225.0, 100.0)).unwrap();
+        let top = p.piece(pocket).unwrap().edges()[0].id;
+        p.add_seam("boca", vec![SeamSide::new(pocket, top, false), SeamSide::new(front, line, false)]);
+        assert_eq!(p.mount(pocket), Some(Mount { piece: front, wrong_side: false }));
+        // El delantero no va encima del bolsillo, ni el forro encima de nada.
+        assert_eq!(p.mount(front), None);
+        assert_eq!(p.mount(lining), None);
+
+        // Dicho a mano, manda lo que diga la pieza.
+        let on_lining = Mount { piece: lining, wrong_side: true };
+        p.piece_mut(pocket).unwrap().on = Some(on_lining);
+        assert_eq!(p.mount(pocket), Some(on_lining));
+        // Se guarda y se lee igual.
+        let back = Pattern::from_json(&p.to_json().unwrap()).unwrap();
+        assert_eq!(back.piece(pocket).unwrap().on, Some(on_lining));
+        assert_eq!(back.piece(lining).unwrap().layer, 1);
+        // Sin el forro, vuelve a ir sobre la línea del delantero.
+        p.remove_piece(lining);
+        assert_eq!(p.piece(pocket).unwrap().on, None);
+        assert_eq!(p.mount(pocket).map(|m| m.piece), Some(front));
     }
 
     #[test]

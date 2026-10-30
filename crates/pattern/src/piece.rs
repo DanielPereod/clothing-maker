@@ -190,6 +190,40 @@ pub struct Piece {
     /// sus aristas se pueden coser.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hole_in: Option<PieceId>,
+    /// Capa en 3D: 0 es la de fuera (el exterior), 1 el forro, que va
+    /// dentro, y así hacia dentro. Las piezas de cada capa se colocan aparte,
+    /// una dentro de otra.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub layer: u8,
+    /// Encima de qué pieza se coloca (un bolsillo de parche, un asa, un
+    /// refuerzo). Si no se dice, va encima de la pieza a cuyas líneas
+    /// interiores esté cosida ([`crate::Pattern::mount`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<Mount>,
+}
+
+/// Una pieza colocada encima de otra.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mount {
+    pub piece: PieceId,
+    /// Va por el revés de la otra pieza en vez de por el derecho (por
+    /// ejemplo, una vista que se vuelve hacia dentro por una ventana).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wrong_side: bool,
+}
+
+/// Nombre de una capa para la interfaz: la de fuera, el forro y las demás
+/// por número.
+pub fn layer_label(layer: u8) -> String {
+    match layer {
+        0 => "Exterior".to_owned(),
+        1 => "Forro".to_owned(),
+        n => format!("Capa {}", n + 1),
+    }
+}
+
+fn is_zero(n: &u8) -> bool {
+    *n == 0
 }
 
 /// Forma serializada, para comprobar invariantes al deserializar.
@@ -213,6 +247,10 @@ struct RawPiece {
     lines: Vec<InnerLine>,
     #[serde(default)]
     hole_in: Option<PieceId>,
+    #[serde(default)]
+    layer: u8,
+    #[serde(default)]
+    on: Option<Mount>,
 }
 
 impl TryFrom<RawPiece> for Piece {
@@ -229,6 +267,8 @@ impl TryFrom<RawPiece> for Piece {
                 right_side_in: raw.right_side_in,
                 lines: raw.lines,
                 hole_in: raw.hole_in,
+                layer: raw.layer,
+                on: raw.on,
                 ..p
             })
             .ok_or_else(|| format!("la pieza {} no tiene el mismo número de vértices que de aristas", id.0))
@@ -251,6 +291,8 @@ impl Piece {
             right_side_in: false,
             lines: Vec::new(),
             hole_in: None,
+            layer: 0,
+            on: None,
         })
     }
 

@@ -230,21 +230,29 @@ fn line_target(pattern: &Pattern, piece: PieceId, line: pattern::EdgeId) -> Opti
     Some(Selection::Line(piece, k))
 }
 
-/// Dónde va una pieza en 3D, en palabras: su lado y, en las prendas, su
-/// zona del cuerpo.
+/// Dónde va una pieza en 3D, en palabras: su lado, su capa y, en las
+/// prendas, su zona del cuerpo, o la pieza encima de la que va.
 pub fn slot_label(pattern: &Pattern, piece: &Piece) -> String {
-    if pattern.on_avatar && piece.zone != BodyZone::Torso {
+    if let Some(mount) = pattern.mount(piece.id) {
+        let host = pattern.piece(mount.piece).map_or("?", |p| p.name.as_str());
+        return if mount.wrong_side { format!("sobre {host}, por su revés") } else { format!("sobre {host}") };
+    }
+    let mut label = if pattern.on_avatar && piece.zone != BodyZone::Torso {
         format!("{} · {}", piece.zone.label(), piece.arrangement.label())
     } else {
         piece.arrangement.label().to_owned()
+    };
+    if piece.layer != 0 {
+        label = format!("{label} · {}", pattern::layer_label(piece.layer));
     }
+    label
 }
 
 /// Grupo de colocación de una pieza: las del mismo grupo se colocan juntas,
 /// con la disposición del editor.
-fn slot(pattern: &Pattern, piece: &Piece) -> (BodyZone, Arrangement) {
+fn slot(pattern: &Pattern, piece: &Piece) -> (BodyZone, u8, Arrangement) {
     let zone = if pattern.on_avatar { piece.zone } else { BodyZone::Torso };
-    (zone, piece.arrangement)
+    (zone, piece.layer, piece.arrangement)
 }
 
 /// Pares de piezas del mismo grupo de colocación que se solapan en el
@@ -254,8 +262,16 @@ pub fn overlapping_pieces(pattern: &Pattern) -> Vec<(PieceId, PieceId)> {
     let mut out = Vec::new();
     for (i, a) in pattern.pieces.iter().enumerate() {
         for (j, b) in pattern.pieces.iter().enumerate().skip(i + 1) {
-            // Un agujero está dentro de su pieza a propósito.
-            if slot(pattern, a) != slot(pattern, b) || a.len() < 3 || b.len() < 3 || a.is_hole() || b.is_hole() {
+            // Un agujero está dentro de su pieza a propósito, y lo que va
+            // encima de otra pieza no se coloca con su grupo.
+            if slot(pattern, a) != slot(pattern, b)
+                || a.len() < 3
+                || b.len() < 3
+                || a.is_hole()
+                || b.is_hole()
+                || pattern.mount(a.id).is_some()
+                || pattern.mount(b.id).is_some()
+            {
                 continue;
             }
             if !a.bounding_box().intersect(b.bounding_box()).is_zero_area()
@@ -333,10 +349,20 @@ mod tests {
         let stages: Vec<Stage> = found.iter().map(|c| c.stage).collect();
         assert_eq!(stages, [Stage::Assembly, Stage::Placement], "{found:?}");
         assert!(found.iter().all(|c| c.target == Some(Selection::Piece(pocket))));
-        // En otro lado ya no se solapa con nada.
-        p.piece_mut(pocket).unwrap().arrangement = Arrangement::Left;
-        let found = checks(&p, &SceneReport::default());
-        assert_eq!(found.iter().map(|c| c.stage).collect::<Vec<_>>(), [Stage::Assembly]);
+        // En otro lado, en otra capa (un forro suelto) o encima del
+        // delantero a propósito ya no se cruza con nada.
+        let front = p.pieces[0].clone();
+        let changes: [fn(&mut Piece, &Piece); 3] = [
+            |pocket, _| pocket.arrangement = Arrangement::Left,
+            |pocket, _| pocket.layer = 1,
+            |pocket, front| pocket.on = Some(pattern::Mount { piece: front.id, wrong_side: false }),
+        ];
+        for change in changes {
+            let mut p = p.clone();
+            change(p.piece_mut(pocket).unwrap(), &front);
+            let found = checks(&p, &SceneReport::default());
+            assert_eq!(found.iter().map(|c| c.stage).collect::<Vec<_>>(), [Stage::Assembly]);
+        }
     }
 
     /// Un bolsillo cosido sobre una línea interior del delantero puede ir

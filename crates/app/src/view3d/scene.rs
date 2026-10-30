@@ -321,20 +321,30 @@ pub fn build(
     let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let drop_height = settings.obstacle.top() + 0.1;
     let avatar = settings.obstacle.avatar();
+    // Las piezas que van encima de otra se colocan con ella; las demás, por
+    // grupos.
+    let mounts = mount_places(pattern, &meshed, &meshes);
+    let free: Vec<(usize, &Piece, &Mesh2D)> = meshes.iter().copied().filter(|m| !mounts.contains_key(&m.0)).collect();
     let around = match settings.placement {
         Placement::Around => true,
         Placement::Hang => sewn,
         Placement::Drop => sewn && on_body,
     }
-    .then(|| AroundLayout::new(&meshes, settings.obstacle.top(), avatar.as_deref()));
-    let flat = (settings.placement == Placement::Drop && sewn && !on_body).then(|| FlatLayout::new(&meshes));
+    .then(|| AroundLayout::new(&free, settings.obstacle.top(), avatar.as_deref()));
+    let flat = (settings.placement == Placement::Drop && sewn && !on_body).then(|| FlatLayout::new(&free));
+    let place_around = |layout: &AroundLayout, index: usize, p: [f64; 2]| {
+        let (root, p, offset) = resolve_mount(&mounts, index, p);
+        layout.place(&pattern.pieces[root], p, offset)
+    };
+    let root = |index: usize| &pattern.pieces[resolve_mount(&mounts, index, [0.0, 0.0]).0];
     let hang_z = settings.obstacle.front() + if settings.obstacle == Obstacle::None { 0.0 } else { 0.1 };
     // Al colgar la pieza montada, se sube hasta `HANG_HEIGHT` y se aparta
     // hasta quedar delante del obstáculo.
     let lift = match &around {
         Some(layout) if settings.placement == Placement::Hang => {
-            let placed =
-                meshes.iter().flat_map(|&(_, piece, mesh)| mesh.positions.iter().map(|&p| layout.place(piece, p)));
+            let placed = meshes
+                .iter()
+                .flat_map(|&(index, _, mesh)| mesh.positions.iter().map(move |&p| place_around(layout, index, p)));
             let (top, back) = placed.fold((f32::NEG_INFINITY, f32::INFINITY), |(t, b), p| (t.max(p.y), b.min(p.z)));
             Vec3::new(0.0, HANG_HEIGHT - top, (hang_z - back).max(0.0))
         }
@@ -350,9 +360,13 @@ pub fn build(
     for &(index, piece, mesh) in &meshes {
         let fabric = piece_fabric(pattern, piece);
         let range = if let Some(layout) = &around {
-            cloth.add_piece(mesh, &fabric, |p| layout.place(piece, p) + lift, layout.front(piece))
+            cloth.add_piece(mesh, &fabric, |p| place_around(layout, index, p) + lift, layout.front(root(index)))
         } else if let Some(layout) = &flat {
-            cloth.add_piece(mesh, &fabric, |p| layout.place(piece, p, drop_height), layout.front(piece))
+            let place = |p| {
+                let (root, p, offset) = resolve_mount(&mounts, index, p);
+                layout.place(&pattern.pieces[root], p, drop_height, offset)
+            };
+            cloth.add_piece(mesh, &fabric, place, layout.front(root(index)))
         } else if settings.placement == Placement::Hang {
             cloth.add_piece(
                 mesh,
@@ -370,6 +384,7 @@ pub fn build(
                 Vec3::Y,
             )
         };
+        cloth.set_layer(&range, root(index).layer);
         first_particle[index] = range.first_particle;
         pieces.push(ScenePiece {
             id: piece.id,
@@ -648,6 +663,125 @@ fn bounds(meshes: &[&Mesh2D]) -> ([f64; 2], [f64; 2]) {
     (min, max)
 }
 
+/// Separación (m) entre una capa y la siguiente hacia dentro (el exterior y
+/// el forro), al colocarlas alrededor.
+const LAYER_SEP: f32 = 0.02;
+/// Separación (m) entre una pieza y la pieza sobre la que va (un bolsillo de
+/// parche y su panel).
+const MOUNT_GAP: f32 = 0.01;
+
+/// Una pieza que va encima de otra ([`Pattern::mount`]): se coloca como su
+/// pieza de debajo, con sus puntos llevados encima de donde van cosidos y
+/// algo apartada de ella.
+struct MountPlace {
+    /// Índice de la pieza de debajo en el patrón.
+    host: usize,
+    /// Giro (coseno, seno) y traslación que llevan un punto de la pieza a
+    /// donde cae sobre la de debajo, en el patrón (mm).
+    rotation: [f64; 2],
+    from: [f64; 2],
+    to: [f64; 2],
+    /// 1 si va hacia fuera de la de debajo, −1 si hacia dentro.
+    outward: f32,
+}
+
+impl MountPlace {
+    fn apply(&self, p: [f64; 2]) -> [f64; 2] {
+        let [c, s] = self.rotation;
+        let (x, y) = (p[0] - self.from[0], p[1] - self.from[1]);
+        [self.to[0] + c * x - s * y, self.to[1] + s * x + c * y]
+    }
+}
+
+/// Las piezas que van encima de otra, por su índice en el patrón. La pieza
+/// de debajo tiene que estar mallada, y una cadena que vuelve sobre sí misma
+/// no cuenta.
+fn mount_places(
+    pattern: &Pattern,
+    meshed: &mesher::PatternMesh,
+    meshes: &[(usize, &Piece, &Mesh2D)],
+) -> HashMap<usize, MountPlace> {
+    let mesh_of = |i: usize| meshes.iter().find(|m| m.0 == i).map(|m| m.2);
+    let mut out = HashMap::new();
+    for &(index, piece, mesh) in meshes {
+        let Some(mount) = pattern.mount(piece.id) else { continue };
+        let Some(host) = pattern.pieces.iter().position(|p| p.id == mount.piece) else { continue };
+        let Some(host_mesh) = mesh_of(host) else { continue };
+        // Los puntos cosidos entre las dos piezas, en cada una.
+        let mut pairs = Vec::new();
+        for seam in &meshed.seams {
+            for a in seam.sides.iter().filter(|s| s.piece == index) {
+                for b in seam.sides.iter().filter(|s| s.piece == host) {
+                    for (&va, &vb) in a.vertices.iter().zip(&b.vertices) {
+                        pairs.push((mesh.positions[va as usize], host_mesh.positions[vb as usize]));
+                    }
+                }
+            }
+        }
+        let (rotation, from, to) = rigid_fit(&pairs);
+        let outward = if pattern.pieces[host].right_side_in == mount.wrong_side { 1.0 } else { -1.0 };
+        out.insert(index, MountPlace { host, rotation, from, to, outward });
+    }
+    // Fuera las cadenas que vuelven sobre sí mismas.
+    let looping: Vec<usize> = out
+        .keys()
+        .copied()
+        .filter(|&start| {
+            let mut i = start;
+            for _ in 0..=out.len() {
+                match out.get(&i) {
+                    Some(m) if m.host == start => return true,
+                    Some(m) => i = m.host,
+                    None => return false,
+                }
+            }
+            true
+        })
+        .collect();
+    for i in looping {
+        out.remove(&i);
+    }
+    out
+}
+
+/// Giro y traslación que mejor llevan los primeros puntos de cada par sobre
+/// los segundos (sin espejo ni escala). Sin pares, nada.
+fn rigid_fit(pairs: &[([f64; 2], [f64; 2])]) -> ([f64; 2], [f64; 2], [f64; 2]) {
+    if pairs.is_empty() {
+        return ([1.0, 0.0], [0.0, 0.0], [0.0, 0.0]);
+    }
+    let n = pairs.len() as f64;
+    let mean = |points: &mut dyn Iterator<Item = [f64; 2]>| {
+        let s = points.fold([0.0, 0.0], |a, p| [a[0] + p[0], a[1] + p[1]]);
+        [s[0] / n, s[1] / n]
+    };
+    let (from, to) = (mean(&mut pairs.iter().map(|p| p.0)), mean(&mut pairs.iter().map(|p| p.1)));
+    let (mut dot, mut cross) = (0.0, 0.0);
+    for (a, b) in pairs {
+        let (ax, ay, bx, by) = (a[0] - from[0], a[1] - from[1], b[0] - to[0], b[1] - to[1]);
+        dot += ax * bx + ay * by;
+        cross += ax * by - ay * bx;
+    }
+    let angle = if dot.hypot(cross) > 1e-9 { cross.atan2(dot) } else { 0.0 };
+    ([angle.cos(), angle.sin()], from, to)
+}
+
+/// Sigue una pieza que va encima de otra hasta la de debajo del todo: su
+/// índice, dónde cae el punto `p` sobre ella y a qué distancia (m, hacia
+/// fuera).
+fn resolve_mount(mounts: &HashMap<usize, MountPlace>, index: usize, p: [f64; 2]) -> (usize, [f64; 2], f32) {
+    let (mut index, mut p, mut offset) = (index, p, 0.0);
+    while let Some(m) = mounts.get(&index) {
+        p = m.apply(p);
+        offset += m.outward * MOUNT_GAP;
+        index = m.host;
+    }
+    (index, p, offset)
+}
+
+/// Grupo de piezas que se colocan juntas: zona del cuerpo, capa y lado.
+type Group = (BodyZone, u8, Arrangement);
+
 /// Colocación «alrededor»: las piezas de delante, detrás y los lados se
 /// curvan sobre un cilindro, cada grupo centrado en su lado y con la
 /// disposición del editor; las de arriba y abajo van perpendiculares al eje,
@@ -656,9 +790,13 @@ fn bounds(meshes: &[&Mesh2D]) -> ([f64; 2], [f64; 2]) {
 /// Sin maniquí hay un solo cilindro vertical, sobre el obstáculo. Con
 /// maniquí, uno por zona del cuerpo ([`BodyZone`]), con el eje de esa zona
 /// y un radio que deja algo de holgura sobre el cuerpo.
+///
+/// Cada capa ([`Piece::layer`]) va en su propio cilindro, uno dentro de otro
+/// y con el borde de arriba de sus paredes a la misma altura: el forro
+/// queda dentro del exterior, con la boca a la par.
 struct AroundLayout {
     /// Centro (mm) de cada grupo de piezas en el patrón.
-    group_center: HashMap<(BodyZone, Arrangement), [f64; 2]>,
+    group_center: HashMap<Group, [f64; 2]>,
     zones: HashMap<BodyZone, ZoneLayout>,
     /// Con maniquí, cada pieza va en su zona; sin él, todas en una.
     by_zone: bool,
@@ -666,13 +804,22 @@ struct AroundLayout {
 
 struct ZoneLayout {
     frame: ZoneFrame,
-    /// Radio del cilindro (mm).
+    /// Radio (mm) del cilindro de la capa de más dentro.
     radius: f64,
-    /// Borde superior (mm, Y hacia abajo) de las piezas laterales: va en
-    /// `frame.top`.
-    top: f64,
-    /// Alto (m) de las piezas laterales.
+    /// La capa de más dentro.
+    inner: u8,
+    /// Borde superior (mm, Y hacia abajo) de las piezas laterales de cada
+    /// capa, que va en `frame.top`, y su alto (m).
+    layers: HashMap<u8, (f64, f32)>,
+    /// Alto (m) de las piezas laterales más altas.
     height: f32,
+}
+
+impl ZoneLayout {
+    /// Radio (mm) del cilindro de una capa.
+    fn radius(&self, layer: u8) -> f64 {
+        self.radius + f64::from(self.inner.saturating_sub(layer)) * f64::from(LAYER_SEP) * 1e3
+    }
 }
 
 /// Separación (m) entre las tapas y las piezas laterales.
@@ -686,12 +833,11 @@ impl AroundLayout {
     fn new(meshes: &[(usize, &Piece, &Mesh2D)], floor: f32, avatar: Option<&Avatar>) -> Self {
         let by_zone = avatar.is_some();
         let zone_of = |piece: &Piece| if by_zone { piece.zone } else { BodyZone::Torso };
-        let mut groups: HashMap<(BodyZone, Arrangement), Vec<&Mesh2D>> = HashMap::new();
+        let mut groups: HashMap<Group, Vec<&Mesh2D>> = HashMap::new();
         for (_, piece, mesh) in meshes {
-            groups.entry((zone_of(piece), piece.arrangement)).or_default().push(mesh);
+            groups.entry((zone_of(piece), piece.layer, piece.arrangement)).or_default().push(mesh);
         }
-        let group_bounds: HashMap<(BodyZone, Arrangement), ([f64; 2], [f64; 2])> =
-            groups.iter().map(|(k, m)| (*k, bounds(m))).collect();
+        let group_bounds: HashMap<Group, ([f64; 2], [f64; 2])> = groups.iter().map(|(k, m)| (*k, bounds(m))).collect();
         let group_center = group_bounds
             .iter()
             .map(|(k, (min, max))| (*k, [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0]))
@@ -699,23 +845,31 @@ impl AroundLayout {
 
         let mut zones = HashMap::new();
         for zone in BodyZone::ALL {
-            let in_zone: Vec<Arrangement> = groups.keys().filter(|(z, _)| *z == zone).map(|(_, a)| *a).collect();
+            let in_zone: Vec<(u8, Arrangement)> =
+                groups.keys().filter(|(z, ..)| *z == zone).map(|&(_, l, a)| (l, a)).collect();
             if in_zone.is_empty() {
                 continue;
             }
-            let walls: Vec<&Mesh2D> = groups
-                .iter()
-                .filter(|((z, a), _)| *z == zone && is_wall(*a))
-                .flat_map(|(_, m)| m.iter().copied())
-                .collect();
-            let (wall_min, wall_max) = bounds(&walls);
-            let height = if walls.is_empty() { 0.0 } else { ((wall_max[1] - wall_min[1]) * 1e-3) as f32 };
+            let inner = in_zone.iter().map(|&(l, _)| l).max().unwrap_or(0);
+            let mut layers = HashMap::new();
+            for &(layer, _) in &in_zone {
+                let walls: Vec<&Mesh2D> = groups
+                    .iter()
+                    .filter(|((z, l, a), _)| *z == zone && *l == layer && is_wall(*a))
+                    .flat_map(|(_, m)| m.iter().copied())
+                    .collect();
+                let (min, max) = bounds(&walls);
+                let entry = if walls.is_empty() { (0.0, 0.0) } else { (min[1], ((max[1] - min[1]) * 1e-3) as f32) };
+                layers.insert(layer, entry);
+            }
+            let height = layers.values().map(|&(_, h)| h).fold(0.0, f32::max);
             // Cada grupo ocupa como mucho este ángulo del cilindro, para que
             // quede un hueco entre grupos vecinos. Sobre el cuerpo, una pieza
             // sola (una manga, por ejemplo) casi da la vuelta entera.
-            let wall_groups = in_zone.iter().filter(|a| is_wall(**a)).count();
-            let sides = in_zone.contains(&Arrangement::Left) || in_zone.contains(&Arrangement::Right);
-            let max_angle = if by_zone && wall_groups == 1 {
+            let wall_groups = |layer: u8| in_zone.iter().filter(|&&(l, a)| l == layer && is_wall(a)).count();
+            let lone_walls = layers.keys().all(|&l| wall_groups(l) <= 1);
+            let sides = in_zone.iter().any(|&(_, a)| matches!(a, Arrangement::Left | Arrangement::Right));
+            let max_angle = if by_zone && lone_walls {
                 1.7
             } else if sides {
                 0.42
@@ -724,7 +878,7 @@ impl AroundLayout {
             } * std::f64::consts::PI;
             let widest = group_bounds
                 .iter()
-                .filter(|((z, a), _)| *z == zone && is_wall(*a))
+                .filter(|((z, _, a), _)| *z == zone && is_wall(*a))
                 .map(|(_, (min, max))| max[0] - min[0])
                 .fold(0.0, f64::max);
             let fit = widest / max_angle;
@@ -734,7 +888,7 @@ impl AroundLayout {
                     (frame, fit.max(((frame.radius + BODY_CLEARANCE) * 1e3) as f64))
                 }
                 None => {
-                    let has_bottom = in_zone.contains(&Arrangement::Bottom);
+                    let has_bottom = in_zone.iter().any(|&(_, a)| a == Arrangement::Bottom);
                     let base = floor + 0.1 + if has_bottom { CAP_GAP } else { 0.0 };
                     let frame = ZoneFrame {
                         top: Vec3::new(0.0, base + height, 0.0),
@@ -747,8 +901,7 @@ impl AroundLayout {
                     (frame, fit.max(100.0))
                 }
             };
-            let top = if walls.is_empty() { 0.0 } else { wall_min[1] };
-            zones.insert(zone, ZoneLayout { frame, radius, top, height });
+            zones.insert(zone, ZoneLayout { frame, radius, inner, layers, height });
         }
         Self { group_center, zones, by_zone }
     }
@@ -769,20 +922,26 @@ impl AroundLayout {
         }
     }
 
-    fn place(&self, piece: &Piece, p: [f64; 2]) -> Vec3 {
+    /// Posición (m) de un punto del patrón de la pieza, `offset` metros
+    /// hacia fuera de donde iría.
+    fn place(&self, piece: &Piece, p: [f64; 2], offset: f32) -> Vec3 {
         let (zone, layout) = self.zone(piece);
         let a = piece.arrangement;
         let f = &layout.frame;
-        let c = self.group_center.get(&(zone, a)).copied().unwrap_or_default();
+        let c = self.group_center.get(&(zone, piece.layer, a)).copied().unwrap_or_default();
         let (dx, dy) = (((p[0] - c[0]) * 1e-3) as f32, ((p[1] - c[1]) * 1e-3) as f32);
+        let (top, height) = layout.layers.get(&piece.layer).copied().unwrap_or((0.0, layout.height));
+        // Las tapas de las capas de dentro, también algo más dentro.
+        let inset = f32::from(piece.layer) * LAYER_SEP;
         match a {
-            Arrangement::Top => f.top - f.axis * CAP_GAP + f.right * dx + f.front * dy,
-            Arrangement::Bottom => f.top + f.axis * (layout.height + CAP_GAP) + f.right * dx - f.front * dy,
+            Arrangement::Top => f.top - f.axis * (CAP_GAP - inset + offset) + f.right * dx + f.front * dy,
+            Arrangement::Bottom => f.top + f.axis * (height + CAP_GAP - inset + offset) + f.right * dx - f.front * dy,
             _ => {
                 // La x del dibujo avanza hacia la derecha de quien mira la pieza.
-                let theta = Self::angle(a) + (p[0] - c[0]) / layout.radius;
-                let along = ((p[1] - layout.top) * 1e-3) as f32;
-                f.top + f.axis * along + f.direction(theta as f32) * (layout.radius * 1e-3) as f32
+                let radius = layout.radius(piece.layer);
+                let theta = Self::angle(a) + (p[0] - c[0]) / radius;
+                let along = ((p[1] - top) * 1e-3) as f32;
+                f.top + f.axis * along + f.direction(theta as f32) * ((radius * 1e-3) as f32 + offset)
             }
         }
     }
@@ -806,54 +965,81 @@ impl AroundLayout {
 /// Las piezas de los lados quedan a izquierda y derecha de las de delante,
 /// y las de arriba y abajo, más allá de su borde superior e inferior, todas
 /// en la capa de arriba: al coserse se doblan hacia abajo.
+///
+/// Las capas de dentro (el forro) van entre las de delante y las de detrás
+/// del exterior, como dentro de la prenda doblada.
 struct FlatLayout {
     /// Centro (mm) de cada grupo de piezas en el patrón.
-    center: HashMap<Arrangement, [f64; 2]>,
-    bounds: HashMap<Arrangement, ([f64; 2], [f64; 2])>,
-    /// Altura media (mm) de las paredes en el patrón: es la de la tela
-    /// tumbada (z = 0).
-    middle: f64,
-    /// Ancho y alto (mm) de las piezas de delante.
-    front_size: [f64; 2],
+    center: HashMap<(u8, Arrangement), [f64; 2]>,
+    bounds: HashMap<(u8, Arrangement), ([f64; 2], [f64; 2])>,
+    /// Borde superior (mm) de las paredes de cada capa en el patrón.
+    top: HashMap<u8, f64>,
+    /// Alto (mm) de las paredes más altas: su mitad queda en z = 0.
+    height: f64,
+    /// Ancho y alto (mm) de las piezas de delante de cada capa.
+    front_size: HashMap<u8, [f64; 2]>,
+    /// La capa de más dentro.
+    inner: u8,
 }
 
 impl FlatLayout {
     fn new(meshes: &[(usize, &Piece, &Mesh2D)]) -> Self {
-        let mut groups: HashMap<Arrangement, Vec<&Mesh2D>> = HashMap::new();
+        let mut groups: HashMap<(u8, Arrangement), Vec<&Mesh2D>> = HashMap::new();
         for (_, piece, mesh) in meshes {
-            groups.entry(piece.arrangement).or_default().push(mesh);
+            groups.entry((piece.layer, piece.arrangement)).or_default().push(mesh);
         }
-        let bounds: HashMap<Arrangement, ([f64; 2], [f64; 2])> =
-            groups.iter().map(|(a, m)| (*a, self::bounds(m))).collect();
+        let bounds: HashMap<(u8, Arrangement), ([f64; 2], [f64; 2])> =
+            groups.iter().map(|(k, m)| (*k, self::bounds(m))).collect();
         let center =
-            bounds.iter().map(|(a, (min, max))| (*a, [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0])).collect();
-        let walls: Vec<&Mesh2D> =
-            groups.iter().filter(|(a, _)| is_wall(**a)).flat_map(|(_, m)| m.iter().copied()).collect();
-        let (wall_min, wall_max) = self::bounds(&walls);
-        let middle = if walls.is_empty() { 0.0 } else { (wall_min[1] + wall_max[1]) / 2.0 };
-        let front_size = bounds
-            .get(&Arrangement::Front)
-            .or_else(|| bounds.get(&Arrangement::Back))
-            .map_or([0.0, 0.0], |(min, max)| [max[0] - min[0], max[1] - min[1]]);
-        Self { center, bounds, middle, front_size }
+            bounds.iter().map(|(k, (min, max))| (*k, [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0])).collect();
+        let layers: Vec<u8> = groups.keys().map(|&(l, _)| l).collect();
+        let (mut top, mut front_size, mut height) = (HashMap::new(), HashMap::new(), 0.0f64);
+        for &layer in &layers {
+            let walls: Vec<&Mesh2D> = groups
+                .iter()
+                .filter(|((l, a), _)| *l == layer && is_wall(*a))
+                .flat_map(|(_, m)| m.iter().copied())
+                .collect();
+            let (min, max) = self::bounds(&walls);
+            if !walls.is_empty() {
+                top.insert(layer, min[1]);
+                height = height.max(max[1] - min[1]);
+            }
+            let size = bounds
+                .get(&(layer, Arrangement::Front))
+                .or_else(|| bounds.get(&(layer, Arrangement::Back)))
+                .map_or([0.0, 0.0], |(min, max)| [max[0] - min[0], max[1] - min[1]]);
+            front_size.insert(layer, size);
+        }
+        let inner = layers.iter().copied().max().unwrap_or(0);
+        Self { center, bounds, top, height, front_size, inner }
     }
 
-    /// Posición (m) de un punto del patrón; la capa de abajo está a `floor`.
-    fn place(&self, piece: &Piece, p: [f64; 2], floor: f32) -> Vec3 {
-        let a = piece.arrangement;
-        let c = self.center[&a];
-        let (min, max) = self.bounds[&a];
-        let [w, h] = self.front_size;
+    /// Posición (m) de un punto del patrón, `offset` metros hacia fuera de
+    /// donde iría; la capa de abajo está a `floor`.
+    fn place(&self, piece: &Piece, p: [f64; 2], floor: f32, offset: f32) -> Vec3 {
+        let (a, layer) = (piece.arrangement, piece.layer);
+        let c = self.center[&(layer, a)];
+        let (min, max) = self.bounds[&(layer, a)];
+        let [w, h] = self.front_size[&layer];
+        let middle = self.top.get(&layer).copied().unwrap_or(min[1]) + self.height / 2.0;
         let (x, z) = match a {
-            Arrangement::Front => (p[0] - c[0], p[1] - self.middle),
+            Arrangement::Front => (p[0] - c[0], p[1] - middle),
             // Vista desde detrás: la x del dibujo va hacia la izquierda.
-            Arrangement::Back => (c[0] - p[0], p[1] - self.middle),
-            Arrangement::Left => (-w / 2.0 - FLAT_GAP - (max[0] - p[0]), p[1] - self.middle),
-            Arrangement::Right => (w / 2.0 + FLAT_GAP + (p[0] - min[0]), p[1] - self.middle),
+            Arrangement::Back => (c[0] - p[0], p[1] - middle),
+            Arrangement::Left => (-w / 2.0 - FLAT_GAP - (max[0] - p[0]), p[1] - middle),
+            Arrangement::Right => (w / 2.0 + FLAT_GAP + (p[0] - min[0]), p[1] - middle),
             Arrangement::Top => (p[0] - c[0], -h / 2.0 - FLAT_GAP - (max[1] - p[1])),
             Arrangement::Bottom => (p[0] - c[0], h / 2.0 + FLAT_GAP + (p[1] - min[1])),
         };
-        let y = if a == Arrangement::Back { floor } else { floor + LAYER_GAP };
+        // De abajo arriba: las de detrás de fuera hacia dentro y luego las
+        // demás de dentro hacia fuera.
+        let level = if a == Arrangement::Back {
+            f32::from(layer)
+        } else {
+            f32::from(2 * self.inner + 1 - layer.min(self.inner))
+        };
+        let y = floor + level * LAYER_GAP + self.front(piece).y * offset;
         Vec3::new((x * 1e-3) as f32, y, (z * 1e-3) as f32)
     }
 
@@ -1121,6 +1307,49 @@ mod tests {
     /// Como en la aplicación: las prendas, sobre el maniquí.
     fn settings_for(make: fn() -> Pattern, settings: SceneSettings) -> SceneSettings {
         if make().on_avatar { SceneSettings { obstacle: Obstacle::Mannequin, ..settings } } else { settings }
+    }
+
+    /// La tote con forro aparte: cada capa en su cilindro, el forro dentro
+    /// del exterior y el bolsillo dentro del forro. Cosida y asentada no se
+    /// cruza (con el forro en la misma capa que el exterior, como antes de
+    /// las capas, sí).
+    #[test]
+    fn lining_starts_and_stays_inside() {
+        let lined = examples::lined_tote_bag();
+        let settings = SceneSettings { mesh_size: 30.0, ..Default::default() };
+        let radius = |scene: &Scene, name: &str| {
+            let index = lined.pieces.iter().position(|p| p.name == name).unwrap();
+            let range = &scene.cloth.pieces[index];
+            let start = range.first_particle as usize;
+            scene.cloth.positions[start..start + range.particle_count as usize]
+                .iter()
+                .map(|p| p.x.hypot(p.z))
+                .fold((f32::INFINITY, 0.0f32), |(lo, hi), r| (lo.min(r), hi.max(r)))
+        };
+        let scene = build(&lined, &settings, |_| egui::Color32::WHITE);
+        assert!(scene.failed.is_empty() && scene.crossed.is_empty(), "{:?} {:?}", scene.failed, scene.crossed);
+        let (outer, lining, pocket) =
+            (radius(&scene, "Delantero"), radius(&scene, "Forro delantero"), radius(&scene, "Bolsillo"));
+        assert!(lining.1 + 0.015 < outer.0, "forro {lining:?}, exterior {outer:?}");
+        assert!(pocket.1 + 0.005 < lining.0, "bolsillo {pocket:?}, forro {lining:?}");
+
+        let settle = |pattern: &Pattern| {
+            let mut scene = build(pattern, &settings, |_| egui::Color32::WHITE);
+            for _ in 0..300 {
+                scene.cloth.step(FRAME, &settings.params(), &scene.colliders);
+            }
+            assert!(scene.cloth.positions.iter().all(|p| p.is_finite()));
+            (scene.cloth.count_crossings(), scene.cloth.max_seam_gap())
+        };
+        let (crossings, gap) = settle(&lined);
+        let mut flat = lined.clone();
+        for piece in &mut flat.pieces {
+            piece.layer = 0;
+        }
+        let (before, _) = settle(&flat);
+        eprintln!("tote con forro: {crossings} aristas cruzadas ({before} con todo en la misma capa), costura {gap}");
+        assert!(gap < 5e-3, "costura abierta {gap}");
+        assert!(crossings <= 5, "{crossings} aristas cruzadas ({before} en una capa)");
     }
 
     /// Un bolsillo de parche cosido sobre tres líneas interiores del

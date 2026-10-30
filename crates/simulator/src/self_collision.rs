@@ -36,6 +36,14 @@ const SKIRT: f32 = 0.6;
 /// cerca pero sin cruzarse.
 const MAX_PUSH: f32 = 2e-4;
 
+/// Por debajo de este seno del ángulo (al cuadrado) dos aristas cuentan
+/// como paralelas y no chocan entre sí (unos 18°).
+const PARALLEL: f32 = 0.1;
+
+/// Lo que vuelve como mucho (m) en un subpaso una partícula que está al otro
+/// lado de una capa que no le toca.
+const UNTANGLE_PUSH: f32 = 5e-4;
+
 /// Un posible contacto entre una partícula y un triángulo durante un paso.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Contact {
@@ -46,6 +54,26 @@ pub(crate) struct Contact {
     side: f32,
     /// Distancia mínima (m) entre la partícula y el triángulo.
     separation: f32,
+    /// La partícula está al otro lado del que le toca por su capa: vuelve
+    /// a su lado poco a poco.
+    untangle: bool,
+}
+
+/// Un posible contacto entre dos aristas de la malla durante un paso: dos
+/// pliegues que se cruzan como una X no se ven con partícula contra
+/// triángulo (ningún vértice cae sobre el otro), pero sí arista contra
+/// arista.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EdgeContact {
+    a: [u32; 2],
+    b: [u32; 2],
+    /// Dirección (unitaria) de la arista `b` a la `a` al empezar el paso:
+    /// el lado en el que tiene que seguir `a`.
+    normal: Vec3,
+    separation: f32,
+    /// Hasta qué distancia (m) se vigilan: más lejos, ya no se tocan, y su
+    /// dirección de entonces no dice nada.
+    reach: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -63,6 +91,14 @@ pub(crate) struct SelfCollision {
     /// pieza no chocan.
     rest_exclusion: f32,
     pub contacts: Vec<Contact>,
+    pub edge_contacts: Vec<EdgeContact>,
+    /// Partículas con tela de otra pieza (u otra parte de la suya) cerca en
+    /// la última búsqueda: las aristas solo se miran ahí.
+    crowded: Vec<bool>,
+    /// Caja (ampliada) de cada arista en este paso y su hash espacial.
+    edge_boxes: Vec<TriBox>,
+    edge_start: Vec<u32>,
+    edge_entries: Vec<u32>,
     /// Margen hacia fuera de cada lado de cada triángulo (el lado `k` es el
     /// opuesto al vértice `k`).
     margins: Vec<[f32; 3]>,
@@ -75,6 +111,15 @@ pub(crate) struct SelfCollision {
     max_edge: f32,
     /// Arista media de la malla en reposo (m).
     mean_edge: f32,
+}
+
+/// Lo que hace falta saber de cada partícula al buscar contactos.
+pub(crate) struct Particles<'a> {
+    pub thickness: &'a [f32],
+    /// Capa (0 la de fuera).
+    pub layer: &'a [u8],
+    /// Normal de la tela en la partícula.
+    pub normal: &'a [Vec3],
 }
 
 pub(crate) struct Topology<'a> {
@@ -148,18 +193,19 @@ impl SelfCollision {
     /// a dos aristas o menos de uno de sus vértices (contando las costuras),
     /// o cerca en la misma pieza.
     pub fn adjacent(&self, p: u32, t: &[u32; 3]) -> bool {
-        let rp = self.root[p as usize];
+        t.iter().any(|&v| self.near(p, v))
+    }
+
+    /// `true` si dos partículas están juntas en el patrón: a dos aristas o
+    /// menos por la malla (contando las costuras), o cerca en la misma pieza.
+    fn near(&self, p: u32, v: u32) -> bool {
+        let (rp, rv) = (self.root[p as usize], self.root[v as usize]);
         let ring = &self.ring[rp as usize];
-        let (rest, piece) = self.rest[p as usize];
-        let limit = self.rest_exclusion * self.rest_exclusion;
-        t.iter().any(|&v| {
-            let rv = self.root[v as usize];
-            let (rest_v, piece_v) = self.rest[v as usize];
-            (piece == piece_v && rest.distance_squared(rest_v) < limit)
-                || rv == rp
-                || ring.binary_search(&rv).is_ok()
-                || share_any(ring, &self.ring[rv as usize])
-        })
+        let ((rest, piece), (rest_v, piece_v)) = (self.rest[p as usize], self.rest[v as usize]);
+        (piece == piece_v && rest.distance_squared(rest_v) < self.rest_exclusion * self.rest_exclusion)
+            || rv == rp
+            || ring.binary_search(&rv).is_ok()
+            || share_any(ring, &self.ring[rv as usize])
     }
 
     /// Separación mínima para una partícula de grosor `thickness`: dos
@@ -177,9 +223,10 @@ impl SelfCollision {
         positions: &[Vec3],
         travel: &[f32],
         inv_mass: &[f32],
-        thickness: &[f32],
+        particles: &Particles,
         triangles: &[[u32; 3]],
     ) {
+        let thickness = particles.thickness;
         self.contacts.clear();
         if triangles.is_empty() || self.max_edge <= 0.0 {
             return;
@@ -234,7 +281,9 @@ impl SelfCollision {
         }
 
         let this = &*self;
-        let find = |p: usize, seen: &mut Vec<u32>, out: &mut Vec<Contact>| {
+        // Devuelve si la partícula tiene cerca tela de otra pieza (o de
+        // otra parte de la suya): solo ahí hace falta mirar las aristas.
+        let find = |p: usize, seen: &mut Vec<u32>, out: &mut Vec<Contact>| -> bool {
             let x = positions[p];
             let reach = Vec3::splat(travel[p]);
             let (lo, hi) = (x - reach, x + reach);
@@ -253,30 +302,185 @@ impl SelfCollision {
                 }
             });
             let separation = this.separation(thickness[p]);
+            let (rest, piece) = this.rest[p];
+            let limit = this.rest_exclusion * this.rest_exclusion;
+            let mut crowded = false;
             for &ti in seen.iter() {
                 let t = &triangles[ti as usize];
+                let (rest_t, piece_t) = this.rest[t[0] as usize];
+                crowded |= piece_t != piece || rest_t.distance_squared(rest) > limit;
                 if inv_mass[p] + t.iter().map(|&v| inv_mass[v as usize]).sum::<f32>() == 0.0 {
                     continue;
                 }
                 let tri = t.map(|v| positions[v as usize]);
-                let Some((_, d, _)) = project(x, tri, this.margins[ti as usize]) else { continue };
+                let Some((_, d, n)) = project(x, tri, this.margins[ti as usize]) else { continue };
                 let reach = separation + travel[p] + t.iter().map(|&v| travel[v as usize]).fold(0.0, f32::max);
+                // Entre dos capas en paralelo, la de fuera va por el lado de
+                // la normal (hacia fuera) aunque ya se hayan cruzado; si no,
+                // cada una se queda en el lado en el que está.
+                let (lp, lt) = (particles.layer[p], particles.layer[t[0] as usize]);
+                let here = if d >= 0.0 { 1.0 } else { -1.0 };
+                let side =
+                    if lp != lt && particles.normal[p].dot(n) > 0.0 { if lp < lt { 1.0 } else { -1.0 } } else { here };
                 if d.abs() < reach && !this.adjacent(p as u32, t) {
-                    let side = if d >= 0.0 { 1.0 } else { -1.0 };
-                    out.push(Contact { particle: p as u32, triangle: ti, side, separation });
+                    let untangle = side != here;
+                    out.push(Contact { particle: p as u32, triangle: ti, side, separation, untangle });
                 }
+            }
+            crowded
+        };
+        let chunk = |range: std::ops::Range<usize>| {
+            let (mut seen, mut out, mut crowded) = (Vec::new(), Vec::new(), Vec::new());
+            for p in range {
+                if find(p, &mut seen, &mut out) {
+                    crowded.push(p as u32);
+                }
+            }
+            (out, crowded)
+        };
+        const CHUNK: usize = 256;
+        let n = positions.len();
+        let parts: Vec<(Vec<Contact>, Vec<u32>)> = if n >= 4 * CHUNK {
+            (0..n.div_ceil(CHUNK)).into_par_iter().map(|k| chunk(k * CHUNK..((k + 1) * CHUNK).min(n))).collect()
+        } else {
+            vec![chunk(0..n)]
+        };
+        self.contacts.clear();
+        self.crowded.clear();
+        self.crowded.resize(n, false);
+        for (contacts, crowded) in parts {
+            self.contacts.extend(contacts);
+            for p in crowded {
+                self.crowded[p as usize] = true;
+            }
+        }
+    }
+
+    /// Busca los pares de aristas que pueden tocarse antes de la próxima
+    /// búsqueda, como [`Self::gather`] con las partículas.
+    pub fn gather_edges(
+        &mut self,
+        positions: &[Vec3],
+        travel: &[f32],
+        inv_mass: &[f32],
+        thickness: &[f32],
+        edges: &[[u32; 2]],
+    ) {
+        self.edge_contacts.clear();
+        if edges.is_empty() || self.max_edge <= 0.0 {
+            return;
+        }
+        let max_sep = thickness.iter().map(|&t| self.separation(t)).fold(0.0, f32::max);
+        let inv_cell = 1.0 / self.max_edge;
+        let key = |p: Vec3| {
+            let f = p * inv_cell;
+            let i = f.as_ivec3();
+            i - glam::IVec3::select(f.cmplt(i.as_vec3()), glam::IVec3::ONE, glam::IVec3::ZERO)
+        };
+        let table = (edges.len() * 4).next_power_of_two();
+        let hash = move |x: i32, y: i32, z: i32| {
+            (x.wrapping_mul(92_837_111) ^ y.wrapping_mul(689_287_499) ^ z.wrapping_mul(283_923_481)) as u32 as usize
+                & (table - 1)
+        };
+        // Solo las aristas con algún extremo cerca de otra tela.
+        let crowded = std::mem::take(&mut self.crowded);
+        let edges: Vec<[u32; 2]> =
+            edges.iter().copied().filter(|e| e.iter().any(|&v| crowded.get(v as usize) == Some(&true))).collect();
+        self.crowded = crowded;
+        let edges = &edges[..];
+        if edges.is_empty() {
+            return;
+        }
+        self.edge_boxes.clear();
+        self.edge_boxes.extend(edges.iter().map(|&[a, b]| {
+            let (pa, pb) = (positions[a as usize], positions[b as usize]);
+            let grow = Vec3::splat(max_sep / 2.0 + travel[a as usize].max(travel[b as usize]));
+            let (lo, hi) = (pa.min(pb) - grow, pa.max(pb) + grow);
+            TriBox { lo, hi, cell_lo: key(lo), cell_hi: key(hi) }
+        }));
+        self.edge_start.clear();
+        self.edge_start.resize(table + 1, 0);
+        for b in &self.edge_boxes {
+            for_cells(b.cell_lo, b.cell_hi, |x, y, z| self.edge_start[hash(x, y, z)] += 1);
+        }
+        let mut sum = 0;
+        for s in &mut self.edge_start {
+            sum += *s;
+            *s = sum;
+        }
+        self.edge_entries.clear();
+        self.edge_entries.resize(sum as usize, 0);
+        for (i, b) in self.edge_boxes.iter().enumerate() {
+            for_cells(b.cell_lo, b.cell_hi, |x, y, z| {
+                let h = hash(x, y, z);
+                self.edge_start[h] -= 1;
+                self.edge_entries[self.edge_start[h] as usize] = i as u32;
+            });
+        }
+
+        let this = &*self;
+        let find = |i: usize, seen: &mut Vec<u32>, out: &mut Vec<EdgeContact>| {
+            let me = &this.edge_boxes[i];
+            seen.clear();
+            for_cells(me.cell_lo, me.cell_hi, |cx, cy, cz| {
+                let h = hash(cx, cy, cz);
+                for &j in &this.edge_entries[this.edge_start[h] as usize..this.edge_start[h + 1] as usize] {
+                    let b = &this.edge_boxes[j as usize];
+                    // Cada par una vez (j > i), en la primera celda que comparten.
+                    if j as usize > i
+                        && (me.lo.cmple(b.hi) & me.hi.cmpge(b.lo)).all()
+                        && glam::IVec3::new(cx, cy, cz) == me.cell_lo.max(b.cell_lo)
+                    {
+                        seen.push(j);
+                    }
+                }
+            });
+            let a = edges[i];
+            for &j in seen.iter() {
+                let b = edges[j as usize];
+                // Primero lo barato: casi todos los candidatos son vecinos en
+                // la malla y quedan lejos o comparten vértice.
+                if a.iter().any(|v| b.contains(v)) {
+                    continue;
+                }
+                let at = |e: [u32; 2]| e.map(|v| positions[v as usize]);
+                // Dos aristas casi paralelas (dos capas de tela una sobre
+                // otra) ya las separan sus vértices contra los triángulos, y
+                // entre ellas el punto más cercano baila de un lado a otro.
+                let ([pa, pb], [qa, qb]) = (at(a), at(b));
+                let (da, db) = (pb - pa, qb - qa);
+                if da.cross(db).length_squared() < PARALLEL * da.length_squared() * db.length_squared() {
+                    continue;
+                }
+                let (_, _, ca, cb) = closest_on_segments(at(a), at(b));
+                let gap = ca - cb;
+                let d = gap.length();
+                // Basta con que no se crucen: con la separación de las
+                // partículas, dos pliegues de una tela firme se empujan sin
+                // parar y tiemblan.
+                let thinnest = a.iter().chain(&b).map(|&v| thickness[v as usize]).fold(f32::INFINITY, f32::min);
+                let separation = this.separation(thinnest / 2.0);
+                let reach = separation + a.iter().chain(&b).map(|&v| travel[v as usize]).fold(0.0, f32::max);
+                if d >= reach
+                    || d <= 1e-7
+                    || a.iter().chain(&b).all(|&v| inv_mass[v as usize] == 0.0)
+                    || a.iter().any(|&p| b.iter().any(|&q| this.near(p, q)))
+                {
+                    continue;
+                }
+                out.push(EdgeContact { a, b, normal: gap / d, separation, reach });
             }
         };
         let chunk = |range: std::ops::Range<usize>| {
             let (mut seen, mut out) = (Vec::new(), Vec::new());
-            for p in range {
-                find(p, &mut seen, &mut out);
+            for i in range {
+                find(i, &mut seen, &mut out);
             }
             out
         };
         const CHUNK: usize = 256;
-        let n = positions.len();
-        self.contacts = if n >= 4 * CHUNK {
+        let n = edges.len();
+        self.edge_contacts = if n >= 4 * CHUNK {
             (0..n.div_ceil(CHUNK))
                 .into_par_iter()
                 .flat_map_iter(|k| chunk(k * CHUNK..((k + 1) * CHUNK).min(n)))
@@ -284,6 +488,46 @@ impl SelfCollision {
         } else {
             chunk(0..n)
         };
+    }
+
+    /// Separa los pares de aristas que están demasiado cerca o se han
+    /// cruzado, como [`Self::solve`].
+    pub fn solve_edges(&self, positions: &mut [Vec3], prev: &[Vec3], inv_mass: &[f32]) {
+        for c in &self.edge_contacts {
+            let at = |e: [u32; 2], x: &[Vec3]| e.map(|v| x[v as usize]);
+            let (s, t, ca, cb) = closest_on_segments(at(c.a, positions), at(c.b, positions));
+            // Se han apartado (o deslizado una junto a otra): ya no hay nada
+            // que separar, y la dirección guardada podría empujarlas mal.
+            if ca.distance_squared(cb) > c.reach * c.reach {
+                continue;
+            }
+            let d = (ca - cb).dot(c.normal);
+            let constraint = d - c.separation;
+            if constraint >= 0.0 {
+                continue;
+            }
+            let wa = c.a.map(|v| inv_mass[v as usize]);
+            let wb = c.b.map(|v| inv_mass[v as usize]);
+            let (ka, kb) = ([1.0 - s, s], [1.0 - t, t]);
+            let denom = wa[0] * ka[0] * ka[0] + wa[1] * ka[1] * ka[1] + wb[0] * kb[0] * kb[0] + wb[1] * kb[1] * kb[1];
+            if denom <= 0.0 {
+                continue;
+            }
+            // Solo se deshace lo que se hayan acercado en este subpaso (y un
+            // poco más), también si se han cruzado: la dirección es la de la
+            // búsqueda, y con la tela muy junta (varias capas apretadas) dos
+            // aristas que giran parecen cruzadas sin estarlo; empujarlas
+            // enteras de vuelta mete energía y la tela acaba explotando.
+            let [pa, pb] = at(c.a, prev);
+            let [qa, qb] = at(c.b, prev);
+            let before = (pa.lerp(pb, s) - qa.lerp(qb, t)).dot(c.normal);
+            let depth = (-constraint).min((before - d).max(0.0) + MAX_PUSH);
+            let step = c.normal * (depth / denom);
+            for k in 0..2 {
+                positions[c.a[k] as usize] += step * (wa[k] * ka[k]);
+                positions[c.b[k] as usize] -= step * (wb[k] * kb[k]);
+            }
+        }
     }
 
     /// Separa los pares que están demasiado cerca o se han cruzado.
@@ -304,16 +548,20 @@ impl SelfCollision {
             if denom <= 0.0 {
                 continue;
             }
-            // Si ya ha cruzado, vuelve entera a su lado. Si no, se deshace lo
-            // que se haya acercado en este subpaso, y lo que ya estuviera
-            // demasiado cerca se separa poco a poco, para no meter energía.
-            let depth = if c.side * d < 0.0 {
-                -constraint
+            // Se deshace lo que se hayan acercado en este subpaso: si ha
+            // cruzado en él, vuelve entera a su lado. Lo que ya estuviera
+            // demasiado cerca, o cruzado de antes, se separa poco a poco: un
+            // empujón entero a algo que lleva tiempo al otro lado (con la tela
+            // apretada en varias capas, o un triángulo que ha girado) mete
+            // energía y la tela acaba explotando.
+            let depth = if c.untangle {
+                (-constraint).min(UNTANGLE_PUSH)
             } else {
                 let [a0, b0, c0] = t.map(|v| prev[v as usize]);
                 let n0 = (b0 - a0).cross(c0 - a0).normalize_or_zero();
                 let approach = (c.side * ((prev[p] - a0).dot(n0) - d)).max(0.0);
-                (-constraint).min(approach + MAX_PUSH)
+                let slack = if c.side * d < 0.0 { UNTANGLE_PUSH } else { MAX_PUSH };
+                (-constraint).min(approach + slack)
             };
             let push = n * (c.side * depth / denom);
             positions[p] += push * wp;
@@ -357,6 +605,37 @@ fn project(p: Vec3, [a, b, c]: [Vec3; 3], margin: [f32; 3]) -> Option<([f32; 3],
     Some(([u / s, v / s, w / s], d, n))
 }
 
+/// Puntos más cercanos entre dos segmentos: sus parámetros (0..1) y los
+/// puntos.
+fn closest_on_segments([p1, q1]: [Vec3; 2], [p2, q2]: [Vec3; 2]) -> (f32, f32, Vec3, Vec3) {
+    const EPS: f32 = 1e-12;
+    let (d1, d2, r) = (q1 - p1, q2 - p2, p1 - p2);
+    let (a, e, f) = (d1.dot(d1), d2.dot(d2), d2.dot(r));
+    let (s, t) = if a <= EPS && e <= EPS {
+        (0.0, 0.0)
+    } else if a <= EPS {
+        (0.0, (f / e).clamp(0.0, 1.0))
+    } else {
+        let c = d1.dot(r);
+        if e <= EPS {
+            ((-c / a).clamp(0.0, 1.0), 0.0)
+        } else {
+            let b = d1.dot(d2);
+            let denom = a * e - b * b;
+            let s = if denom > EPS { ((b * f - c * e) / denom).clamp(0.0, 1.0) } else { 0.0 };
+            let t = (b * s + f) / e;
+            if t < 0.0 {
+                ((-c / a).clamp(0.0, 1.0), 0.0)
+            } else if t > 1.0 {
+                (((b - c) / a).clamp(0.0, 1.0), 1.0)
+            } else {
+                (s, t)
+            }
+        }
+    };
+    (s, t, p1 + d1 * s, p2 + d2 * t)
+}
+
 /// `true` si el segmento `p`-`q` atraviesa el triángulo.
 pub(crate) fn segment_hits_triangle(p: Vec3, q: Vec3, [a, b, c]: [Vec3; 3]) -> bool {
     let n = (b - a).cross(c - a);
@@ -398,4 +677,29 @@ fn share_any(a: &[u32], b: &[u32]) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closest_points_between_segments() {
+        // Dos aristas que se cruzan en aspa, una 1 cm por encima de la otra.
+        let (s, t, a, b) = closest_on_segments(
+            [Vec3::new(-1.0, 0.01, 0.0), Vec3::new(1.0, 0.01, 0.0)],
+            [Vec3::new(0.5, 0.0, -1.0), Vec3::new(0.5, 0.0, 1.0)],
+        );
+        assert!((s - 0.75).abs() < 1e-6 && (t - 0.5).abs() < 1e-6, "{s} {t}");
+        assert!((a - b).abs_diff_eq(Vec3::new(0.0, 0.01, 0.0), 1e-6), "{a} {b}");
+        // Paralelas: cualquier par a la distancia mínima vale.
+        let (_, _, a, b) =
+            closest_on_segments([Vec3::ZERO, Vec3::X], [Vec3::new(0.5, 0.0, 0.2), Vec3::new(2.0, 0.0, 0.2)]);
+        assert!(((a - b).length() - 0.2).abs() < 1e-6, "{a} {b}");
+        // Lo más cerca es un extremo.
+        let (s, t, _, _) =
+            closest_on_segments([Vec3::ZERO, Vec3::X], [Vec3::new(2.0, 1.0, 0.0), Vec3::new(3.0, -1.0, 0.0)]);
+        assert_eq!(s, 1.0);
+        assert!((0.0..=1.0).contains(&t));
+    }
 }
